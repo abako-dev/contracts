@@ -27,6 +27,7 @@
 #[ink::contract]
 mod projects {
     use ink::env::call::{build_call, ExecutionInput, Selector};
+    use ink::prelude::collections::BTreeMap;
     use ink::prelude::string::String;
     use ink::prelude::vec::Vec;
 
@@ -88,8 +89,8 @@ mod projects {
     #[derive(Debug, scale::Encode, scale::Decode, PartialEq, Clone)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub struct ProjectScope {
-        /// List of all tasks that comprise the project deliverables
-        tasks: Vec<Task>,
+        /// Map of task ID to task, ensuring unique IDs
+        tasks: BTreeMap<u8, Task>,
         /// Percentage (0-100) of total cost to be paid upfront by client
         advance_payment_percentage: u8,
         /// Hash of project specification/requirements document
@@ -276,6 +277,8 @@ mod projects {
         ConversionType,
         /// Arithmetic operation failed (overflow/underflow)
         ArithmeticFailure,
+        /// Too many tasks - project exceeds maximum allowed tasks
+        TooManyTasks,
     }
 
     /// Convenient Result type alias for contract operations
@@ -453,7 +456,7 @@ mod projects {
                 }
 
                 // Check if all tasks are completed
-                for task in &scope.tasks {
+                for task in scope.tasks.values() {
                     if !task.completed {
                         return Err(Error::TasksNotCompleted);
                     }
@@ -564,7 +567,7 @@ mod projects {
         #[ink(message)]
         pub fn get_scope_info(&self) -> Option<(Vec<u8>, u8, Hash, Balance, Balance)> {
             self.scope.as_ref().map(|scope| {
-                let task_ids = scope.tasks.iter().map(|task| task.id).collect();
+                let task_ids: Vec<u8> = scope.tasks.keys().cloned().collect();
                 (
                     task_ids,
                     scope.advance_payment_percentage,
@@ -585,7 +588,7 @@ mod projects {
         #[ink(message)]
         pub fn get_task(&self, task_id: u8) -> Option<Task> {
             if let Some(scope) = &self.scope {
-                scope.tasks.iter().find(|task| task.id == task_id).cloned()
+                scope.tasks.get(&task_id).cloned()
             } else {
                 None
             }
@@ -605,11 +608,8 @@ mod projects {
         #[ink(message)]
         pub fn get_task_completion_status(&self, task_id: u8) -> Result<bool> {
             if let Some(scope) = &self.scope {
-                let task = scope
-                    .tasks
-                    .iter()
-                    .find(|t| t.id == task_id)
-                    .ok_or(Error::TaskNotFound)?;
+                let task = scope.tasks.get(&task_id).ok_or(Error::TaskNotFound)?;
+
                 Ok(task.completed)
             } else {
                 Err(Error::ScopeNotDefined)
@@ -675,6 +675,8 @@ mod projects {
             advance_payment_percentage: u8,
             document_hash: Hash,
         ) -> Result<()> {
+            /// Maximum number of tasks allowed per project
+            const MAX_TASKS: usize = 100;
             let caller = self.env().caller();
 
             // Check if caller is the coordinator
@@ -698,25 +700,41 @@ mod projects {
                 return Err(Error::ScopeAlreadyDefined);
             }
 
+            // Check maximum tasks limit
+            if tasks.len() > MAX_TASKS {
+                return Err(Error::TooManyTasks);
+            }
+
             // Validate advance payment percentage (0-100)
             if advance_payment_percentage > 100 {
                 return Err(Error::InvalidAdvancePaymentPercentage);
             }
 
-            // Get all task IDs for dependency validation and check for duplicates
-            let mut task_ids: Vec<u8> = Vec::with_capacity(tasks.len());
-            for (id, _, _, _) in &tasks {
-                match task_ids.binary_search(id) {
-                    Ok(_) => return Err(Error::DuplicateTaskId),
-                    Err(pos) => task_ids.insert(pos, *id),
+            // Use BTreeMap to ensure unique task IDs and efficient lookups
+            let mut tasks_map: BTreeMap<u8, Task> = BTreeMap::new();
+
+            // First pass: create tasks and check for duplicates
+            for (id, complexity, cost, dependencies) in &tasks {
+                if tasks_map.contains_key(id) {
+                    return Err(Error::DuplicateTaskId);
                 }
+
+                let task = Task {
+                    id: *id,
+                    complexity: complexity.clone(),
+                    cost: *cost,
+                    dependencies: dependencies.clone(),
+                    completed: false,
+                };
+
+                tasks_map.insert(*id, task);
             }
 
-            // Validate task dependencies (all dependencies must exist and no circular dependencies)
-            for (id, _, _, deps) in &tasks {
-                for dep_id in deps {
-                    // Binary search is faster than contains() for sorted vectors
-                    if task_ids.binary_search(dep_id).is_err() {
+            // Second pass: validate task dependencies
+            for (id, task) in &tasks_map {
+                for dep_id in &task.dependencies {
+                    // Check if dependency exists
+                    if !tasks_map.contains_key(dep_id) {
                         return Err(Error::InvalidTaskId);
                     }
                     // Check for circular dependencies (a task can't depend on itself)
@@ -732,30 +750,18 @@ mod projects {
 
             // Calculate total cost
             let mut total_cost: Balance = 0;
-            for (_, _, cost, _) in &tasks {
-                total_cost = total_cost.saturating_add(*cost); // Prevent overflow
+            for (_, task) in &tasks_map {
+                total_cost = total_cost.saturating_add(task.cost); // Prevent overflow
             }
 
-            // Create task objects
-            let tasks_vec: Vec<Task> = tasks
-                .into_iter()
-                .map(|(id, complexity, cost, dependencies)| Task {
-                    id,
-                    complexity,
-                    cost,
-                    dependencies,
-                    completed: false,
-                })
-                .collect();
-
-            let tasks_count = tasks_vec
+            let tasks_count = tasks_map
                 .len()
                 .try_into()
                 .map_err(|_| Error::ConversionType)?;
 
             // Create scope
             let project_scope = ProjectScope {
-                tasks: tasks_vec,
+                tasks: tasks_map,
                 advance_payment_percentage,
                 document_hash,
             };
@@ -843,7 +849,7 @@ mod projects {
         #[ink(message)]
         pub fn get_all_tasks(&self) -> Result<Vec<Task>> {
             if let Some(scope) = &self.scope {
-                Ok(scope.tasks.clone())
+                Ok(scope.tasks.values().cloned().collect())
             } else {
                 Err(Error::ScopeNotDefined)
             }
@@ -851,11 +857,10 @@ mod projects {
 
         /// Helper function to find a task by id
         #[allow(dead_code)]
-        fn find_task_by_id<'a>(&self, tasks: &'a [Task], task_id: u8) -> Option<(usize, &'a Task)> {
-            tasks
-                .iter()
-                .enumerate()
-                .find(|(_, task)| task.id == task_id)
+        fn find_task_by_id(&self, task_id: u8) -> Option<&Task> {
+            self.scope
+                .as_ref()
+                .and_then(|scope| scope.tasks.get(&task_id))
         }
 
         /// Marks a specific task as completed
@@ -897,34 +902,29 @@ mod projects {
                 None => return Err(Error::ScopeNotDefined),
             };
 
-            // Find the task by ID
-            let task_index = scope
-                .tasks
-                .iter()
-                .position(|t| t.id == task_id)
-                .ok_or(Error::TaskNotFound)?;
+            // First check if task exists and get its info
+            let (task_completed, dependencies) = {
+                let task = scope.tasks.get(&task_id).ok_or(Error::TaskNotFound)?;
+                (task.completed, task.dependencies.clone())
+            };
 
             // Check if task is already completed
-            if scope.tasks[task_index].completed {
+            if task_completed {
                 return Err(Error::TaskAlreadyCompleted);
             }
 
             // Check if dependencies are completed
-            for dep_id in &scope.tasks[task_index].dependencies.clone() {
-                let dep_completed = scope
-                    .tasks
-                    .iter()
-                    .find(|t| t.id == *dep_id)
-                    .map(|t| t.completed)
-                    .ok_or(Error::TaskNotFound)?;
+            for dep_id in &dependencies {
+                let dep_task = scope.tasks.get(dep_id).ok_or(Error::TaskNotFound)?;
 
-                if !dep_completed {
+                if !dep_task.completed {
                     return Err(Error::DependenciesNotCompleted);
                 }
             }
 
-            // Mark task as completed
-            scope.tasks[task_index].completed = true;
+            // Now mark task as completed
+            let task = scope.tasks.get_mut(&task_id).ok_or(Error::TaskNotFound)?;
+            task.completed = true;
 
             // Emit event
             self.env().emit_event(TaskCompleted {
@@ -1502,6 +1502,147 @@ mod projects {
             // Check ratings are set
             assert_eq!(project.team_members[0].rating, Some(8));
             assert_eq!(project.team_members[1].rating, Some(9));
+        }
+
+        #[ink::test]
+        fn task_limit_validation_works() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+
+            // Try to create more than 100 tasks (should fail)
+            let mut tasks = Vec::new();
+            for i in 1..=101 {
+                tasks.push((i as u8, TaskComplexity::Days(1), 100, vec![]));
+            }
+
+            let result = project.define_scope(tasks, 30, Hash::from([1u8; 32]));
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), Error::TooManyTasks);
+        }
+
+        #[ink::test]
+        fn task_map_functionality_works() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+
+            // Define scope with tasks in non-sequential order
+            let tasks = vec![
+                (5, TaskComplexity::Days(2), 500, vec![]),
+                (1, TaskComplexity::Days(1), 100, vec![]),
+                (3, TaskComplexity::Days(3), 300, vec![1]),
+                (2, TaskComplexity::Days(2), 200, vec![1]),
+                (4, TaskComplexity::Days(1), 150, vec![2, 3]),
+            ];
+
+            let result = project.define_scope(tasks, 25, Hash::from([2u8; 32]));
+            assert!(result.is_ok());
+
+            // Verify tasks can be retrieved by ID
+            assert!(project.get_task(1).is_some());
+            assert!(project.get_task(3).is_some());
+            assert!(project.get_task(5).is_some());
+            assert!(project.get_task(99).is_none()); // Non-existent task
+
+            // Get all tasks should work
+            let all_tasks = project.get_all_tasks().unwrap();
+            assert_eq!(all_tasks.len(), 5);
+
+            // Test task completion with dependencies
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            project.accept_scope().unwrap();
+
+            // Complete task 1 first
+            let result = project.complete_task(1);
+            assert!(result.is_ok());
+
+            // Try to complete task 4 (depends on 2 and 3, but they're not completed)
+            let result = project.complete_task(4);
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), Error::DependenciesNotCompleted);
+
+            // Complete tasks 2 and 3
+            assert!(project.complete_task(2).is_ok());
+            assert!(project.complete_task(3).is_ok());
+
+            // Now task 4 should complete
+            assert!(project.complete_task(4).is_ok());
+
+            // Task 5 has no dependencies, should complete anytime
+            assert!(project.complete_task(5).is_ok());
+        }
+
+        #[ink::test]
+        fn task_uniqueness_enforced() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+
+            // Try to define scope with duplicate task IDs using BTreeMap
+            let tasks = vec![
+                (1, TaskComplexity::Days(1), 100, vec![]),
+                (2, TaskComplexity::Days(2), 200, vec![]),
+                (1, TaskComplexity::Days(3), 300, vec![]), // Duplicate ID
+            ];
+
+            let result = project.define_scope(tasks, 30, Hash::from([3u8; 32]));
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), Error::DuplicateTaskId);
+        }
+
+        #[ink::test]
+        fn comprehensive_scope_validation() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+
+            // Test 1: Valid scope should work
+            let valid_tasks = vec![
+                (1, TaskComplexity::Abstract(5), 500, vec![]),
+                (2, TaskComplexity::Days(5), 1000, vec![1]),
+                (3, TaskComplexity::Weeks(2), 2000, vec![1, 2]),
+            ];
+
+            let result = project.define_scope(valid_tasks, 40, Hash::from([4u8; 32]));
+            assert!(result.is_ok());
+            assert_eq!(project.total_cost, 3500);
+
+            // Test 2: Try to redefine scope while still in ScopeDefinedPendingApproval state (should fail)
+            let new_tasks = vec![(4, TaskComplexity::Days(1), 200, vec![])];
+            let result = project.define_scope(new_tasks, 30, Hash::from([5u8; 32]));
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), Error::InvalidProjectState);
+        }
+
+        #[ink::test]
+        fn edge_case_task_ids() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+
+            // Test with edge case task IDs (0 and 255)
+            let tasks = vec![
+                (0, TaskComplexity::Days(1), 100, vec![]),
+                (255, TaskComplexity::Days(2), 200, vec![0]),
+                (128, TaskComplexity::Days(1), 150, vec![0]),
+            ];
+
+            let result = project.define_scope(tasks, 50, Hash::from([6u8; 32]));
+            assert!(result.is_ok());
+
+            // Test retrieval of edge case tasks
+            assert!(project.get_task(0).is_some());
+            assert!(project.get_task(255).is_some());
+            assert!(project.get_task(128).is_some());
+
+            // Test completion order with edge cases
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            project.accept_scope().unwrap();
+
+            assert!(project.complete_task(0).is_ok());
+            assert!(project.complete_task(128).is_ok());
+            assert!(project.complete_task(255).is_ok());
         }
     }
 }
