@@ -1,6 +1,29 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 #![allow(clippy::cast_possible_truncation)]
 
+/// # Project Management Smart Contract
+///
+/// This ink! smart contract manages software development projects with a structured workflow
+/// involving clients, coordinators, and development teams. Each contract instance represents
+/// a single project with the following key features:
+///
+/// ## Project Lifecycle
+/// 1. **Created** - Initial state when project is instantiated by the client
+/// 2. **CoordinatorAssigned** - DAO assigns a coordinator to manage the project
+/// 3. **TeamAssigned** - Coordinator selects and assigns team members
+/// 4. **ScopeDefinedPendingApproval** - Coordinator defines project scope with tasks
+/// 5. **ScopeAccepted** - Client approves scope and makes advance payment
+/// 6. **Completed** - All tasks finished, team rated, final payment processed
+///
+/// ## Key Components
+/// - **Client**: Project owner who initiates and funds the project
+/// - **Coordinator**: Project manager assigned by DAO to oversee execution
+/// - **Team Members**: Developers, designers, testers assigned by coordinator
+/// - **Tasks**: Individual work items with dependencies and complexity estimates
+/// - **Milestones**: Groups of tasks that form project deliverables
+///
+/// ## Integration
+/// The contract integrates with a Calendar contract for worker availability management.
 #[ink::contract]
 mod projects {
     use ink::env::call::{build_call, ExecutionInput, Selector};
@@ -10,40 +33,73 @@ mod projects {
     #[cfg(feature = "std")]
     use ink::storage::traits::StorageLayout;
 
+    /// Represents a team member assigned to the project
+    ///
+    /// Each team member has a specific role (e.g., Developer, Designer, Tester)
+    /// and can receive a rating from the client upon project completion.
     #[derive(Debug, scale::Encode, scale::Decode, PartialEq, Clone)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     pub struct TeamMember {
+        /// The blockchain account ID of the team member
         account_id: AccountId,
+        /// The role of the team member (e.g., "Developer", "Designer", "Tester")
         role: String,
+        /// Optional rating from 0-10 given by client upon project completion
         rating: Option<u8>,
     }
 
+    /// Defines the complexity level of a task for estimation purposes
+    ///
+    /// Used by coordinators to estimate effort and cost for individual tasks.
     #[derive(Debug, scale::Encode, scale::Decode, PartialEq, Clone, Copy)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub enum TaskComplexity {
+        /// Abstract complexity level (1-10 scale)
         Abstract(u8),
+        /// Estimated completion time in days
         Days(u8),
+        /// Estimated completion time in weeks
         Weeks(u8),
     }
 
+    /// Represents an individual work item within the project scope
+    ///
+    /// Tasks form the building blocks of project milestones and can have
+    /// dependencies on other tasks that must be completed first.
     #[derive(Debug, scale::Encode, scale::Decode, PartialEq, Clone)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub struct Task {
+        /// Unique identifier for the task within the project
         id: u8,
+        /// Complexity/effort estimate for the task
         complexity: TaskComplexity,
+        /// Cost in tokens for completing this task
         cost: Balance,
+        /// List of task IDs that must be completed before this task can start
         dependencies: Vec<u8>,
+        /// Whether this task has been marked as completed
         completed: bool,
     }
 
+    /// Defines the complete scope of work for the project
+    ///
+    /// The scope includes all tasks, payment terms, and project documentation.
+    /// Once defined by the coordinator, it must be approved by the client.
     #[derive(Debug, scale::Encode, scale::Decode, PartialEq, Clone)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub struct ProjectScope {
+        /// List of all tasks that comprise the project deliverables
         tasks: Vec<Task>,
+        /// Percentage (0-100) of total cost to be paid upfront by client
         advance_payment_percentage: u8,
+        /// Hash of project specification/requirements document
         document_hash: Hash,
     }
 
+    /// Tracks the current state of the project through its lifecycle
+    ///
+    /// The project status determines which operations are allowed and who
+    /// can perform them at each stage of the development process.
     #[derive(Debug, scale::Encode, scale::Decode, PartialEq, Clone)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub enum ProjectStatus {
@@ -55,30 +111,50 @@ mod projects {
         Completed,                   // All tasks are completed and project is finalized
     }
 
-    /// Interface for the calendar contract
+    /// Interface for the calendar contract that manages worker availability
+    ///
+    /// The calendar contract maintains schedules and availability of coordinators
+    /// and team members across all projects in the ecosystem.
     #[ink::trait_definition]
     pub trait Calendar {
+        /// Check if a specific worker is available for a given project
         #[ink(message)]
         fn is_available(&self, account_id: AccountId, project_id: AccountId) -> bool;
 
+        /// Get list of all workers available for assignment to a project
         #[ink(message)]
         fn get_available_workers(&self, project_id: AccountId) -> Vec<AccountId>;
     }
 
+    /// Main project contract storage containing all project state
+    ///
+    /// This struct represents a single software development project with
+    /// its associated metadata, team, scope, and financial information.
     #[ink(storage)]
     pub struct Project {
+        /// Human-readable name for the project (max 50 characters)
         name: String,
+        /// Account ID of the client who created and funds the project
         client: AccountId,
+        /// Address of the DAO that manages coordinator assignments
         dao_address: AccountId,
+        /// Optional coordinator assigned by the DAO to manage the project
         coordinator: Option<AccountId>,
+        /// List of team members assigned to work on the project
         team_members: Vec<TeamMember>,
+        /// Current lifecycle status of the project
         status: ProjectStatus,
+        /// Optional address of the calendar contract for worker availability
         calendar_contract: Option<AccountId>,
+        /// Optional project scope defined by the coordinator
         scope: Option<ProjectScope>,
+        /// Total cost of the project in tokens (sum of all task costs)
         total_cost: Balance,
+        /// Amount already paid by the client
         paid_amount: Balance,
     }
 
+    /// Event emitted when a coordinator is assigned to the project
     #[ink(event)]
     pub struct CoordinatorAssigned {
         #[ink(topic)]
@@ -87,89 +163,139 @@ mod projects {
         coordinator: AccountId,
     }
 
+    /// Event emitted when team members are assigned to the project
     #[ink(event)]
     pub struct TeamAssigned {
         #[ink(topic)]
         project: String,
+        /// Number of team members assigned
         team_size: u32,
     }
 
+    /// Event emitted when the project is marked as completed
     #[ink(event)]
     pub struct ProjectCompleted {
         #[ink(topic)]
         project: String,
         #[ink(topic)]
         client: AccountId,
+        /// Amount of final payment released to team
         final_payment: Balance,
     }
 
+    /// Event emitted when the project scope is defined by the coordinator
     #[ink(event)]
     pub struct ScopeDefined {
         #[ink(topic)]
         project: AccountId,
         #[ink(topic)]
         coordinator: AccountId,
+        /// Number of tasks defined in the scope
         tasks_count: u8,
+        /// Total cost of all tasks in the scope
         total_cost: Balance,
     }
 
+    /// Event emitted when the client accepts the project scope
     #[ink(event)]
     pub struct ScopeAccepted {
         #[ink(topic)]
         project: AccountId,
         #[ink(topic)]
         client: AccountId,
+        /// Amount paid upfront by the client
         advance_payment: Balance,
     }
 
+    /// Event emitted when a task is marked as completed
     #[ink(event)]
     pub struct TaskCompleted {
         #[ink(topic)]
         project: AccountId,
         #[ink(topic)]
         client: AccountId,
+        /// ID of the completed task
         task_id: u8,
     }
 
+    /// Comprehensive error types for all possible contract failure modes
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     pub enum Error {
         // Project errors
+        /// Project name exceeds maximum allowed length (50 characters)
         NameTooLong,
+        /// Caller is not authorized to perform this operation
         NotAuthorized,
+        /// Coordinator must be assigned before this operation
         CoordinatorNotAssigned,
+        /// Specified team member not found in project team
         TeamMemberNotFound,
+        /// Rating value must be between 0-10
         InvalidRatingValue,
+        /// Number of ratings doesn't match number of team members
         RatingsCountMismatch,
+        /// Project is already in completed state
         ProjectAlreadyCompleted,
+        /// Calendar contract address not set
         CalendarContractNotSet,
+        /// No coordinators available for assignment
         NoAvailableCoordinators,
+        /// No team members available for assignment
         NoAvailableTeamMembers,
 
         // Scope errors
+        /// Project scope has not been defined yet
         ScopeNotDefined,
+        /// Project scope has already been defined
         ScopeAlreadyDefined,
+        /// Advance payment percentage must be 0-100
         InvalidAdvancePaymentPercentage,
 
         // Task errors
+        /// Task with specified ID not found
         TaskNotFound,
+        /// Task dependencies are not completed yet
         DependenciesNotCompleted,
+        /// Invalid task ID referenced in dependencies
         InvalidTaskId,
+        /// Duplicate task ID found in scope definition
         DuplicateTaskId,
+        /// Task is already marked as completed
         TaskAlreadyCompleted,
+        /// Circular dependency detected in task graph
         CircularDependency,
+        /// Not all tasks are completed yet
         TasksNotCompleted,
 
         // State errors
+        /// Operation not valid for current project state
         InvalidProjectState,
 
+        /// Type conversion failed
         ConversionType,
+        /// Arithmetic operation failed (overflow/underflow)
         ArithmeticFailure,
     }
 
+    /// Convenient Result type alias for contract operations
     pub type Result<T> = core::result::Result<T, Error>;
 
     impl Project {
+        /// Creates a new project instance
+        ///
+        /// # Parameters
+        /// - `name`: Human-readable project name (max 50 characters)
+        /// - `dao_address`: Address of the DAO that will assign coordinators
+        /// - `calendar_contract`: Optional address of calendar contract for worker availability
+        ///
+        /// # Panics
+        /// Panics if the project name exceeds 50 characters
+        ///
+        /// # Initial State
+        /// - Client is set to the contract deployer
+        /// - Status is set to Created
+        /// - All other fields are initialized to default/empty values
         #[ink(constructor)]
         pub fn new(
             name: String,
@@ -197,6 +323,23 @@ mod projects {
             }
         }
 
+        /// Assigns a coordinator to manage the project
+        ///
+        /// Only the DAO can call this function. The coordinator is selected
+        /// automatically based on availability from the calendar contract.
+        ///
+        /// # Returns
+        /// The AccountId of the assigned coordinator
+        ///
+        /// # Errors
+        /// - `NotAuthorized`: Caller is not the DAO
+        /// - `CalendarContractNotSet`: No calendar contract configured
+        /// - `NoAvailableCoordinators`: No coordinators available
+        ///
+        /// # State Changes
+        /// - Sets the coordinator field
+        /// - Updates status to CoordinatorAssigned
+        /// - Emits CoordinatorAssigned event
         #[ink(message)]
         pub fn assign_coordinator(&mut self) -> Result<AccountId> {
             let caller = self.env().caller();
@@ -217,6 +360,27 @@ mod projects {
             Ok(coordinator)
         }
 
+        /// Assigns team members to work on the project
+        ///
+        /// Only the assigned coordinator can call this function. Team members
+        /// are selected automatically from available workers in the calendar contract.
+        ///
+        /// # Parameters
+        /// - `_team_size`: Requested team size (currently unused, auto-determined)
+        ///
+        /// # Returns
+        /// Vector of assigned TeamMember structs
+        ///
+        /// # Errors
+        /// - `NotAuthorized`: Caller is not the assigned coordinator
+        /// - `CoordinatorNotAssigned`: No coordinator assigned to project
+        /// - `CalendarContractNotSet`: No calendar contract configured
+        /// - `NoAvailableTeamMembers`: No team members available
+        ///
+        /// # State Changes
+        /// - Populates the team_members field
+        /// - Updates status to TeamAssigned
+        /// - Emits TeamAssigned event
         #[ink(message)]
         pub fn assign_team(&mut self, _team_size: u8) -> Result<Vec<TeamMember>> {
             let caller = self.env().caller();
@@ -246,6 +410,29 @@ mod projects {
             Ok(team_members)
         }
 
+        /// Marks the project as completed with team member ratings
+        ///
+        /// Only the client can call this function once all tasks are completed.
+        /// The client must provide ratings for all team members.
+        ///
+        /// # Parameters
+        /// - `ratings`: Vector of (AccountId, rating) pairs for each team member
+        ///   where rating is 0-10
+        ///
+        /// # Errors
+        /// - `NotAuthorized`: Caller is not the client
+        /// - `ProjectAlreadyCompleted`: Project already completed
+        /// - `InvalidProjectState`: Project not in ScopeAccepted state
+        /// - `TasksNotCompleted`: Not all tasks are completed
+        /// - `RatingsCountMismatch`: Number of ratings doesn't match team size
+        /// - `InvalidRatingValue`: Rating value not between 0-10
+        /// - `TeamMemberNotFound`: Rating provided for non-existent team member
+        ///
+        /// # State Changes
+        /// - Updates team member ratings
+        /// - Sets status to Completed
+        /// - Updates paid_amount to total_cost
+        /// - Emits ProjectCompleted event
         #[ink(message)]
         pub fn mark_completed(&mut self, ratings: Vec<(AccountId, u8)>) -> Result<()> {
             let caller = self.env().caller();
@@ -304,7 +491,7 @@ mod projects {
                     .checked_sub(self.paid_amount)
                     .ok_or(Error::ArithmeticFailure)?;
 
-                // In a real implementation, this would trigger the remaining payment
+                // TODO: this would trigger the remaining payment
                 // to be transferred from client to coordinator/team
                 // For now, just update the paid amount
                 self.paid_amount = self.total_cost;
@@ -322,6 +509,17 @@ mod projects {
             Ok(())
         }
 
+        /// Retrieves basic project information
+        ///
+        /// # Returns
+        /// Tuple containing:
+        /// - Project name
+        /// - Client account ID
+        /// - DAO address
+        /// - Optional coordinator account ID
+        /// - Current project status
+        /// - Total project cost
+        /// - Amount already paid
         #[ink(message)]
         pub fn get_project_info(
             &self,
@@ -345,11 +543,24 @@ mod projects {
             )
         }
 
+        /// Returns the list of team members assigned to the project
+        ///
+        /// # Returns
+        /// Vector of TeamMember structs with roles and ratings (if completed)
         #[ink(message)]
         pub fn get_team(&self) -> Vec<TeamMember> {
             self.team_members.clone()
         }
 
+        /// Returns project scope information if defined
+        ///
+        /// # Returns
+        /// Optional tuple containing:
+        /// - Vector of task IDs
+        /// - Advance payment percentage
+        /// - Document hash
+        /// - Total project cost
+        /// - Amount already paid
         #[ink(message)]
         pub fn get_scope_info(&self) -> Option<(Vec<u8>, u8, Hash, Balance, Balance)> {
             self.scope.as_ref().map(|scope| {
@@ -364,6 +575,13 @@ mod projects {
             })
         }
 
+        /// Retrieves a specific task by its ID
+        ///
+        /// # Parameters
+        /// - `task_id`: The ID of the task to retrieve
+        ///
+        /// # Returns
+        /// Optional Task struct if found
         #[ink(message)]
         pub fn get_task(&self, task_id: u8) -> Option<Task> {
             if let Some(scope) = &self.scope {
@@ -373,6 +591,17 @@ mod projects {
             }
         }
 
+        /// Checks if a specific task is completed
+        ///
+        /// # Parameters
+        /// - `task_id`: The ID of the task to check
+        ///
+        /// # Returns
+        /// Boolean indicating if the task is completed
+        ///
+        /// # Errors
+        /// - `ScopeNotDefined`: Project scope not defined yet
+        /// - `TaskNotFound`: Task with specified ID not found
         #[ink(message)]
         pub fn get_task_completion_status(&self, task_id: u8) -> Result<bool> {
             if let Some(scope) = &self.scope {
@@ -387,6 +616,15 @@ mod projects {
             }
         }
 
+        /// Sets the calendar contract address for worker availability
+        ///
+        /// Only the client can call this function.
+        ///
+        /// # Parameters
+        /// - `calendar_contract`: Address of the calendar contract
+        ///
+        /// # Errors
+        /// - `NotAuthorized`: Caller is not the client
         #[ink(message)]
         pub fn set_calendar_contract(&mut self, calendar_contract: AccountId) -> Result<()> {
             let caller = self.env().caller();
@@ -399,6 +637,37 @@ mod projects {
             Ok(())
         }
 
+        /// Defines the project scope with tasks, payment terms, and documentation
+        ///
+        /// Only the assigned coordinator can call this function. This creates
+        /// the complete work breakdown structure for the project.
+        ///
+        /// # Parameters
+        /// - `tasks`: Vector of (id, complexity, cost, dependencies) tuples
+        /// - `advance_payment_percentage`: Percentage (0-100) to be paid upfront
+        /// - `document_hash`: Hash of the project specification document
+        ///
+        /// # Validation
+        /// - Task IDs must be unique
+        /// - Dependencies must reference valid task IDs
+        /// - No circular dependencies allowed
+        /// - Tasks should only depend on lower-numbered tasks
+        ///
+        /// # Errors
+        /// - `NotAuthorized`: Caller is not the assigned coordinator
+        /// - `CoordinatorNotAssigned`: No coordinator assigned
+        /// - `InvalidProjectState`: Project not in valid state for scope definition
+        /// - `ScopeAlreadyDefined`: Scope already exists
+        /// - `InvalidAdvancePaymentPercentage`: Percentage not 0-100
+        /// - `DuplicateTaskId`: Duplicate task IDs found
+        /// - `InvalidTaskId`: Invalid dependency reference
+        /// - `CircularDependency`: Circular dependency detected
+        ///
+        /// # State Changes
+        /// - Sets the project scope
+        /// - Calculates and sets total_cost
+        /// - Updates status to ScopeDefinedPendingApproval
+        /// - Emits ScopeDefined event
         #[ink(message)]
         pub fn define_scope(
             &mut self,
@@ -437,7 +706,6 @@ mod projects {
             // Get all task IDs for dependency validation and check for duplicates
             let mut task_ids: Vec<u8> = Vec::with_capacity(tasks.len());
             for (id, _, _, _) in &tasks {
-                // Use binary search for better performance when checking duplicates
                 match task_ids.binary_search(id) {
                     Ok(_) => return Err(Error::DuplicateTaskId),
                     Err(pos) => task_ids.insert(pos, *id),
@@ -508,6 +776,21 @@ mod projects {
             Ok(())
         }
 
+        /// Client accepts the defined project scope and makes advance payment
+        ///
+        /// Only the client can call this function after the scope is defined.
+        /// This triggers the advance payment calculation and project activation.
+        ///
+        /// # Errors
+        /// - `NotAuthorized`: Caller is not the client
+        /// - `ScopeNotDefined`: No scope defined yet
+        /// - `InvalidProjectState`: Not in ScopeDefinedPendingApproval state
+        ///
+        /// # State Changes
+        /// - Calculates and records advance payment
+        /// - Updates paid_amount
+        /// - Sets status to ScopeAccepted
+        /// - Emits ScopeAccepted event
         #[ink(message)]
         pub fn accept_scope(&mut self) -> Result<()> {
             let caller = self.env().caller();
@@ -550,6 +833,13 @@ mod projects {
             Ok(())
         }
 
+        /// Returns all tasks defined in the project scope
+        ///
+        /// # Returns
+        /// Vector of all Task structs
+        ///
+        /// # Errors
+        /// - `ScopeNotDefined`: Project scope not defined yet
         #[ink(message)]
         pub fn get_all_tasks(&self) -> Result<Vec<Task>> {
             if let Some(scope) = &self.scope {
@@ -568,6 +858,25 @@ mod projects {
                 .find(|(_, task)| task.id == task_id)
         }
 
+        /// Marks a specific task as completed
+        ///
+        /// Only the client can call this function. All task dependencies
+        /// must be completed before the task can be marked as completed.
+        ///
+        /// # Parameters
+        /// - `task_id`: ID of the task to mark as completed
+        ///
+        /// # Errors
+        /// - `NotAuthorized`: Caller is not the client
+        /// - `InvalidProjectState`: Project not in ScopeAccepted state
+        /// - `ScopeNotDefined`: Project scope not defined
+        /// - `TaskNotFound`: Task with specified ID not found
+        /// - `TaskAlreadyCompleted`: Task already marked as completed
+        /// - `DependenciesNotCompleted`: Task dependencies not completed yet
+        ///
+        /// # State Changes
+        /// - Marks the specified task as completed
+        /// - Emits TaskCompleted event
         #[ink(message)]
         pub fn complete_task(&mut self, task_id: u8) -> Result<()> {
             let caller = self.env().caller();
@@ -630,6 +939,17 @@ mod projects {
 
     // Private implementation for internal methods
     impl Project {
+        /// Internal function to select an available coordinator
+        ///
+        /// In test mode, returns a predefined account. In production,
+        /// queries the calendar contract for available coordinators.
+        ///
+        /// # Returns
+        /// AccountId of selected coordinator
+        ///
+        /// # Errors
+        /// - `CalendarContractNotSet`: No calendar contract configured
+        /// - `NoAvailableCoordinators`: No coordinators available
         fn select_coordinator(&self) -> Result<AccountId> {
             #[cfg(test)]
             {
@@ -674,6 +994,18 @@ mod projects {
             Err(Error::CalendarContractNotSet)
         }
 
+        /// Internal function to select available team members
+        ///
+        /// In test mode, returns a predefined team with Designer, Developer,
+        /// and Tester roles. In production, queries the calendar contract
+        /// for available workers and assigns them roles.
+        ///
+        /// # Returns
+        /// Vector of selected TeamMember structs
+        ///
+        /// # Errors
+        /// - `CalendarContractNotSet`: No calendar contract configured
+        /// - `NoAvailableTeamMembers`: No team members available
         fn select_team_members(&self) -> Result<Vec<TeamMember>> {
             #[cfg(test)]
             {
