@@ -1,6 +1,8 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 #![allow(clippy::cast_possible_truncation)]
 
+mod assignment;
+
 /// # Project Management Smart Contract
 ///
 /// This ink! smart contract manages software development projects with a structured workflow
@@ -26,7 +28,6 @@
 /// The contract integrates with a Calendar contract for worker availability management.
 #[ink::contract]
 mod projects {
-    use ink::env::call::{build_call, ExecutionInput, Selector};
     use ink::prelude::collections::BTreeMap;
     use ink::prelude::string::String;
     use ink::prelude::vec::Vec;
@@ -42,11 +43,11 @@ mod projects {
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     pub struct TeamMember {
         /// The blockchain account ID of the team member
-        account_id: AccountId,
+        pub(crate) account_id: AccountId,
         /// The role of the team member (e.g., "Developer", "Designer", "Tester")
-        role: String,
+        pub(crate) role: String,
         /// Optional rating from 0-10 given by client upon project completion
-        rating: Option<u8>,
+        pub(crate) rating: Option<u8>,
     }
 
     /// Defines the complexity level of a task for estimation purposes
@@ -146,7 +147,7 @@ mod projects {
         /// Current lifecycle status of the project
         status: ProjectStatus,
         /// Optional address of the calendar contract for worker availability
-        calendar_contract: Option<AccountId>,
+        pub(crate) calendar_contract: Option<AccountId>,
         /// Optional project scope defined by the coordinator
         scope: Option<ProjectScope>,
         /// Total cost of the project in tokens (sum of all task costs)
@@ -385,7 +386,7 @@ mod projects {
         /// - Updates status to TeamAssigned
         /// - Emits TeamAssigned event
         #[ink(message)]
-        pub fn assign_team(&mut self, _team_size: u8) -> Result<Vec<TeamMember>> {
+        pub fn assign_team(&mut self, ideal_team_size: u8) -> Result<Vec<TeamMember>> {
             let caller = self.env().caller();
 
             if let Some(coordinator) = self.coordinator {
@@ -396,7 +397,7 @@ mod projects {
                 return Err(Error::CoordinatorNotAssigned);
             }
 
-            let team_members = self.select_team_members()?;
+            let team_members = self.select_team_members(ideal_team_size)?;
             self.team_members = team_members.clone();
             self.status = ProjectStatus::TeamAssigned;
             let team_size_u32 = self
@@ -721,7 +722,7 @@ mod projects {
 
                 let task = Task {
                     id: *id,
-                    complexity: complexity.clone(),
+                    complexity: *complexity,
                     cost: *cost,
                     dependencies: dependencies.clone(),
                     completed: false,
@@ -750,7 +751,7 @@ mod projects {
 
             // Calculate total cost
             let mut total_cost: Balance = 0;
-            for (_, task) in &tasks_map {
+            for task in tasks_map.values() {
                 total_cost = total_cost.saturating_add(task.cost); // Prevent overflow
             }
 
@@ -934,172 +935,6 @@ mod projects {
             });
 
             Ok(())
-        }
-    }
-
-    // Private implementation for internal methods
-    impl Project {
-        /// Internal function to select an available coordinator
-        ///
-        /// In test mode, returns a predefined account. In production,
-        /// queries the calendar contract for available coordinators.
-        ///
-        /// # Returns
-        /// AccountId of selected coordinator
-        ///
-        /// # Errors
-        /// - `CalendarContractNotSet`: No calendar contract configured
-        /// - `NoAvailableCoordinators`: No coordinators available
-        fn select_coordinator(&self) -> Result<AccountId> {
-            #[cfg(test)]
-            {
-                // In tests, return the charlie account as coordinator
-                return Ok(
-                    ink::env::test::default_accounts::<ink::env::DefaultEnvironment>().charlie,
-                );
-            }
-
-            #[cfg(not(test))]
-            {
-                // Get calendar contract
-                let calendar_contract = match self.calendar_contract {
-                    Some(address) => address,
-                    None => return Err(Error::CalendarContractNotSet),
-                };
-
-                // Get available coordinators from calendar contract
-                let available_workers = build_call::<ink::env::DefaultEnvironment>()
-                    .call(calendar_contract)
-                    .transferred_value(0)
-                    .exec_input(
-                        ExecutionInput::new(Selector::new(ink::selector_bytes!(
-                            "get_available_workers"
-                        )))
-                        .push_arg(true), // is_coordinator = true
-                    )
-                    .returns::<Vec<AccountId>>()
-                    .invoke();
-
-                // Select the first available worker as coordinator
-                // In a real implementation, you might have more complex selection logic
-                if let Some(coordinator) = available_workers.first() {
-                    return Ok(*coordinator);
-                } else {
-                    return Err(Error::NoAvailableCoordinators);
-                }
-            }
-
-            // This is unreachable due to the cfg attributes, but needed for the compiler
-            #[allow(unreachable_code)]
-            Err(Error::CalendarContractNotSet)
-        }
-
-        /// Internal function to select available team members
-        ///
-        /// In test mode, returns a predefined team with Designer, Developer,
-        /// and Tester roles. In production, queries the calendar contract
-        /// for available workers and assigns them roles.
-        ///
-        /// # Returns
-        /// Vector of selected TeamMember structs
-        ///
-        /// # Errors
-        /// - `CalendarContractNotSet`: No calendar contract configured
-        /// - `NoAvailableTeamMembers`: No team members available
-        fn select_team_members(&self) -> Result<Vec<TeamMember>> {
-            #[cfg(test)]
-            {
-                // In tests, return a predefined team
-                let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
-                let mut team_members = Vec::new();
-
-                // Assign team members with predefined roles
-                team_members.push(TeamMember {
-                    account_id: accounts.django,
-                    role: String::from("Designer"),
-                    rating: None,
-                });
-
-                team_members.push(TeamMember {
-                    account_id: accounts.frank,
-                    role: String::from("Developer"),
-                    rating: None,
-                });
-
-                team_members.push(TeamMember {
-                    account_id: accounts.eve,
-                    role: String::from("Tester"),
-                    rating: None,
-                });
-
-                return Ok(team_members);
-            }
-
-            #[cfg(not(test))]
-            {
-                // Get calendar contract
-                let calendar_contract = match self.calendar_contract {
-                    Some(address) => address,
-                    None => return Err(Error::CalendarContractNotSet),
-                };
-
-                // Get available workers from calendar contract
-                let available_workers = build_call::<ink::env::DefaultEnvironment>()
-                    .call(calendar_contract)
-                    .transferred_value(0)
-                    .exec_input(
-                        ExecutionInput::new(Selector::new(ink::selector_bytes!(
-                            "get_available_workers"
-                        )))
-                        .push_arg(false), // is_coordinator = false
-                    )
-                    .returns::<Vec<AccountId>>()
-                    .invoke();
-
-                if available_workers.is_empty() {
-                    return Err(Error::NoAvailableTeamMembers);
-                }
-
-                // Create team members with default roles based on availability
-                let mut team_members = Vec::new();
-
-                // Assign first available worker as designer
-                if let Some(designer) = available_workers.first() {
-                    team_members.push(TeamMember {
-                        account_id: *designer,
-                        role: String::from("Designer"),
-                        rating: None,
-                    });
-                }
-
-                // Assign second available worker as developer
-                if let Some(developer) = available_workers.get(1) {
-                    team_members.push(TeamMember {
-                        account_id: *developer,
-                        role: String::from("Developer"),
-                        rating: None,
-                    });
-                }
-
-                // Assign third available worker as tester
-                if let Some(tester) = available_workers.get(2) {
-                    team_members.push(TeamMember {
-                        account_id: *tester,
-                        role: String::from("Tester"),
-                        rating: None,
-                    });
-                }
-
-                if team_members.is_empty() {
-                    return Err(Error::NoAvailableTeamMembers);
-                }
-
-                return Ok(team_members);
-            }
-
-            // This is unreachable due to the cfg attributes, but needed for the compiler
-            #[allow(unreachable_code)]
-            Err(Error::CalendarContractNotSet)
         }
     }
 
@@ -1359,6 +1194,107 @@ mod projects {
         }
 
         #[ink::test]
+        fn assign_team_works() {
+            // Setup accounts
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // Note: we don't need to mock the response since our
+            // implementation in select_team_members is overridden during tests
+
+            // Set caller to coordinator
+            test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+
+            // Create a project with a calendar contract
+            let mut project = Project::new(
+                String::from("Test Project"),
+                accounts.django,
+                Some(accounts.eve),
+            );
+
+            // Set coordinator
+            project.coordinator = Some(accounts.charlie);
+            project.status = ProjectStatus::CoordinatorAssigned;
+
+            // Assign team
+            let result = project.assign_team(2);
+            assert!(result.is_ok());
+
+            let team = result.unwrap();
+            assert_eq!(team.len(), 3);
+            // We don't need to check the exact roles since they're assigned based on the worker's skills
+            // We only need to verify the accounts are correct
+            assert!(team
+                .iter()
+                .any(|member| member.account_id == accounts.django));
+            assert!(team
+                .iter()
+                .any(|member| member.account_id == accounts.frank));
+            assert!(team.iter().any(|member| member.account_id == accounts.eve));
+
+            assert_eq!(project.status, ProjectStatus::TeamAssigned);
+        }
+
+        #[ink::test]
+        fn coordinator_assignment_requires_dao_authorization() {
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // Set caller to non-DAO account
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+
+            let mut project = Project::new(
+                String::from("Test Project"),
+                accounts.bob,
+                Some(accounts.eve),
+            );
+
+            // Should fail with NotAuthorized
+            let result = project.assign_coordinator();
+            assert_eq!(result, Err(Error::NotAuthorized));
+        }
+
+        #[ink::test]
+        fn team_assignment_requires_coordinator_authorization() {
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // Set caller to non-coordinator account
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+
+            let mut project = Project::new(
+                String::from("Test Project"),
+                accounts.bob,
+                Some(accounts.eve),
+            );
+
+            project.coordinator = Some(accounts.charlie);
+            project.status = ProjectStatus::CoordinatorAssigned;
+
+            // Should fail with NotAuthorized since caller is not the coordinator
+            let result = project.assign_team(3);
+            assert_eq!(result, Err(Error::NotAuthorized));
+        }
+
+        #[ink::test]
+        fn team_assignment_fails_without_coordinator() {
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // Set caller to any account
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+
+            let mut project = Project::new(
+                String::from("Test Project"),
+                accounts.bob,
+                Some(accounts.eve),
+            );
+
+            // No coordinator assigned
+            assert_eq!(project.coordinator, None);
+
+            // Should fail with CoordinatorNotAssigned
+            let result = project.assign_team(3);
+            assert_eq!(result, Err(Error::CoordinatorNotAssigned));
+        }
+
+        #[ink::test]
         fn define_scope_validation_works() {
             // Setup project
             let mut project = setup_project();
@@ -1410,47 +1346,6 @@ mod projects {
             );
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), Error::InvalidAdvancePaymentPercentage);
-        }
-
-        #[ink::test]
-        fn assign_team_works() {
-            // Setup accounts
-            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
-
-            // Note: we don't need to mock the response since our
-            // implementation in select_team_members is overridden during tests
-
-            // Set caller to coordinator
-            test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
-
-            // Create a project with a calendar contract
-            let mut project = Project::new(
-                String::from("Test Project"),
-                accounts.django,
-                Some(accounts.eve),
-            );
-
-            // Set coordinator
-            project.coordinator = Some(accounts.charlie);
-            project.status = ProjectStatus::CoordinatorAssigned;
-
-            // Assign team
-            let result = project.assign_team(2);
-            assert!(result.is_ok());
-
-            let team = result.unwrap();
-            assert_eq!(team.len(), 3);
-            // We don't need to check the exact roles since they're assigned based on the worker's skills
-            // We only need to verify the accounts are correct
-            assert!(team
-                .iter()
-                .any(|member| member.account_id == accounts.django));
-            assert!(team
-                .iter()
-                .any(|member| member.account_id == accounts.frank));
-            assert!(team.iter().any(|member| member.account_id == accounts.eve));
-
-            assert_eq!(project.status, ProjectStatus::TeamAssigned);
         }
 
         #[ink::test]
