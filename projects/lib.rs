@@ -28,7 +28,7 @@ mod assignment;
 /// The contract integrates with a Calendar contract for worker availability management.
 #[ink::contract]
 mod projects {
-    use ink::prelude::collections::BTreeMap;
+    use ink::prelude::collections::{BTreeMap, BTreeSet};
     use ink::prelude::string::String;
     use ink::prelude::vec::Vec;
 
@@ -64,6 +64,18 @@ mod projects {
         Weeks(u8),
     }
 
+    /// Status of a task in the approval process
+    #[derive(Debug, scale::Encode, scale::Decode, PartialEq, Clone)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
+    pub enum TaskStatus {
+        /// Task is proposed and awaiting client approval
+        Pending,
+        /// Task has been approved by client at the given block number
+        Approved(u32),
+        /// Task has been rejected by client at the given block number
+        Rejected(u32),
+    }
+
     /// Represents an individual work item within the project scope
     ///
     /// Tasks form the building blocks of project milestones and can have
@@ -72,15 +84,33 @@ mod projects {
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub struct Task {
         /// Unique identifier for the task within the project
-        id: u8,
+        pub id: u8,
         /// Complexity/effort estimate for the task
-        complexity: TaskComplexity,
+        pub complexity: TaskComplexity,
         /// Cost in tokens for completing this task
-        cost: Balance,
+        pub cost: Balance,
         /// List of task IDs that must be completed before this task can start
-        dependencies: Vec<u8>,
+        pub dependencies: Vec<u8>,
         /// Whether this task has been marked as completed
-        completed: bool,
+        pub completed: bool,
+        /// Current approval status of the task
+        pub status: TaskStatus,
+    }
+
+    /// Tracks a single revision of scope proposals
+    #[derive(Debug, scale::Encode, scale::Decode, PartialEq, Clone)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
+    pub struct ScopeRevision {
+        /// Version number of this revision
+        pub version: u32,
+        /// Block number when this revision was proposed
+        pub proposed_at: u32,
+        /// Task IDs proposed in this revision
+        pub proposed_task_ids: Vec<u8>,
+        /// Task IDs approved by client (empty if no response yet)
+        pub approved_task_ids: Vec<u8>,
+        /// Hash of project specification document for this revision
+        pub document_hash: Hash,
     }
 
     /// Defines the complete scope of work for the project
@@ -90,12 +120,14 @@ mod projects {
     #[derive(Debug, scale::Encode, scale::Decode, PartialEq, Clone)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub struct ProjectScope {
-        /// Map of task ID to task, ensuring unique IDs
-        tasks: BTreeMap<u8, Task>,
+        /// Map of task ID to task, including all historical tasks
+        pub tasks: BTreeMap<u8, Task>,
         /// Percentage (0-100) of total cost to be paid upfront by client
-        advance_payment_percentage: u8,
+        pub advance_payment_percentage: u8,
         /// Hash of project specification/requirements document
-        document_hash: Hash,
+
+        /// History of all scope revisions
+        pub revisions: Vec<ScopeRevision>,
     }
 
     /// Tracks the current state of the project through its lifecycle
@@ -105,12 +137,13 @@ mod projects {
     #[derive(Debug, scale::Encode, scale::Decode, PartialEq, Clone)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub enum ProjectStatus {
-        Created,                     // Initial state when project is created
-        CoordinatorAssigned,         // Coordinator has been assigned to the project
-        TeamAssigned,                // Team members have been assigned
-        ScopeDefinedPendingApproval, // Scope has been defined but not accepted by client
-        ScopeAccepted,               // Client has accepted the scope and made advance payment
-        Completed,                   // All tasks are completed and project is finalized
+        Created,                    // Initial state when project is created
+        CoordinatorAssigned,        // Coordinator has been assigned to the project
+        TeamAssigned,               // Team members have been assigned
+        ScopeProposalInProgress,    // Coordinator is actively proposing scope revisions
+        ScopePendingClientApproval, // Tasks proposed and awaiting client approval
+        ScopeAccepted,              // Client has accepted the scope and made advance payment
+        Completed,                  // All tasks are completed and project is finalized
     }
 
     /// Interface for the calendar contract that manages worker availability
@@ -220,6 +253,36 @@ mod projects {
         task_id: u8,
     }
 
+    /// Event emitted when coordinator proposes new tasks
+    #[ink(event)]
+    pub struct ScopeProposed {
+        #[ink(topic)]
+        project: AccountId,
+        #[ink(topic)]
+        coordinator: AccountId,
+        /// Version/revision number of this proposal
+        revision: u32,
+        /// Number of tasks proposed in this revision
+        task_count: u32,
+        /// Total cost of proposed tasks
+        total_cost: Balance,
+    }
+
+    /// Event emitted when client responds to scope proposal
+    #[ink(event)]
+    pub struct ScopeResponseReceived {
+        #[ink(topic)]
+        project: AccountId,
+        #[ink(topic)]
+        client: AccountId,
+        /// Revision number that was responded to
+        revision: u32,
+        /// Number of tasks approved
+        approved_count: u32,
+        /// Number of tasks rejected
+        rejected_count: u32,
+    }
+
     /// Comprehensive error types for all possible contract failure modes
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
@@ -280,6 +343,16 @@ mod projects {
         ArithmeticFailure,
         /// Too many tasks - project exceeds maximum allowed tasks
         TooManyTasks,
+        /// No tasks are currently pending approval
+        NoTasksPending,
+        /// Task dependencies reference non-approved tasks
+        DependenciesNotApproved,
+        /// Task has already been approved or rejected
+        TaskAlreadyDecided,
+        /// Invalid state for scope revision operation
+        InvalidRevisionState,
+        /// Task ID conflicts with existing approved task
+        TaskIdAlreadyExists,
     }
 
     /// Convenient Result type alias for contract operations
@@ -566,13 +639,12 @@ mod projects {
         /// - Total project cost
         /// - Amount already paid
         #[ink(message)]
-        pub fn get_scope_info(&self) -> Option<(Vec<u8>, u8, Hash, Balance, Balance)> {
+        pub fn get_scope_info(&self) -> Option<(Vec<u8>, u8, Balance, Balance)> {
             self.scope.as_ref().map(|scope| {
                 let task_ids: Vec<u8> = scope.tasks.keys().cloned().collect();
                 (
                     task_ids,
                     scope.advance_payment_percentage,
-                    scope.document_hash,
                     self.total_cost,
                     self.paid_amount,
                 )
@@ -669,40 +741,49 @@ mod projects {
         /// - Calculates and sets total_cost
         /// - Updates status to ScopeDefinedPendingApproval
         /// - Emits ScopeDefined event
+
+        /// Coordinator proposes tasks for the project scope
+        ///
+        /// This method allows coordinators to propose tasks iteratively, with the client
+        /// approving/rejecting specific tasks in subsequent calls to approve_scope.
+        ///
+        /// # Arguments
+        /// * `tasks` - Vector of (task_id, complexity, cost, dependencies) tuples
+        /// * `document_hash` - Optional hash of specification document
+        ///
+        /// # Returns
+        /// * `Ok(())` - Tasks successfully proposed
+        /// * `Err(Error)` - Various validation errors
+        ///
+        /// # Errors
+        /// - `NotAuthorized`: Caller is not the coordinator
+        /// - `CoordinatorNotAssigned`: No coordinator assigned
+        /// - `TaskIdAlreadyExists`: Task ID conflicts with approved task
+        /// - `DependenciesNotApproved`: Dependencies reference non-approved tasks
+        /// - `TooManyTasks`: Exceeds maximum task limit
+        ///
+        /// # State Changes
+        /// - Adds new tasks with Pending status
+        /// - Creates new scope revision
+        /// - Updates status to ScopePendingClientApproval
+        /// - Emits ScopeProposed event
         #[ink(message)]
-        pub fn define_scope(
+        pub fn propose_scope(
             &mut self,
             tasks: Vec<(u8, TaskComplexity, Balance, Vec<u8>)>,
             advance_payment_percentage: u8,
             document_hash: Hash,
         ) -> Result<()> {
-            /// Maximum number of tasks allowed per project
-            const MAX_TASKS: usize = 100;
+            const MAX_TASKS: u32 = 50;
             let caller = self.env().caller();
 
-            // Check if caller is the coordinator
-            if let Some(coordinator) = self.coordinator {
-                if caller != coordinator {
-                    return Err(Error::NotAuthorized);
-                }
-            } else {
-                return Err(Error::CoordinatorNotAssigned);
+            // Authorization check
+            if !self.is_coordinator_authorized(&caller) {
+                return Err(Error::NotAuthorized);
             }
 
-            // Check project state
-            if self.status != ProjectStatus::TeamAssigned
-                && self.status != ProjectStatus::CoordinatorAssigned
-            {
-                return Err(Error::InvalidProjectState);
-            }
-
-            // Check if scope is already defined
-            if self.scope.is_some() {
-                return Err(Error::ScopeAlreadyDefined);
-            }
-
-            // Check maximum tasks limit
-            if tasks.len() > MAX_TASKS {
+            // Validate task count
+            if tasks.len() as u32 > MAX_TASKS {
                 return Err(Error::TooManyTasks);
             }
 
@@ -711,95 +792,130 @@ mod projects {
                 return Err(Error::InvalidAdvancePaymentPercentage);
             }
 
-            // Use BTreeMap to ensure unique task IDs and efficient lookups
-            let mut tasks_map: BTreeMap<u8, Task> = BTreeMap::new();
+            // Initialize scope if it doesn't exist
+            if self.scope.is_none() {
+                self.scope = Some(ProjectScope {
+                    tasks: BTreeMap::new(),
+                    advance_payment_percentage,
+                    revisions: Vec::new(),
+                });
+            } else {
+                // Update advance payment percentage for existing scope
+                self.scope.as_mut().unwrap().advance_payment_percentage =
+                    advance_payment_percentage;
+            }
 
-            // First pass: create tasks and check for duplicates
-            for (id, complexity, cost, dependencies) in &tasks {
-                if tasks_map.contains_key(id) {
+            let block_number = self.env().block_number();
+            let scope = self.scope.as_mut().unwrap();
+            let revision_number = scope.revisions.len() as u32;
+
+            // Validate task IDs don't conflict with approved tasks
+            for (task_id, _, _, _) in &tasks {
+                if let Some(existing_task) = scope.tasks.get(task_id) {
+                    match existing_task.status {
+                        TaskStatus::Approved(_) => {
+                            return Err(Error::TaskIdAlreadyExists);
+                        }
+                        _ => {} // Allow reuse of rejected/pending IDs
+                    }
+                }
+            }
+
+            // Validate no duplicate task IDs within current proposal
+            let mut seen_ids = BTreeSet::new();
+            for (task_id, _, _, _) in &tasks {
+                if !seen_ids.insert(task_id) {
                     return Err(Error::DuplicateTaskId);
                 }
-
-                let task = Task {
-                    id: *id,
-                    complexity: *complexity,
-                    cost: *cost,
-                    dependencies: dependencies.clone(),
-                    completed: false,
-                };
-
-                tasks_map.insert(*id, task);
             }
 
-            // Second pass: validate task dependencies
-            for (id, task) in &tasks_map {
-                for dep_id in &task.dependencies {
-                    // Check if dependency exists
-                    if !tasks_map.contains_key(dep_id) {
-                        return Err(Error::InvalidTaskId);
-                    }
-                    // Check for circular dependencies (a task can't depend on itself)
-                    if *dep_id == *id {
-                        return Err(Error::CircularDependency);
-                    }
-                    // Tasks should only depend on tasks with lower IDs to prevent cycles
-                    if *dep_id > *id {
-                        return Err(Error::CircularDependency);
+            // Validate dependencies
+            for (_task_id, _, _, dependencies) in &tasks {
+                for dep_id in dependencies {
+                    // Check if dependency exists and is approved
+                    if let Some(dep_task) = scope.tasks.get(dep_id) {
+                        match dep_task.status {
+                            TaskStatus::Approved(_) => continue,
+                            _ => return Err(Error::DependenciesNotApproved),
+                        }
+                    } else {
+                        // Allow dependencies within same proposal
+                        let dep_in_proposal = tasks.iter().any(|(id, _, _, _)| id == dep_id);
+                        if !dep_in_proposal {
+                            return Err(Error::TaskNotFound);
+                        }
                     }
                 }
             }
 
-            // Calculate total cost
-            let mut total_cost: Balance = 0;
-            for task in tasks_map.values() {
-                total_cost = total_cost.saturating_add(task.cost); // Prevent overflow
+            // Create tasks with Pending status
+            let proposed_task_ids: Vec<u8> = tasks.iter().map(|(id, _, _, _)| *id).collect();
+            let mut total_cost = 0u128;
+
+            for (id, complexity, cost, dependencies) in tasks {
+                let task = Task {
+                    id,
+                    complexity,
+                    cost,
+                    dependencies,
+                    completed: false,
+                    status: TaskStatus::Pending,
+                };
+                total_cost = total_cost.saturating_add(cost);
+                scope.tasks.insert(id, task);
             }
 
-            let tasks_count = tasks_map
-                .len()
-                .try_into()
-                .map_err(|_| Error::ConversionType)?;
-
-            // Create scope
-            let project_scope = ProjectScope {
-                tasks: tasks_map,
-                advance_payment_percentage,
+            // Create revision record
+            let revision = ScopeRevision {
+                version: revision_number,
+                proposed_at: block_number,
+                proposed_task_ids: proposed_task_ids.clone(),
+                approved_task_ids: Vec::new(),
                 document_hash,
             };
+            scope.revisions.push(revision);
 
-            // Update project
-            self.scope = Some(project_scope);
-            self.total_cost = total_cost;
-            self.status = ProjectStatus::ScopeDefinedPendingApproval;
+            // Update project status
+            self.status = ProjectStatus::ScopePendingClientApproval;
 
             // Emit event
-            self.env().emit_event(ScopeDefined {
+            self.env().emit_event(ScopeProposed {
                 project: self.env().account_id(),
                 coordinator: caller,
-                tasks_count,
+                revision: revision_number,
+                task_count: proposed_task_ids.len() as u32,
                 total_cost,
             });
 
             Ok(())
         }
 
-        /// Client accepts the defined project scope and makes advance payment
+        /// Client approves specific tasks from the latest scope proposal
         ///
-        /// Only the client can call this function after the scope is defined.
-        /// This triggers the advance payment calculation and project activation.
+        /// This method allows clients to selectively approve tasks from the coordinator's
+        /// latest proposal. Tasks not in the approved list are automatically rejected.
+        ///
+        /// # Arguments
+        /// * `approved_task_ids` - Vector of task IDs that the client approves
+        ///
+        /// # Returns
+        /// * `Ok(())` - Tasks successfully approved/rejected
+        /// * `Err(Error)` - Various validation errors
         ///
         /// # Errors
         /// - `NotAuthorized`: Caller is not the client
         /// - `ScopeNotDefined`: No scope defined yet
-        /// - `InvalidProjectState`: Not in ScopeDefinedPendingApproval state
+        /// - `InvalidRevisionState`: No pending tasks to approve
+        /// - `TaskNotFound`: Approved task ID doesn't exist in latest proposal
         ///
         /// # State Changes
-        /// - Calculates and records advance payment
-        /// - Updates paid_amount
-        /// - Sets status to ScopeAccepted
-        /// - Emits ScopeAccepted event
+        /// - Updates task statuses to Approved or Rejected with block numbers
+        /// - Records approved tasks in latest revision
+        /// - Updates status to ScopeAccepted if any tasks approved
+        /// - Recalculates total_cost based on approved tasks
+        /// - Emits ScopeResponseReceived event
         #[ink(message)]
-        pub fn accept_scope(&mut self) -> Result<()> {
+        pub fn approve_scope(&mut self, approved_task_ids: Vec<u8>) -> Result<()> {
             let caller = self.env().caller();
 
             // Check if caller is the client
@@ -807,34 +923,84 @@ mod projects {
                 return Err(Error::NotAuthorized);
             }
 
-            // Check if scope is defined
-            let scope = match &self.scope {
-                Some(s) => s,
-                None => return Err(Error::ScopeNotDefined),
+            // Get values that require immutable borrows early
+            let block_number = self.env().block_number();
+            let project_id = self.env().account_id();
+
+            // Check if scope exists and get needed validation data
+            let (revision_version, proposed_task_ids, advance_payment_percentage) = {
+                let scope = self.scope.as_ref().ok_or(Error::ScopeNotDefined)?;
+
+                if scope.revisions.is_empty() {
+                    return Err(Error::InvalidRevisionState);
+                }
+
+                let latest_revision = scope.revisions.last().unwrap();
+
+                if latest_revision.proposed_task_ids.is_empty() {
+                    return Err(Error::NoTasksPending);
+                }
+
+                (
+                    latest_revision.version,
+                    latest_revision.proposed_task_ids.clone(),
+                    scope.advance_payment_percentage,
+                )
             };
 
-            // Check if the status is correct
-            if self.status != ProjectStatus::ScopeDefinedPendingApproval {
-                return Err(Error::InvalidProjectState);
+            // Validate all approved task IDs exist in the latest proposal
+            for task_id in &approved_task_ids {
+                if !proposed_task_ids.contains(task_id) {
+                    return Err(Error::TaskNotFound);
+                }
             }
 
-            // Calculate advance payment
-            let advance_payment = self
-                .total_cost
-                .saturating_mul(scope.advance_payment_percentage as u128)
-                .saturating_div(100);
+            // Now perform all mutable operations
+            let scope = self.scope.as_mut().unwrap();
+            let latest_revision = scope.revisions.last_mut().unwrap();
 
-            // Deduct advance payment (in a real implementation, this would involve token transfers)
-            self.paid_amount = advance_payment;
+            // Update task statuses
+            for task_id in &proposed_task_ids {
+                if let Some(task) = scope.tasks.get_mut(task_id) {
+                    task.status = if approved_task_ids.contains(task_id) {
+                        TaskStatus::Approved(block_number)
+                    } else {
+                        TaskStatus::Rejected(block_number)
+                    };
+                }
+            }
 
-            // Update status
-            self.status = ProjectStatus::ScopeAccepted;
+            // Record approved tasks in revision
+            latest_revision.approved_task_ids = approved_task_ids.clone();
+
+            // Recalculate total cost based on all approved tasks
+            self.total_cost = scope
+                .tasks
+                .values()
+                .filter(|task| matches!(task.status, TaskStatus::Approved(_)))
+                .map(|task| task.cost)
+                .sum();
+
+            // Update project status and calculate advance payment if any tasks approved
+            if !approved_task_ids.is_empty() {
+                self.status = ProjectStatus::ScopeAccepted;
+
+                // Calculate advance payment
+                let advance_payment = self
+                    .total_cost
+                    .saturating_mul(advance_payment_percentage as u128)
+                    .saturating_div(100);
+
+                self.paid_amount = advance_payment;
+            }
 
             // Emit event
-            self.env().emit_event(ScopeAccepted {
-                project: self.env().account_id(),
+            self.env().emit_event(ScopeResponseReceived {
+                project: project_id,
                 client: caller,
-                advance_payment,
+                revision: revision_version,
+                approved_count: approved_task_ids.len() as u32,
+                rejected_count: (proposed_task_ids.len() - approved_task_ids.len()) as u32,
             });
 
             Ok(())
@@ -936,6 +1102,73 @@ mod projects {
 
             Ok(())
         }
+
+        /// Get all tasks with Pending status from the latest revision
+        pub fn get_pending_tasks(&self) -> Vec<&Task> {
+            if let Some(scope) = &self.scope {
+                if let Some(latest_revision) = scope.revisions.last() {
+                    return latest_revision
+                        .proposed_task_ids
+                        .iter()
+                        .filter_map(|id| scope.tasks.get(id))
+                        .filter(|task| matches!(task.status, TaskStatus::Pending))
+                        .collect();
+                }
+            }
+            Vec::new()
+        }
+
+        /// Calculate total cost of all approved tasks
+        pub fn get_approved_total_cost(&self) -> u128 {
+            self.scope.as_ref().map_or(0, |scope| {
+                scope
+                    .tasks
+                    .values()
+                    .filter(|task| matches!(task.status, TaskStatus::Approved(_)))
+                    .map(|task| task.cost)
+                    .sum()
+            })
+        }
+
+        /// Get revision information for when a task was proposed
+        pub fn get_task_proposal_info(&self, task_id: u8) -> Option<(u32, u32)> {
+            self.scope.as_ref().and_then(|scope| {
+                scope
+                    .revisions
+                    .iter()
+                    .enumerate()
+                    .find(|(_, rev)| rev.proposed_task_ids.contains(&task_id))
+                    .map(|(idx, rev)| (idx as u32, rev.proposed_at))
+            })
+        }
+
+        /// Get tasks that were rejected in a specific revision
+        pub fn get_rejected_tasks_in_revision(&self, revision: u32) -> Vec<&Task> {
+            if let Some(scope) = &self.scope {
+                if let Some(rev) = scope.revisions.get(revision as usize) {
+                    return rev
+                        .proposed_task_ids
+                        .iter()
+                        .filter(|id| !rev.approved_task_ids.contains(id))
+                        .filter_map(|id| scope.tasks.get(id))
+                        .collect();
+                }
+            }
+            Vec::new()
+        }
+
+        /// Get the current (latest) scope revision
+        pub fn get_current_revision(&self) -> Option<&ScopeRevision> {
+            self.scope.as_ref().and_then(|scope| scope.revisions.last())
+        }
+
+        /// Check if caller is authorized as coordinator
+        fn is_coordinator_authorized(&self, caller: &AccountId) -> bool {
+            match &self.coordinator {
+                Some(coordinator) => coordinator == caller,
+                None => false,
+            }
+        }
     }
 
     #[cfg(test)]
@@ -967,37 +1200,39 @@ mod projects {
 
         fn setup_test_tasks() -> Vec<(u8, TaskComplexity, Balance, Vec<u8>)> {
             vec![
-                (1, TaskComplexity::Days(3), 1000, vec![]),
-                (2, TaskComplexity::Days(5), 2000, vec![1]),
-                (3, TaskComplexity::Weeks(1), 3000, vec![1, 2]),
+                (1u8, TaskComplexity::Days(3), 1000u128, vec![]),
+                (2u8, TaskComplexity::Days(5), 2000u128, vec![1u8]),
+                (3u8, TaskComplexity::Weeks(1), 3000u128, vec![1u8, 2u8]),
             ]
         }
 
         // No unused helper functions
 
         #[ink::test]
-        fn define_scope_works() {
+        fn propose_scope_basic_works() {
             // Setup project
             let mut project = setup_project();
             let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
 
-            // Define scope (as coordinator)
+            // Propose scope (as coordinator)
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
             let tasks = setup_test_tasks();
 
-            let result = project.define_scope(
-                tasks,
-                30, // 30% advance payment
-                Hash::from([1u8; 32]),
-            );
+            let result = project.propose_scope(tasks, 30, Hash::from([1u8; 32]));
             assert!(result.is_ok());
-            assert_eq!(project.status, ProjectStatus::ScopeDefinedPendingApproval);
-            assert_eq!(project.total_cost, 6000);
+            assert_eq!(project.status, ProjectStatus::ScopePendingClientApproval);
 
-            // Accept scope (as client)
+            // Verify scope structure
+            let scope = project.scope.as_ref().unwrap();
+            assert_eq!(scope.tasks.len(), 3);
+            assert_eq!(scope.revisions.len(), 1);
+
+            // Approve all tasks (as client)
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            let result = project.accept_scope();
+            let result = project.approve_scope(vec![1, 2, 3]);
             assert!(result.is_ok());
+            assert_eq!(project.status, ProjectStatus::ScopeAccepted);
+            assert_eq!(project.total_cost, 6000);
             assert_eq!(project.status, ProjectStatus::ScopeAccepted);
             assert_eq!(project.paid_amount, 1800); // 30% of 6000
 
@@ -1064,13 +1299,13 @@ mod projects {
                 (4, TaskComplexity::Abstract(4), 1500, vec![2]),
             ];
 
-            // Define scope and accept it
+            // Propose scope and approve it
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
-            let result = project.define_scope(tasks, 20, Hash::from([1u8; 32]));
+            let result = project.propose_scope(tasks, 20, Hash::from([1u8; 32]));
             assert!(result.is_ok());
 
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            let result = project.accept_scope();
+            let result = project.approve_scope(vec![1, 2, 3]);
             assert!(result.is_ok());
 
             // Try to complete task with dependencies not completed
@@ -1121,14 +1356,14 @@ mod projects {
             ];
 
             // Define scope and accept it
-            // Define scope as coordinator
+            // Propose scope as coordinator
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
-            let result = project.define_scope(tasks, 20, Hash::from([1u8; 32]));
+            let result = project.propose_scope(tasks, 20, Hash::from([1u8; 32]));
             assert!(result.is_ok());
 
-            // Accept scope as client
+            // Approve scope as client
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            let result = project.accept_scope();
+            let result = project.approve_scope(vec![1, 2, 3]);
             assert!(result.is_ok());
 
             // Complete only some tasks (not all)
@@ -1295,51 +1530,50 @@ mod projects {
         }
 
         #[ink::test]
-        fn define_scope_validation_works() {
+        fn propose_scope_validation_works() {
             // Setup project
             let mut project = setup_project();
             let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
 
-            // Try to define scope with invalid parameters
+            // Try to propose scope with invalid parameters
 
-            // 1. Try to define scope as non-coordinator
+            // 1. Try to propose scope as non-coordinator
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.eve); // Use a completely different account
             let tasks = vec![(1, TaskComplexity::Days(3), 1000, vec![])];
-            let result = project.define_scope(tasks.clone(), 30, Hash::from([1u8; 32]));
+            let result = project.propose_scope(tasks.clone(), 30, Hash::from([1u8; 32]));
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), Error::NotAuthorized);
 
-            // 2. Try to define scope with duplicate task IDs
+            // 2. Try to propose scope with duplicate task IDs
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
             let tasks = vec![
                 (1, TaskComplexity::Days(3), 1000, vec![]),
                 (1, TaskComplexity::Days(5), 2000, vec![]),
             ];
-            let result = project.define_scope(tasks, 30, Hash::from([1u8; 32]));
+            let result = project.propose_scope(tasks, 30, Hash::from([1u8; 32]));
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), Error::DuplicateTaskId);
 
-            // 3. Try to define scope with invalid dependencies
+            // 3. Try to propose scope with invalid dependency
             let tasks = vec![
                 (1, TaskComplexity::Days(3), 1000, vec![]),
                 (2, TaskComplexity::Days(5), 2000, vec![3]), // Depends on non-existent task
             ];
-            let result = project.define_scope(tasks, 30, Hash::from([1u8; 32]));
+            let result = project.propose_scope(tasks, 30, Hash::from([1u8; 32]));
             assert!(result.is_err());
-            assert_eq!(result.unwrap_err(), Error::InvalidTaskId);
+            assert_eq!(result.unwrap_err(), Error::TaskNotFound);
 
-            // 4. Try to define scope with circular dependencies
+            // 4. Try to propose scope with dependencies within same proposal (should succeed)
             let tasks = vec![
-                (1, TaskComplexity::Days(3), 1000, vec![2]), // Circular reference
-                (2, TaskComplexity::Days(5), 2000, vec![1]), // Circular reference
+                (1, TaskComplexity::Days(3), 1000, vec![2]),
+                (2, TaskComplexity::Days(5), 2000, vec![]), // Remove circular reference
             ];
-            let result = project.define_scope(tasks, 30, Hash::from([1u8; 32]));
-            assert!(result.is_err());
-            assert_eq!(result.unwrap_err(), Error::CircularDependency);
+            let result = project.propose_scope(tasks, 30, Hash::from([1u8; 32]));
+            assert!(result.is_ok());
 
             // 5. Try with invalid advance payment percentage
             let tasks = vec![(1, TaskComplexity::Days(3), 1000, vec![])];
-            let result = project.define_scope(
+            let result = project.propose_scope(
                 tasks,
                 101, // Over 100%
                 Hash::from([1u8; 32]),
@@ -1408,10 +1642,10 @@ mod projects {
             // Try to create more than 100 tasks (should fail)
             let mut tasks = Vec::new();
             for i in 1..=101 {
-                tasks.push((i as u8, TaskComplexity::Days(1), 100, vec![]));
+                tasks.push((i as u8, TaskComplexity::Days(1), 100u128, vec![]));
             }
 
-            let result = project.define_scope(tasks, 30, Hash::from([1u8; 32]));
+            let result = project.propose_scope(tasks, 30, Hash::from([1u8; 32]));
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), Error::TooManyTasks);
         }
@@ -1431,7 +1665,7 @@ mod projects {
                 (4, TaskComplexity::Days(1), 150, vec![2, 3]),
             ];
 
-            let result = project.define_scope(tasks, 25, Hash::from([2u8; 32]));
+            let result = project.propose_scope(tasks, 25, Hash::from([2u8; 32]));
             assert!(result.is_ok());
 
             // Verify tasks can be retrieved by ID
@@ -1446,7 +1680,7 @@ mod projects {
 
             // Test task completion with dependencies
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            project.accept_scope().unwrap();
+            project.approve_scope(vec![1, 2, 3, 4]).unwrap();
 
             // Complete task 1 first
             let result = project.complete_task(1);
@@ -1481,7 +1715,7 @@ mod projects {
                 (1, TaskComplexity::Days(3), 300, vec![]), // Duplicate ID
             ];
 
-            let result = project.define_scope(tasks, 30, Hash::from([3u8; 32]));
+            let result = project.propose_scope(tasks, 30, Hash::from([3u8; 32]));
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), Error::DuplicateTaskId);
         }
@@ -1499,15 +1733,20 @@ mod projects {
                 (3, TaskComplexity::Weeks(2), 2000, vec![1, 2]),
             ];
 
-            let result = project.define_scope(valid_tasks, 40, Hash::from([4u8; 32]));
+            let result = project.propose_scope(valid_tasks, 40, Hash::from([4u8; 32]));
+            assert!(result.is_ok());
+
+            // Approve the first set of tasks
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            let result = project.approve_scope(vec![1, 2, 3]);
             assert!(result.is_ok());
             assert_eq!(project.total_cost, 3500);
 
-            // Test 2: Try to redefine scope while still in ScopeDefinedPendingApproval state (should fail)
+            // Test 2: Propose additional tasks after approving first revision
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
             let new_tasks = vec![(4, TaskComplexity::Days(1), 200, vec![])];
-            let result = project.define_scope(new_tasks, 30, Hash::from([5u8; 32]));
-            assert!(result.is_err());
-            assert_eq!(result.unwrap_err(), Error::InvalidProjectState);
+            let result = project.propose_scope(new_tasks, 30, Hash::from([5u8; 32]));
+            assert!(result.is_ok());
         }
 
         #[ink::test]
@@ -1523,7 +1762,7 @@ mod projects {
                 (128, TaskComplexity::Days(1), 150, vec![0]),
             ];
 
-            let result = project.define_scope(tasks, 50, Hash::from([6u8; 32]));
+            let result = project.propose_scope(tasks, 50, Hash::from([6u8; 32]));
             assert!(result.is_ok());
 
             // Test retrieval of edge case tasks
@@ -1533,11 +1772,323 @@ mod projects {
 
             // Test completion order with edge cases
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            project.accept_scope().unwrap();
+            project.approve_scope(vec![0, 255, 128]).unwrap();
 
             assert!(project.complete_task(0).is_ok());
             assert!(project.complete_task(128).is_ok());
             assert!(project.complete_task(255).is_ok());
+        }
+
+        #[ink::test]
+        fn propose_scope_works() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // Set caller as coordinator
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+
+            // Propose initial scope with coordinator-defined task IDs
+            let tasks = vec![
+                (101, TaskComplexity::Days(3), 1000, vec![]),
+                (102, TaskComplexity::Days(5), 2000, vec![101]),
+                (103, TaskComplexity::Weeks(1), 3000, vec![101, 102]),
+            ];
+
+            let result = project.propose_scope(tasks, 30, Hash::from([1u8; 32]));
+            assert!(result.is_ok());
+            assert_eq!(project.status, ProjectStatus::ScopePendingClientApproval);
+
+            // Verify scope structure
+            let scope = project.scope.as_ref().unwrap();
+            assert_eq!(scope.tasks.len(), 3);
+            assert_eq!(scope.revisions.len(), 1);
+
+            // Verify all tasks are pending
+            let pending_tasks = project.get_pending_tasks();
+            assert_eq!(pending_tasks.len(), 3);
+        }
+
+        #[ink::test]
+        fn approve_scope_works() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // First propose scope (as coordinator)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks = vec![
+                (101, TaskComplexity::Days(3), 1000, vec![]),
+                (102, TaskComplexity::Days(5), 2000, vec![101]),
+                (103, TaskComplexity::Weeks(1), 3000, vec![101]),
+            ];
+            project
+                .propose_scope(tasks, 30, Hash::from([1u8; 32]))
+                .unwrap();
+
+            // Then approve subset of tasks (as client)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            let approved_ids = vec![101, 103]; // Approve tasks 101 and 103, reject 102
+
+            let result = project.approve_scope(approved_ids);
+            assert!(result.is_ok());
+            assert_eq!(project.status, ProjectStatus::ScopeAccepted);
+
+            // Verify task statuses
+            let scope = project.scope.as_ref().unwrap();
+            assert!(matches!(
+                scope.tasks.get(&101).unwrap().status,
+                TaskStatus::Approved(_)
+            ));
+            assert!(matches!(
+                scope.tasks.get(&102).unwrap().status,
+                TaskStatus::Rejected(_)
+            ));
+            assert!(matches!(
+                scope.tasks.get(&103).unwrap().status,
+                TaskStatus::Approved(_)
+            ));
+
+            // Verify revision tracking
+            assert_eq!(scope.revisions[0].approved_task_ids, vec![101, 103]);
+        }
+
+        #[ink::test]
+        fn iterative_scope_proposal_works() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // First proposal (as coordinator)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks1 = vec![
+                (201, TaskComplexity::Days(2), 500, vec![]),
+                (202, TaskComplexity::Days(3), 800, vec![201]),
+            ];
+            project
+                .propose_scope(tasks1, 30, Hash::from([1u8; 32]))
+                .unwrap();
+
+            // Client partially approves (as client)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            project.approve_scope(vec![201]).unwrap(); // Only approve task 201
+
+            // Second proposal with new tasks (as coordinator)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks2 = vec![
+                (203, TaskComplexity::Days(4), 1200, vec![201]), // Depends on approved task
+                (204, TaskComplexity::Weeks(1), 2000, vec![201, 203]),
+            ];
+            project
+                .propose_scope(tasks2, 30, Hash::from([2u8; 32]))
+                .unwrap();
+
+            // Verify revision history
+            let scope = project.scope.as_ref().unwrap();
+            assert_eq!(scope.revisions.len(), 2);
+            assert_eq!(scope.revisions[0].proposed_task_ids, vec![201, 202]);
+            assert_eq!(scope.revisions[0].approved_task_ids, vec![201]);
+            assert_eq!(scope.revisions[1].proposed_task_ids, vec![203, 204]);
+
+            // Verify total tasks
+            assert_eq!(scope.tasks.len(), 4); // All tasks kept in history
+        }
+
+        #[ink::test]
+        fn task_id_conflict_prevention() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // First proposal
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks1 = vec![(31, TaskComplexity::Days(1), 100, vec![])];
+            project
+                .propose_scope(tasks1, 30, Hash::from([1u8; 32]))
+                .unwrap();
+
+            // Approve the task
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            project.approve_scope(vec![31]).unwrap();
+
+            // Try to propose new task with same ID as approved task - should fail
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks2 = vec![(31, TaskComplexity::Days(2), 200, vec![])];
+            let result = project.propose_scope(tasks2, 30, Hash::from([1u8; 32]));
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), Error::TaskIdAlreadyExists);
+        }
+
+        #[ink::test]
+        fn task_id_reuse_after_rejection() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // First proposal
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks1 = vec![(41, TaskComplexity::Days(1), 100, vec![])];
+            project
+                .propose_scope(tasks1, 30, Hash::from([1u8; 32]))
+                .unwrap();
+
+            // Reject the task (approve empty list)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            project.approve_scope(vec![]).unwrap();
+
+            // Should be able to reuse rejected task ID in new proposal
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks2 = vec![(41, TaskComplexity::Days(2), 200, vec![])];
+            let result = project.propose_scope(tasks2, 30, Hash::from([1u8; 32]));
+            assert!(result.is_ok());
+        }
+
+        #[ink::test]
+        fn dependency_validation_with_revisions() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // First proposal with task that will be approved
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks1 = vec![(51, TaskComplexity::Days(1), 100, vec![])];
+            project
+                .propose_scope(tasks1, 30, Hash::from([1u8; 32]))
+                .unwrap();
+
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            project.approve_scope(vec![51]).unwrap();
+
+            // Second proposal with task that will be rejected
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks2 = vec![(52, TaskComplexity::Days(2), 200, vec![51])];
+            project
+                .propose_scope(tasks2, 30, Hash::from([2u8; 32]))
+                .unwrap();
+
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            project.approve_scope(vec![]).unwrap(); // Reject task 502
+
+            // Third proposal - should be able to depend on approved task 501
+            // but should fail if trying to depend on rejected task 502
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks3_valid = vec![(53, TaskComplexity::Days(3), 300, vec![51])];
+            assert!(project
+                .propose_scope(tasks3_valid, 30, Hash::from([3u8; 32]))
+                .is_ok());
+
+            // Reset and try invalid dependency
+            project.scope.as_mut().unwrap().revisions.pop(); // Remove last revision
+            project.scope.as_mut().unwrap().tasks.remove(&53);
+
+            let tasks3_invalid = vec![(53, TaskComplexity::Days(3), 300, vec![52])];
+            let result = project.propose_scope(tasks3_invalid, 30, Hash::from([3u8; 32]));
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), Error::DependenciesNotApproved);
+        }
+
+        #[ink::test]
+        fn materialized_view_methods_work() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // Setup scenario with mixed task statuses
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks = vec![
+                (61, TaskComplexity::Days(1), 100, vec![]),
+                (62, TaskComplexity::Days(2), 200, vec![]),
+                (63, TaskComplexity::Days(3), 300, vec![]),
+            ];
+            project
+                .propose_scope(tasks, 30, Hash::from([1u8; 32]))
+                .unwrap();
+
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            project.approve_scope(vec![61, 63]).unwrap(); // Approve 61,63, reject 62
+
+            // Test get_approved_total_cost
+            assert_eq!(project.get_approved_total_cost(), 400); // 100 + 300
+
+            // Test get_pending_tasks (should be empty after approval)
+            assert_eq!(project.get_pending_tasks().len(), 0);
+
+            // Test get_task_proposal_info
+            let (revision, _block) = project.get_task_proposal_info(61).unwrap();
+            assert_eq!(revision, 0);
+
+            // Test get_rejected_tasks_in_revision
+            let rejected = project.get_rejected_tasks_in_revision(0);
+            assert_eq!(rejected.len(), 1);
+            assert_eq!(rejected[0].id, 62);
+        }
+
+        #[ink::test]
+        fn unauthorized_operations_fail() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // Non-coordinator tries to propose scope
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+            let tasks = vec![(71, TaskComplexity::Days(1), 100, vec![])];
+            let result = project.propose_scope(tasks, 30, Hash::from([1u8; 32]));
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), Error::NotAuthorized);
+
+            // Setup valid proposal first
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks = vec![(71, TaskComplexity::Days(1), 100, vec![])];
+            project
+                .propose_scope(tasks, 30, Hash::from([1u8; 32]))
+                .unwrap();
+
+            // Non-client tries to approve scope
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+            let result = project.approve_scope(vec![71]);
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), Error::NotAuthorized);
+        }
+
+        #[ink::test]
+        fn scope_revision_tracking() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // Multiple proposals and approvals
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+
+            // First revision
+            let tasks1 = vec![(81, TaskComplexity::Days(1), 100, vec![])];
+            project
+                .propose_scope(tasks1, 30, Hash::from([1u8; 32]))
+                .unwrap();
+
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            project.approve_scope(vec![81]).unwrap();
+
+            // Second revision
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks2 = vec![
+                (82, TaskComplexity::Days(2), 200, vec![81]),
+                (83, TaskComplexity::Days(3), 300, vec![]),
+            ];
+            project
+                .propose_scope(tasks2, 30, Hash::from([2u8; 32]))
+                .unwrap();
+
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            project.approve_scope(vec![82]).unwrap(); // Approve 82, reject 83
+
+            // Verify revision structure
+            let scope = project.scope.as_ref().unwrap();
+            assert_eq!(scope.revisions.len(), 2);
+
+            // First revision
+            assert_eq!(scope.revisions[0].version, 0);
+            assert_eq!(scope.revisions[0].proposed_task_ids, vec![81]);
+            assert_eq!(scope.revisions[0].approved_task_ids, vec![81]);
+
+            // Second revision
+            assert_eq!(scope.revisions[1].version, 1);
+            assert_eq!(scope.revisions[1].proposed_task_ids, vec![82, 83]);
+            assert_eq!(scope.revisions[1].approved_task_ids, vec![82]);
+
+            // Test get_current_revision
+            let current = project.get_current_revision().unwrap();
+            assert_eq!(current.version, 1);
         }
     }
 }
