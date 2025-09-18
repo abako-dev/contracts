@@ -5,12 +5,12 @@ authors = ["[your_name] <[your_email]>"]
 edition = "2021"
 
 [dependencies]
-ink = { git = "https://github.com/use-ink/ink", tag = "v6.0.0-alpha.3", version = "6.0.0-alpha.3", default-features = false, features = ["unstable-hostfn"] }
+ink = { git = "https://github.com/use-ink/ink.git", tag = "v6.0.0-alpha.4", default-features = false, features = ["unstable-hostfn"] }
 scale = { package = "parity-scale-codec", version = "3", default-features = false, features = ["derive"] }
 scale-info = { version = "2.6", default-features = false, features = ["derive"], optional = true }
 
 [dev-dependencies]
-ink_e2e = { git = "https://github.com/use-ink/ink", tag = "v6.0.0-alpha.3", version = "6.0.0-alpha.3" }
+ink_e2e = { git = "https://github.com/use-ink/ink.git", tag = "v6.0.0-alpha.4", default-features = false }
 
 [lib]
 path = "lib.rs"

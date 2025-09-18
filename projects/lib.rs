@@ -31,7 +31,8 @@ mod projects {
     use ink::prelude::collections::{BTreeMap, BTreeSet};
     use ink::prelude::string::String;
     use ink::prelude::vec::Vec;
-    use ink::H160;
+    // use ink::H160;
+    type Account = ink::H160;
 
     #[cfg(feature = "std")]
     use ink::storage::traits::StorageLayout;
@@ -44,7 +45,7 @@ mod projects {
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     pub struct TeamMember {
         /// The blockchain account ID of the team member
-        pub(crate) account_id: H160,
+        pub(crate) account_id: Account,
         /// The role of the team member (e.g., "Developer", "Designer", "Tester")
         pub(crate) role: String,
         /// Optional rating from 0-10 given by client upon project completion
@@ -152,14 +153,14 @@ mod projects {
     /// The calendar contract maintains schedules and availability of coordinators
     /// and team members across all projects in the ecosystem.
     #[ink::trait_definition]
-    pub trait _Calendar {
+    pub trait Calendar {
         /// Check if a specific worker is available for a given project
         #[ink(message)]
-        fn _is_available(&self, account_id: H160, project_id: H160) -> bool;
+        fn is_available(&self, account_id: Account, project_id: Account) -> bool;
 
         /// Get list of all workers available for assignment to a project
         #[ink(message)]
-        fn _get_available_workers(&self, project_id: H160) -> Vec<H160>;
+        fn get_available_workers(&self, project_id: Account) -> Vec<Account>;
     }
 
     /// Main project contract storage containing all project state
@@ -171,17 +172,17 @@ mod projects {
         /// Human-readable name for the project (max 50 characters)
         name: String,
         /// Account ID of the client who created and funds the project
-        client: H160,
+        client: Account,
         /// Address of the DAO that manages coordinator assignments
-        dao_address: H160,
+        dao_address: Account,
         /// Optional coordinator assigned by the DAO to manage the project
-        coordinator: Option<H160>,
+        coordinator: Option<Account>,
         /// List of team members assigned to work on the project
         team_members: Vec<TeamMember>,
         /// Current lifecycle status of the project
         status: ProjectStatus,
         /// Optional address of the calendar contract for worker availability
-        pub(crate) calendar_contract: Option<H160>,
+        pub(crate) calendar_contract: Option<Account>,
         /// Optional project scope defined by the coordinator
         scope: Option<ProjectScope>,
         /// Total cost of the project in tokens (sum of all task costs)
@@ -196,7 +197,7 @@ mod projects {
         #[ink(topic)]
         project: String,
         #[ink(topic)]
-        coordinator: H160,
+        coordinator: Account,
     }
 
     /// Event emitted when team members are assigned to the project
@@ -214,18 +215,18 @@ mod projects {
         #[ink(topic)]
         project: String,
         #[ink(topic)]
-        client: H160,
+        client: Account,
         /// Amount of final payment released to team
         final_payment: Balance,
     }
 
     /// Event emitted when the project scope is defined by the coordinator
     #[ink(event)]
-    pub struct _ScopeDefined {
+    pub struct ScopeDefined {
         #[ink(topic)]
-        project: H160,
+        project: Account,
         #[ink(topic)]
-        coordinator: H160,
+        coordinator: Account,
         /// Number of tasks defined in the scope
         tasks_count: u8,
         /// Total cost of all tasks in the scope
@@ -234,11 +235,11 @@ mod projects {
 
     /// Event emitted when the client accepts the project scope
     #[ink(event)]
-    pub struct _ScopeAccepted {
+    pub struct ScopeAccepted {
         #[ink(topic)]
-        project: H160,
+        project: Account,
         #[ink(topic)]
-        client: H160,
+        client: Account,
         /// Amount paid upfront by the client
         advance_payment: Balance,
     }
@@ -247,9 +248,9 @@ mod projects {
     #[ink(event)]
     pub struct TaskCompleted {
         #[ink(topic)]
-        project: H160,
+        project: Account,
         #[ink(topic)]
-        client: H160,
+        client: Account,
         /// ID of the completed task
         task_id: u8,
     }
@@ -258,9 +259,9 @@ mod projects {
     #[ink(event)]
     pub struct ScopeProposed {
         #[ink(topic)]
-        project: H160,
+        project: Account,
         #[ink(topic)]
-        coordinator: H160,
+        coordinator: Account,
         /// Version/revision number of this proposal
         revision: u32,
         /// Number of tasks proposed in this revision
@@ -273,9 +274,9 @@ mod projects {
     #[ink(event)]
     pub struct ScopeResponseReceived {
         #[ink(topic)]
-        project: H160,
+        project: Account,
         #[ink(topic)]
-        client: H160,
+        client: Account,
         /// Revision number that was responded to
         revision: u32,
         /// Number of tasks approved
@@ -375,11 +376,7 @@ mod projects {
         /// - Status is set to Created
         /// - All other fields are initialized to default/empty values
         #[ink(constructor)]
-        pub fn new(
-            name: String,
-            dao_address: H160,
-            calendar_contract: Option<H160>,
-        ) -> Self {
+        pub fn new(name: String, dao_address: Account, calendar_contract: Option<Account>) -> Self {
             const MAX_NAME_LENGTH: u32 = 50;
 
             // Check name length and panic if too long
@@ -407,7 +404,7 @@ mod projects {
         /// automatically based on availability from the calendar contract.
         ///
         /// # Returns
-        /// The H160 of the assigned coordinator
+        /// The Account of the assigned coordinator
         ///
         /// # Errors
         /// - `NotAuthorized`: Caller is not the DAO
@@ -419,7 +416,7 @@ mod projects {
         /// - Updates status to CoordinatorAssigned
         /// - Emits CoordinatorAssigned event
         #[ink(message)]
-        pub fn assign_coordinator(&mut self) -> Result<H160> {
+        pub fn assign_coordinator(&mut self) -> Result<Account> {
             let caller = self.env().caller();
             if caller != self.dao_address {
                 return Err(Error::NotAuthorized);
@@ -494,7 +491,7 @@ mod projects {
         /// The client must provide ratings for all team members.
         ///
         /// # Parameters
-        /// - `ratings`: Vector of (H160, rating) pairs for each team member
+        /// - `ratings`: Vector of (Account, rating) pairs for each team member
         ///   where rating is 0-10
         ///
         /// # Errors
@@ -512,7 +509,7 @@ mod projects {
         /// - Updates paid_amount to total_cost
         /// - Emits ProjectCompleted event
         #[ink(message)]
-        pub fn mark_completed(&mut self, ratings: Vec<(H160, u8)>) -> Result<()> {
+        pub fn mark_completed(&mut self, ratings: Vec<(Account, u8)>) -> Result<()> {
             let caller = self.env().caller();
 
             if caller != self.client {
@@ -603,9 +600,9 @@ mod projects {
             &self,
         ) -> (
             String,
-            H160,
-            H160,
-            Option<H160>,
+            Account,
+            Account,
+            Option<Account>,
             ProjectStatus,
             Balance,
             Balance,
@@ -700,7 +697,7 @@ mod projects {
         /// # Errors
         /// - `NotAuthorized`: Caller is not the client
         #[ink(message)]
-        pub fn set_calendar_contract(&mut self, calendar_contract: H160) -> Result<()> {
+        pub fn set_calendar_contract(&mut self, calendar_contract: Account) -> Result<()> {
             let caller = self.env().caller();
             if caller != self.client {
                 return Err(Error::NotAuthorized);
@@ -926,7 +923,7 @@ mod projects {
 
             // Get values that require immutable borrows early
             let block_number = self.env().block_number();
-            let _project_id = self.env().account_id();
+            let project_id = self.env().address();
 
             // Check if scope exists and get needed validation data
             let (revision_version, proposed_task_ids, advance_payment_percentage) = {
@@ -997,7 +994,7 @@ mod projects {
 
             // Emit event
             self.env().emit_event(ScopeResponseReceived {
-                project: self.env().address(),
+                project: project_id,
                 client: caller,
                 revision: revision_version,
                 approved_count: approved_task_ids.len() as u32,
@@ -1164,7 +1161,7 @@ mod projects {
         }
 
         /// Check if caller is authorized as coordinator
-        fn is_coordinator_authorized(&self, caller: &H160) -> bool {
+        fn is_coordinator_authorized(&self, caller: &Account) -> bool {
             match &self.coordinator {
                 Some(coordinator) => coordinator == caller,
                 None => false,

@@ -1,8 +1,9 @@
 use crate::projects::{Error, Result, TeamMember};
 use ink::prelude::{string::String, vec::Vec};
 // use ink::primitives::AccountId;
-use ink::H160;
 use ink::primitives::U256;
+// use ink::H160;
+type AccountId = ink::H160;
 
 #[cfg(not(test))]
 use ink::env::call::{build_call, ExecutionInput, Selector};
@@ -49,12 +50,12 @@ impl crate::projects::Project {
     /// - Geographic/timezone optimization for distributed teams
     ///
     /// # Returns
-    /// H160 of algorithmically selected coordinator
+    /// AccountId of algorithmically selected coordinator
     ///
     /// # Errors
     /// - `CalendarContractNotSet`: No calendar contract configured for availability lookup
     /// - `NoAvailableCoordinators`: No coordinators currently available for assignment
-    pub(crate) fn select_coordinator(&self) -> Result<H160> {
+    pub(crate) fn select_coordinator(&self) -> Result<AccountId> {
         #[cfg(test)]
         {
             // In tests, return the charlie account as coordinator
@@ -79,7 +80,7 @@ impl crate::projects::Project {
                     )))
                     .push_arg(true), // is_coordinator = true
                 )
-                .returns::<Vec<H160>>()
+                .returns::<Vec<AccountId>>()
                 .invoke();
 
             // Select the first available worker as coordinator
@@ -169,7 +170,7 @@ impl crate::projects::Project {
                     )))
                     .push_arg(false), // is_coordinator = false
                 )
-                .returns::<Vec<H160>>()
+                .returns::<Vec<AccountId>>()
                 .invoke();
 
             if available_workers.is_empty() {
