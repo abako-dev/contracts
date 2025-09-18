@@ -1,6 +1,9 @@
 use crate::projects::{Error, Result, TeamMember};
 use ink::prelude::{string::String, vec::Vec};
-use ink::primitives::AccountId;
+// use ink::primitives::AccountId;
+use ink::primitives::U256;
+// use ink::H160;
+type AccountId = ink::H160;
 
 #[cfg(not(test))]
 use ink::env::call::{build_call, ExecutionInput, Selector};
@@ -70,7 +73,7 @@ impl crate::projects::Project {
             // Get available coordinators from calendar contract
             let available_workers = build_call::<ink::env::DefaultEnvironment>()
                 .call(calendar_contract)
-                .transferred_value(0)
+                .transferred_value(U256::from(0))
                 .exec_input(
                     ExecutionInput::new(Selector::new(ink::selector_bytes!(
                         "get_available_workers"
@@ -160,7 +163,7 @@ impl crate::projects::Project {
             // Get available workers from calendar contract
             let available_workers = build_call::<ink::env::DefaultEnvironment>()
                 .call(calendar_contract)
-                .transferred_value(0)
+                .transferred_value(U256::from(0))
                 .exec_input(
                     ExecutionInput::new(Selector::new(ink::selector_bytes!(
                         "get_available_workers"
