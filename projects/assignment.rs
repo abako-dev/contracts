@@ -1,6 +1,8 @@
 use crate::projects::{Error, Result, TeamMember};
 use ink::prelude::{string::String, vec::Vec};
-use ink::primitives::AccountId;
+// use ink::primitives::AccountId;
+use ink::H160;
+use ink::primitives::U256;
 
 #[cfg(not(test))]
 use ink::env::call::{build_call, ExecutionInput, Selector};
@@ -47,12 +49,12 @@ impl crate::projects::Project {
     /// - Geographic/timezone optimization for distributed teams
     ///
     /// # Returns
-    /// AccountId of algorithmically selected coordinator
+    /// H160 of algorithmically selected coordinator
     ///
     /// # Errors
     /// - `CalendarContractNotSet`: No calendar contract configured for availability lookup
     /// - `NoAvailableCoordinators`: No coordinators currently available for assignment
-    pub(crate) fn select_coordinator(&self) -> Result<AccountId> {
+    pub(crate) fn select_coordinator(&self) -> Result<H160> {
         #[cfg(test)]
         {
             // In tests, return the charlie account as coordinator
@@ -70,14 +72,14 @@ impl crate::projects::Project {
             // Get available coordinators from calendar contract
             let available_workers = build_call::<ink::env::DefaultEnvironment>()
                 .call(calendar_contract)
-                .transferred_value(0)
+                .transferred_value(U256::from(0))
                 .exec_input(
                     ExecutionInput::new(Selector::new(ink::selector_bytes!(
                         "get_available_workers"
                     )))
                     .push_arg(true), // is_coordinator = true
                 )
-                .returns::<Vec<AccountId>>()
+                .returns::<Vec<H160>>()
                 .invoke();
 
             // Select the first available worker as coordinator
@@ -160,14 +162,14 @@ impl crate::projects::Project {
             // Get available workers from calendar contract
             let available_workers = build_call::<ink::env::DefaultEnvironment>()
                 .call(calendar_contract)
-                .transferred_value(0)
+                .transferred_value(U256::from(0))
                 .exec_input(
                     ExecutionInput::new(Selector::new(ink::selector_bytes!(
                         "get_available_workers"
                     )))
                     .push_arg(false), // is_coordinator = false
                 )
-                .returns::<Vec<AccountId>>()
+                .returns::<Vec<H160>>()
                 .invoke();
 
             if available_workers.is_empty() {
