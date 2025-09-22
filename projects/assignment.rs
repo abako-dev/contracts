@@ -1,4 +1,4 @@
-use crate::projects::{Error, Result, TeamMember};
+use crate::projects::{Error, Result, TeamMember, WorkerAvailability};
 use ink::prelude::{string::String, vec::Vec};
 use ink::primitives::AccountId;
 
@@ -68,6 +68,7 @@ impl crate::projects::Project {
             };
 
             // Get available coordinators from calendar contract
+            // Use minimum 30 hours for coordinators (full-time availability preferred)
             let available_workers = build_call::<ink::env::DefaultEnvironment>()
                 .call(calendar_contract)
                 .transferred_value(0)
@@ -75,15 +76,15 @@ impl crate::projects::Project {
                     ExecutionInput::new(Selector::new(ink::selector_bytes!(
                         "get_available_workers"
                     )))
-                    .push_arg(true), // is_coordinator = true
+                    .push_arg(Some(30u8)), // min_hours for coordinator role
                 )
-                .returns::<Vec<AccountId>>()
+                .returns::<Vec<WorkerAvailability>>()
                 .invoke();
 
             // Select the first available worker as coordinator
             // In a real implementation, you might have more complex selection logic
-            if let Some(coordinator) = available_workers.first() {
-                return Ok(*coordinator);
+            if let Some(coordinator_info) = available_workers.first() {
+                return Ok(coordinator_info.worker);
             } else {
                 return Err(Error::NoAvailableCoordinators);
             }
@@ -158,6 +159,7 @@ impl crate::projects::Project {
             };
 
             // Get available workers from calendar contract
+            // Use minimum 15 hours for team members (part-time availability acceptable)
             let available_workers = build_call::<ink::env::DefaultEnvironment>()
                 .call(calendar_contract)
                 .transferred_value(0)
@@ -165,9 +167,9 @@ impl crate::projects::Project {
                     ExecutionInput::new(Selector::new(ink::selector_bytes!(
                         "get_available_workers"
                     )))
-                    .push_arg(false), // is_coordinator = false
+                    .push_arg(Some(15u8)), // min_hours for team member roles
                 )
-                .returns::<Vec<AccountId>>()
+                .returns::<Vec<WorkerAvailability>>()
                 .invoke();
 
             if available_workers.is_empty() {
@@ -178,27 +180,27 @@ impl crate::projects::Project {
             let mut team_members = Vec::new();
 
             // Assign first available worker as designer
-            if let Some(designer) = available_workers.first() {
+            if let Some(designer_info) = available_workers.first() {
                 team_members.push(TeamMember {
-                    account_id: *designer,
+                    account_id: designer_info.worker,
                     role: String::from("Designer"),
                     rating: None,
                 });
             }
 
             // Assign second available worker as developer
-            if let Some(developer) = available_workers.get(1) {
+            if let Some(developer_info) = available_workers.get(1) {
                 team_members.push(TeamMember {
-                    account_id: *developer,
+                    account_id: developer_info.worker,
                     role: String::from("Developer"),
                     rating: None,
                 });
             }
 
             // Assign third available worker as tester
-            if let Some(tester) = available_workers.get(2) {
+            if let Some(tester_info) = available_workers.get(2) {
                 team_members.push(TeamMember {
-                    account_id: *tester,
+                    account_id: tester_info.worker,
                     role: String::from("Tester"),
                     rating: None,
                 });

@@ -146,19 +146,29 @@ mod projects {
         Completed,                  // All tasks are completed and project is finalized
     }
 
+    /// Worker availability information from calendar contract
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[ink::scale_derive(Encode, Decode, TypeInfo)]
+    pub struct WorkerAvailability {
+        pub worker: AccountId,
+        pub hours: u8,
+    }
+
     /// Interface for the calendar contract that manages worker availability
     ///
     /// The calendar contract maintains schedules and availability of coordinators
     /// and team members across all projects in the ecosystem.
+    #[allow(dead_code)]
     #[ink::trait_definition]
     pub trait Calendar {
-        /// Check if a specific worker is available for a given project
+        /// Check if a worker is available with optional minimum hours requirement
         #[ink(message)]
-        fn is_available(&self, account_id: AccountId, project_id: AccountId) -> bool;
+        fn is_available(&self, worker: AccountId, min_hours: Option<u8>) -> bool;
 
-        /// Get list of all workers available for assignment to a project
+        /// Get list of all available workers with optional minimum hours filter
         #[ink(message)]
-        fn get_available_workers(&self, project_id: AccountId) -> Vec<AccountId>;
+        fn get_available_workers(&self, min_hours: Option<u8>) -> Vec<WorkerAvailability>;
     }
 
     /// Main project contract storage containing all project state
@@ -216,30 +226,6 @@ mod projects {
         client: AccountId,
         /// Amount of final payment released to team
         final_payment: Balance,
-    }
-
-    /// Event emitted when the project scope is defined by the coordinator
-    #[ink(event)]
-    pub struct ScopeDefined {
-        #[ink(topic)]
-        project: AccountId,
-        #[ink(topic)]
-        coordinator: AccountId,
-        /// Number of tasks defined in the scope
-        tasks_count: u8,
-        /// Total cost of all tasks in the scope
-        total_cost: Balance,
-    }
-
-    /// Event emitted when the client accepts the project scope
-    #[ink(event)]
-    pub struct ScopeAccepted {
-        #[ink(topic)]
-        project: AccountId,
-        #[ink(topic)]
-        client: AccountId,
-        /// Amount paid upfront by the client
-        advance_payment: Balance,
     }
 
     /// Event emitted when a task is marked as completed
@@ -741,7 +727,7 @@ mod projects {
         /// - Calculates and sets total_cost
         /// - Updates status to ScopeDefinedPendingApproval
         /// - Emits ScopeDefined event
-
+        ///
         /// Coordinator proposes tasks for the project scope
         ///
         /// This method allows coordinators to propose tasks iteratively, with the client
@@ -812,11 +798,8 @@ mod projects {
             // Validate task IDs don't conflict with approved tasks
             for (task_id, _, _, _) in &tasks {
                 if let Some(existing_task) = scope.tasks.get(task_id) {
-                    match existing_task.status {
-                        TaskStatus::Approved(_) => {
-                            return Err(Error::TaskIdAlreadyExists);
-                        }
-                        _ => {} // Allow reuse of rejected/pending IDs
+                    if let TaskStatus::Approved(_) = existing_task.status {
+                        return Err(Error::TaskIdAlreadyExists);
                     }
                 }
             }
@@ -1000,7 +983,10 @@ mod projects {
                 client: caller,
                 revision: revision_version,
                 approved_count: approved_task_ids.len() as u32,
-                rejected_count: (proposed_task_ids.len() - approved_task_ids.len()) as u32,
+                rejected_count: (proposed_task_ids
+                    .len()
+                    .saturating_sub(approved_task_ids.len()))
+                    as u32,
             });
 
             Ok(())

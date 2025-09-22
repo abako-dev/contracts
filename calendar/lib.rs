@@ -1,4 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
+#![allow(clippy::cast_possible_truncation)]
 
 #[ink::contract]
 mod calendar {
@@ -18,7 +19,7 @@ mod calendar {
 
     impl AvailabilityLevel {
         /// Convert availability level to hours per week
-        pub fn to_hours(&self) -> u8 {
+        pub fn get_hours(&self) -> u8 {
             match self {
                 AvailabilityLevel::NotAvailable => 0,
                 AvailabilityLevel::PartTime => 20,
@@ -106,7 +107,7 @@ mod calendar {
                 return Err(Error::WorkerNotRegistered);
             }
 
-            let hours = availability.to_hours();
+            let hours = availability.get_hours();
             self.worker_availability.insert(worker, &hours);
 
             self.env().emit_event(AvailabilityUpdated { worker, hours });
@@ -216,12 +217,18 @@ mod calendar {
                 return Err(Error::WorkerNotRegistered);
             }
 
-            let hours = availability.to_hours();
+            let hours = availability.get_hours();
             self.worker_availability.insert(worker, &hours);
 
             self.env().emit_event(AvailabilityUpdated { worker, hours });
 
             Ok(())
+        }
+    }
+
+    impl Default for Calendar {
+        fn default() -> Self {
+            Self::new()
         }
     }
 
