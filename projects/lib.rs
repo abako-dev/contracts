@@ -41,7 +41,7 @@ mod projects {
     /// and can receive a rating from the client upon project completion.
     #[derive(Debug, scale::Encode, scale::Decode, PartialEq, Clone)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
-    pub struct TeamMember {
+    pub struct  TeamMember {
         /// The blockchain account ID of the team member
         pub(crate) account_id: AccountId,
         /// The role of the team member (e.g., "Developer", "Designer", "Tester")
@@ -171,6 +171,15 @@ mod projects {
         fn get_available_workers(&self, min_hours: Option<u8>) -> Vec<WorkerAvailability>;
     }
 
+    /// Interface for the ratings contract that manages worker ratings
+    #[allow(dead_code)]
+    #[ink::trait_definition]
+    pub trait WorkerRatings {
+        /// Add a rating for a worker
+        #[ink(message)]
+        fn add_rating(&mut self, worker: AccountId, rating: u8) -> Result<()>;
+    }
+
     /// Main project contract storage containing all project state
     ///
     /// This struct represents a single software development project with
@@ -191,6 +200,8 @@ mod projects {
         status: ProjectStatus,
         /// Optional address of the calendar contract for worker availability
         pub(crate) calendar_contract: Option<AccountId>,
+        /// Optional address of the ratings contract for worker ratings
+        ratings_contract: Option<AccountId>,
         /// Optional project scope defined by the coordinator
         scope: Option<ProjectScope>,
         /// Total cost of the project in tokens (sum of all task costs)
@@ -364,6 +375,7 @@ mod projects {
             name: String,
             dao_address: AccountId,
             calendar_contract: Option<AccountId>,
+            ratings_contract: Option<AccountId>,
         ) -> Self {
             const MAX_NAME_LENGTH: u32 = 50;
 
@@ -380,6 +392,7 @@ mod projects {
                 team_members: Vec::new(),
                 status: ProjectStatus::Created,
                 calendar_contract,
+                ratings_contract,
                 scope: None,
                 total_cost: 0,
                 paid_amount: 0,
@@ -528,20 +541,37 @@ mod projects {
             }
 
             // Apply ratings to team members
-            for (account_id, rating) in ratings {
-                if rating > 10 {
+            for (account_id, rating) in &ratings {
+                if *rating > 100 {
                     return Err(Error::InvalidRatingValue);
                 }
 
                 let team_member = self
                     .team_members
                     .iter_mut()
-                    .find(|m| m.account_id == account_id);
+                    .find(|m| m.account_id == *account_id);
 
                 if let Some(member) = team_member {
-                    member.rating = Some(rating);
+                    member.rating = Some(*rating);
                 } else {
                     return Err(Error::TeamMemberNotFound);
+                }
+            }
+
+            // Update ratings in the ratings contract
+            if let Some(ratings_contract) = self.ratings_contract {
+                use ink::env::call::{build_call, ExecutionInput, Selector};
+                
+                for (account_id, rating) in &ratings {
+                    let _ = build_call::<ink::env::DefaultEnvironment>()
+                        .call(ratings_contract)
+                        .exec_input(
+                            ExecutionInput::new(Selector::new(ink::selector_bytes!("add_rating")))
+                                .push_arg(*account_id)
+                                .push_arg(*rating)
+                        )
+                        .returns::<Result<()>>()
+                        .try_invoke();
                 }
             }
 
@@ -692,6 +722,27 @@ mod projects {
             }
 
             self.calendar_contract = Some(calendar_contract);
+
+            Ok(())
+        }
+
+        /// Sets the ratings contract address for worker ratings
+        ///
+        /// Only the client can call this function.
+        ///
+        /// # Parameters
+        /// - `ratings_contract`: Address of the ratings contract
+        ///
+        /// # Errors
+        /// - `NotAuthorized`: Caller is not the client
+        #[ink(message)]
+        pub fn set_ratings_contract(&mut self, ratings_contract: AccountId) -> Result<()> {
+            let caller = self.env().caller();
+            if caller != self.client {
+                return Err(Error::NotAuthorized);
+            }
+
+            self.ratings_contract = Some(ratings_contract);
 
             Ok(())
         }
@@ -1167,11 +1218,12 @@ mod projects {
         fn setup_project() -> Project {
             let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
 
-            // Create a project with a calendar contract
+            // Create a project with a calendar contract and ratings contract
             let mut project = Project::new(
                 String::from("Test Project"),
                 accounts.django,
                 Some(accounts.eve),
+                None, // ratings_contract
             );
 
             // Set up coordinator
@@ -1397,6 +1449,7 @@ mod projects {
                 String::from("Website Development"),
                 accounts.bob,
                 calendar_contract,
+                None, // ratings_contract
             );
 
             // Check initial state
@@ -1430,6 +1483,7 @@ mod projects {
                 String::from("Test Project"),
                 accounts.django,
                 Some(accounts.eve),
+                None, // ratings_contract
             );
 
             // Set coordinator
@@ -1466,6 +1520,7 @@ mod projects {
                 String::from("Test Project"),
                 accounts.bob,
                 Some(accounts.eve),
+                None, // ratings_contract
             );
 
             // Should fail with NotAuthorized
@@ -1484,6 +1539,7 @@ mod projects {
                 String::from("Test Project"),
                 accounts.bob,
                 Some(accounts.eve),
+                None, // ratings_contract
             );
 
             project.coordinator = Some(accounts.charlie);
@@ -1505,6 +1561,7 @@ mod projects {
                 String::from("Test Project"),
                 accounts.bob,
                 Some(accounts.eve),
+                None, // ratings_contract
             );
 
             // No coordinator assigned
@@ -1582,6 +1639,7 @@ mod projects {
                 String::from("Website Development"),
                 accounts.bob,
                 calendar_contract,
+                None, // ratings_contract
             );
 
             // Manually set coordinator and team members for testing

@@ -37,6 +37,13 @@ mod calendar {
         pub hours: u8,
     }
 
+    #[allow(dead_code)]
+    #[ink::trait_definition]
+    pub trait WorkerRatings {
+        #[ink(message)]
+        fn register_worker(&mut self, worker: AccountId) -> Result<()>;
+    }
+
     #[ink(storage)]
     pub struct Calendar {
         /// Mapping from worker AccountId to their availability hours
@@ -45,6 +52,8 @@ mod calendar {
         registered_workers: Vec<AccountId>,
         /// Owner account that has admin privileges
         owner: AccountId,
+        /// Optional address of the ratings contract
+        ratings_contract: Option<AccountId>,
     }
 
     #[ink(event)]
@@ -60,6 +69,21 @@ mod calendar {
         hours: u8,
     }
 
+    #[ink(event)]
+    pub struct DebugLog {
+        message: ink::prelude::string::String,
+        #[ink(topic)]
+        worker: AccountId,
+        availability: u8,
+    }
+    
+    #[ink(event)]
+    pub struct DebugRegisteredWorker {
+        #[ink(topic)]
+        index: u32,
+        worker: AccountId,
+    }
+
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode, Clone)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub enum Error {
@@ -71,11 +95,12 @@ mod calendar {
 
     impl Calendar {
         #[ink(constructor)]
-        pub fn new() -> Self {
+        pub fn new(ratings_contract: Option<AccountId>) -> Self {
             Self {
                 worker_availability: Mapping::default(),
                 registered_workers: Vec::new(),
                 owner: Self::env().caller(),
+                ratings_contract,
             }
         }
 
@@ -91,6 +116,20 @@ mod calendar {
                 self.registered_workers.push(worker);
                 // Default to not available when first registered
                 self.worker_availability.insert(worker, &0u8);
+
+                // Register worker in ratings contract with initial rating of 0
+                if let Some(ratings_contract) = self.ratings_contract {
+                    use ink::env::call::{build_call, ExecutionInput, Selector};
+                    
+                    let _ = build_call::<ink::env::DefaultEnvironment>()
+                        .call(ratings_contract)
+                        .exec_input(
+                            ExecutionInput::new(Selector::new(ink::selector_bytes!("register_worker")))
+                                .push_arg(worker)
+                        )
+                        .returns::<Result<()>>()
+                        .try_invoke();
+                }
 
                 self.env().emit_event(WorkerRegistered { worker });
             }
@@ -170,6 +209,20 @@ mod calendar {
                     // Default to not available when first registered
                     self.worker_availability.insert(worker, &0u8);
 
+                    // Register worker in ratings contract with initial rating of 0
+                    if let Some(ratings_contract) = self.ratings_contract {
+                        use ink::env::call::{build_call, ExecutionInput, Selector};
+                        
+                        let _ = build_call::<ink::env::DefaultEnvironment>()
+                            .call(ratings_contract)
+                            .exec_input(
+                                ExecutionInput::new(Selector::new(ink::selector_bytes!("register_worker")))
+                                    .push_arg(worker)
+                            )
+                            .returns::<Result<()>>()
+                            .try_invoke();
+                    }
+
                     self.env().emit_event(WorkerRegistered { worker });
                 }
             }
@@ -224,11 +277,32 @@ mod calendar {
 
             Ok(())
         }
+
+        /// Sets the ratings contract address
+        ///
+        /// Only the owner can call this function.
+        ///
+        /// # Parameters
+        /// - `ratings_contract`: Address of the ratings contract
+        ///
+        /// # Errors
+        /// - `NotAuthorized`: Caller is not the owner
+        #[ink(message)]
+        pub fn set_ratings_contract(&mut self, ratings_contract: AccountId) -> Result<()> {
+            let caller = self.env().caller();
+            if caller != self.owner {
+                return Err(Error::NotAuthorized);
+            }
+
+            self.ratings_contract = Some(ratings_contract);
+
+            Ok(())
+        }
     }
 
     impl Default for Calendar {
         fn default() -> Self {
-            Self::new()
+            Self::new(None)
         }
     }
 
@@ -242,7 +316,7 @@ mod calendar {
             let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
 
-            let mut calendar = Calendar::new();
+            let mut calendar = Calendar::new(None);
 
             let result = calendar.register_worker(accounts.bob);
             assert!(result.is_ok());
@@ -262,7 +336,7 @@ mod calendar {
 
             // Alice is the owner
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            let mut calendar = Calendar::new();
+            let mut calendar = Calendar::new(None);
 
             // Register Bob as a worker
             calendar.register_worker(accounts.bob).unwrap();
@@ -283,7 +357,7 @@ mod calendar {
 
             // Alice is the owner
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            let mut calendar = Calendar::new();
+            let mut calendar = Calendar::new(None);
 
             // Register Bob as a worker
             calendar.register_worker(accounts.bob).unwrap();
@@ -311,7 +385,7 @@ mod calendar {
 
             // Alice is the owner
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            let mut calendar = Calendar::new();
+            let mut calendar = Calendar::new(None);
 
             // Register workers
             calendar.register_worker(accounts.bob).unwrap();
@@ -356,7 +430,7 @@ mod calendar {
 
             // Alice is the owner
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            let mut calendar = Calendar::new();
+            let mut calendar = Calendar::new(None);
 
             // Register workers
             calendar.register_worker(accounts.bob).unwrap();
@@ -410,7 +484,7 @@ mod calendar {
 
             // Alice is the owner
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            let mut calendar = Calendar::new();
+            let mut calendar = Calendar::new(None);
 
             // Register worker
             calendar.register_worker(accounts.bob).unwrap();
@@ -441,7 +515,7 @@ mod calendar {
 
             // Alice is the owner
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            let mut calendar = Calendar::new();
+            let mut calendar = Calendar::new(None);
 
             // Register workers
             calendar.register_worker(accounts.bob).unwrap();
@@ -475,7 +549,7 @@ mod calendar {
 
             // Alice is the owner
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            let mut calendar = Calendar::new();
+            let mut calendar = Calendar::new(None);
 
             // Register worker
             calendar.register_worker(accounts.bob).unwrap();
@@ -496,7 +570,7 @@ mod calendar {
 
             // Alice is the owner
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            let mut calendar = Calendar::new();
+            let mut calendar = Calendar::new(None);
 
             // Bob tries to register a worker (should fail)
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
