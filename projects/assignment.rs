@@ -1,4 +1,8 @@
-use crate::projects::{Error, Result, TeamMember, WorkerAvailability};
+// Types are in the projects module which is the main module of this crate
+type Error = crate::projects::Error;
+type Result<T> = crate::projects::Result<T>;
+type TeamMember = crate::projects::TeamMember;
+type WorkerAvailability = crate::projects::WorkerAvailability;
 use ink::prelude::{string::String, vec::Vec};
 use ink::primitives::AccountId;
 

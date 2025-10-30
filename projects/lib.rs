@@ -26,7 +26,7 @@ mod assignment;
 ///
 /// ## Integration
 /// The contract integrates with a Calendar contract for worker availability management.
-#[ink::contract]
+#[ink::contract(env = kreivo_apis::KreivoApiEnvironment)]
 mod projects {
     use ink::prelude::collections::{BTreeMap, BTreeSet};
     use ink::prelude::string::String;
@@ -208,6 +208,8 @@ mod projects {
         total_cost: Balance,
         /// Amount already paid by the client
         paid_amount: Balance,
+        /// Asset ID for payments (e.g., 1 for the native token)
+        asset_id: u32,
     }
 
     /// Event emitted when a coordinator is assigned to the project
@@ -350,6 +352,14 @@ mod projects {
         InvalidRevisionState,
         /// Task ID conflicts with existing approved task
         TaskIdAlreadyExists,
+
+        // Asset transfer errors
+        /// Asset transfer failed
+        AssetTransferFailed,
+        /// Insufficient balance for transfer
+        InsufficientBalance,
+        /// Coordinator not assigned, cannot transfer payment
+        CoordinatorNotAssignedForPayment,
     }
 
     /// Convenient Result type alias for contract operations
@@ -362,6 +372,7 @@ mod projects {
         /// - `name`: Human-readable project name (max 50 characters)
         /// - `dao_address`: Address of the DAO that will assign coordinators
         /// - `calendar_contract`: Optional address of calendar contract for worker availability
+        /// - `ratings_contract`: Optional address of ratings contract for worker ratings
         ///
         /// # Panics
         /// Panics if the project name exceeds 50 characters
@@ -369,6 +380,7 @@ mod projects {
         /// # Initial State
         /// - Client is set to the contract deployer
         /// - Status is set to Created
+        /// - Asset ID is hardcoded to 1 (native token)
         /// - All other fields are initialized to default/empty values
         #[ink(constructor)]
         pub fn new(
@@ -396,6 +408,7 @@ mod projects {
                 scope: None,
                 total_cost: 0,
                 paid_amount: 0,
+                asset_id: 1, // Hardcoded to use asset ID 1 (native token)
             }
         }
 
@@ -490,6 +503,7 @@ mod projects {
         ///
         /// Only the client can call this function once all tasks are completed.
         /// The client must provide ratings for all team members.
+        /// This function transfers the full project cost from escrow to the coordinator.
         ///
         /// # Parameters
         /// - `ratings`: Vector of (AccountId, rating) pairs for each team member
@@ -503,10 +517,13 @@ mod projects {
         /// - `RatingsCountMismatch`: Number of ratings doesn't match team size
         /// - `InvalidRatingValue`: Rating value not between 0-10
         /// - `TeamMemberNotFound`: Rating provided for non-existent team member
+        /// - `CoordinatorNotAssignedForPayment`: No coordinator assigned to receive payment
+        /// - `AssetTransferFailed`: Failed to transfer payment to coordinator
         ///
         /// # State Changes
         /// - Updates team member ratings
         /// - Sets status to Completed
+        /// - Transfers total_cost from escrow to coordinator
         /// - Updates paid_amount to total_cost
         /// - Emits ProjectCompleted event
         #[ink(message)]
@@ -575,18 +592,46 @@ mod projects {
                 }
             }
 
-            // Calculate remaining payment if scope is defined
-            let mut remaining_payment = 0;
+            // Calculate remaining payment if scope is defined and transfer funds
+            let mut final_payment = 0;
             if let Some(_scope) = &self.scope {
-                // Calculate the remaining payment
-                remaining_payment = self
+                // Get coordinator for payment
+                let _coordinator = self.coordinator.ok_or(Error::CoordinatorNotAssignedForPayment)?;
+
+                // Calculate the remaining payment (if client needs to send more)
+                let _remaining_payment = self
                     .total_cost
                     .checked_sub(self.paid_amount)
                     .ok_or(Error::ArithmeticFailure)?;
 
-                // TODO: this would trigger the remaining payment
-                // to be transferred from client to coordinator/team
-                // For now, just update the paid amount
+                // Transfer remaining payment from client to contract (escrow) if needed
+                // Then transfer total cost from escrow to coordinator
+                #[cfg(not(test))]
+                {
+                    use kreivo_apis::{apis::{AssetsAPI, KreivoAPI}, KreivoApi};
+                    use virto_common::FungibleAssetLocation;
+                    
+                    if _remaining_payment > 0 {
+                        // Deposit remaining payment from client to contract
+                        <KreivoApi as KreivoAPI<_>>::Assets::deposit(
+                            &self.env(),
+                            FungibleAssetLocation::Here(self.asset_id),
+                            _remaining_payment,
+                        )
+                        .map_err(|_| Error::AssetTransferFailed)?;
+                    }
+
+                    // Transfer total cost from escrow to coordinator
+                    <KreivoApi as KreivoAPI<_>>::Assets::transfer(
+                        &self.env(),
+                        FungibleAssetLocation::Here(self.asset_id),
+                        self.total_cost,
+                        &_coordinator,
+                    )
+                    .map_err(|_| Error::AssetTransferFailed)?;
+                }
+
+                final_payment = self.total_cost;
                 self.paid_amount = self.total_cost;
             }
 
@@ -596,7 +641,7 @@ mod projects {
             self.env().emit_event(ProjectCompleted {
                 project: self.name.clone(),
                 client: self.client,
-                final_payment: remaining_payment,
+                final_payment,
             });
 
             Ok(())
@@ -928,6 +973,8 @@ mod projects {
         ///
         /// This method allows clients to selectively approve tasks from the coordinator's
         /// latest proposal. Tasks not in the approved list are automatically rejected.
+        /// When tasks are approved, the client must transfer the advance payment to the contract
+        /// which will act as escrow.
         ///
         /// # Arguments
         /// * `approved_task_ids` - Vector of task IDs that the client approves
@@ -941,12 +988,14 @@ mod projects {
         /// - `ScopeNotDefined`: No scope defined yet
         /// - `InvalidRevisionState`: No pending tasks to approve
         /// - `TaskNotFound`: Approved task ID doesn't exist in latest proposal
+        /// - `AssetTransferFailed`: Failed to transfer advance payment to escrow
         ///
         /// # State Changes
         /// - Updates task statuses to Approved or Rejected with block numbers
         /// - Records approved tasks in latest revision
         /// - Updates status to ScopeAccepted if any tasks approved
         /// - Recalculates total_cost based on approved tasks
+        /// - Transfers advance payment from client to contract (escrow)
         /// - Emits ScopeResponseReceived event
         #[ink(message)]
         pub fn approve_scope(&mut self, approved_task_ids: Vec<u8>) -> Result<()> {
@@ -1024,6 +1073,22 @@ mod projects {
                     .total_cost
                     .saturating_mul(advance_payment_percentage as u128)
                     .saturating_div(100);
+
+                // Transfer advance payment from client to contract (escrow)
+                // Client must call with the funds, and we deposit them into the contract
+                // Only execute in non-test environment
+                #[cfg(not(test))]
+                {
+                    use kreivo_apis::{apis::{AssetsAPI, KreivoAPI}, KreivoApi};
+                    use virto_common::FungibleAssetLocation;
+                    
+                    <KreivoApi as KreivoAPI<_>>::Assets::deposit(
+                        &self.env(),
+                        FungibleAssetLocation::Here(self.asset_id),
+                        advance_payment,
+                    )
+                    .map_err(|_| Error::AssetTransferFailed)?;
+                }
 
                 self.paid_amount = advance_payment;
             }
