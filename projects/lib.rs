@@ -12,9 +12,9 @@ mod assignment;
 /// ## Project Lifecycle
 /// 1. **Created** - Initial state when project is instantiated by the client
 /// 2. **CoordinatorAssigned** - DAO assigns a coordinator to manage the project
-/// 3. **TeamAssigned** - Coordinator selects and assigns team members
-/// 4. **ScopeDefinedPendingApproval** - Coordinator defines project scope with tasks
-/// 5. **ScopeAccepted** - Client approves scope and makes advance payment
+/// 3. **ScopeDefinedPendingApproval** - Coordinator defines project scope with tasks
+/// 4. **ScopeAccepted** - Client approves scope and makes advance payment
+/// 5. **TeamAssigned** - Coordinator selects and assigns team members
 /// 6. **Completed** - All tasks finished, team rated, final payment processed
 ///
 /// ## Key Components
@@ -74,6 +74,8 @@ mod projects {
         Approved(u32),
         /// Task has been rejected by client at the given block number
         Rejected(u32),
+        /// Task has been completed by coordinator and is pending client review
+        PendingReview(u32),
     }
 
     /// Represents an individual work item within the project scope
@@ -250,6 +252,17 @@ mod projects {
         task_id: u8,
     }
 
+    /// Event emitted when coordinator submits a completed task for client review
+    #[ink(event)]
+    pub struct TaskSubmittedForReview {
+        #[ink(topic)]
+        project: AccountId,
+        #[ink(topic)]
+        coordinator: AccountId,
+        /// ID of the task submitted for review
+        task_id: u8
+    }
+
     /// Event emitted when coordinator proposes new tasks
     #[ink(event)]
     pub struct ScopeProposed {
@@ -350,6 +363,8 @@ mod projects {
         InvalidRevisionState,
         /// Task ID conflicts with existing approved task
         TaskIdAlreadyExists,
+        /// Task must be approved before it can be submitted for review
+        TaskNotApproved,
     }
 
     /// Convenient Result type alias for contract operations
@@ -440,6 +455,7 @@ mod projects {
         ///
         /// Only the assigned coordinator can call this function. Team members
         /// are selected automatically from available workers in the calendar contract.
+        /// Requires that the project scope has been accepted by the client.
         ///
         /// # Parameters
         /// - `_team_size`: Requested team size (currently unused, auto-determined)
@@ -450,6 +466,7 @@ mod projects {
         /// # Errors
         /// - `NotAuthorized`: Caller is not the assigned coordinator
         /// - `CoordinatorNotAssigned`: No coordinator assigned to project
+        /// - `InvalidProjectState`: Project not in ScopeAccepted state
         /// - `CalendarContractNotSet`: No calendar contract configured
         /// - `NoAvailableTeamMembers`: No team members available
         ///
@@ -467,6 +484,11 @@ mod projects {
                 }
             } else {
                 return Err(Error::CoordinatorNotAssigned);
+            }
+
+            // Check that project scope has been accepted
+            if self.status != ProjectStatus::ScopeAccepted {
+                return Err(Error::InvalidProjectState);
             }
 
             let team_members = self.select_team_members(ideal_team_size)?;
@@ -498,7 +520,7 @@ mod projects {
         /// # Errors
         /// - `NotAuthorized`: Caller is not the client
         /// - `ProjectAlreadyCompleted`: Project already completed
-        /// - `InvalidProjectState`: Project not in ScopeAccepted state
+        /// - `InvalidProjectState`: Project not in TeamAssigned state
         /// - `TasksNotCompleted`: Not all tasks are completed
         /// - `RatingsCountMismatch`: Number of ratings doesn't match team size
         /// - `InvalidRatingValue`: Rating value not between 0-10
@@ -524,7 +546,7 @@ mod projects {
             // Check if scope is defined and all tasks are completed
             if let Some(scope) = &self.scope {
                 // Check project state
-                if self.status != ProjectStatus::ScopeAccepted {
+                if self.status != ProjectStatus::TeamAssigned {
                     return Err(Error::InvalidProjectState);
                 }
 
@@ -1067,21 +1089,113 @@ mod projects {
                 .and_then(|scope| scope.tasks.get(&task_id))
         }
 
+        /// Coordinator submits a completed task for client review
+        ///
+        /// Only the assigned coordinator can call this function. The task must be
+        /// approved and all its dependencies must be completed before it can be
+        /// submitted for review.
+        ///
+        /// # Parameters
+        /// - `task_id`: ID of the task to submit for review
+        ///
+        /// # Errors
+        /// - `NotAuthorized`: Caller is not the assigned coordinator
+        /// - `CoordinatorNotAssigned`: No coordinator assigned to project
+        /// - `InvalidProjectState`: Project not in TeamAssigned state
+        /// - `ScopeNotDefined`: Project scope not defined
+        /// - `TaskNotFound`: Task with specified ID not found
+        /// - `TaskAlreadyCompleted`: Task already marked as completed
+        /// - `DependenciesNotCompleted`: Task dependencies not completed yet
+        /// - `TaskNotApproved`: Task must be approved before submission
+        ///
+        /// # State Changes
+        /// - Sets task status to PendingReview
+        /// - Emits TaskSubmittedForReview event
+        #[ink(message)]
+        pub fn submit_task_for_review(&mut self, task_id: u8) -> Result<()> {
+            let caller = self.env().caller();
+
+            // Check if caller is the coordinator
+            if !self.is_coordinator_authorized(&caller) {
+                return Err(Error::NotAuthorized);
+            }
+
+            // Check project state
+            if self.status != ProjectStatus::TeamAssigned {
+                return Err(Error::InvalidProjectState);
+            }
+
+            // Get block number and account ID before mutable borrows
+            let block_number = self.env().block_number();
+            let project_id = self.env().account_id();
+
+            // Check if scope is defined and get task info immutably
+            let (task_completed, task_status, dependencies) = {
+                let scope = self.scope.as_ref().ok_or(Error::ScopeNotDefined)?;
+                let task = scope.tasks.get(&task_id).ok_or(Error::TaskNotFound)?;
+                (
+                    task.completed,
+                    task.status.clone(),
+                    task.dependencies.clone(),
+                )
+            };
+
+            // Check if task is already completed
+            if task_completed {
+                return Err(Error::TaskAlreadyCompleted);
+            }
+
+            // Check if task is approved
+            if !matches!(task_status, TaskStatus::Approved(_)) {
+                return Err(Error::TaskNotApproved);
+            }
+
+            // Check if task is already pending review
+            if matches!(task_status, TaskStatus::PendingReview(_)) {
+                return Err(Error::TaskAlreadyDecided);
+            }
+
+            // Check if dependencies are completed
+            {
+                let scope = self.scope.as_ref().ok_or(Error::ScopeNotDefined)?;
+                for dep_id in &dependencies {
+                    let dep_task = scope.tasks.get(dep_id).ok_or(Error::TaskNotFound)?;
+                    if !dep_task.completed {
+                        return Err(Error::DependenciesNotCompleted);
+                    }
+                }
+            }
+
+            // Now get mutable reference and update status
+            let scope = self.scope.as_mut().ok_or(Error::ScopeNotDefined)?;
+            let task = scope.tasks.get_mut(&task_id).ok_or(Error::TaskNotFound)?;
+            task.status = TaskStatus::PendingReview(block_number);
+
+            // Emit event
+            self.env().emit_event(TaskSubmittedForReview {
+                project: project_id,
+                coordinator: caller,
+                task_id
+            });
+
+            Ok(())
+        }
+
         /// Marks a specific task as completed
         ///
-        /// Only the client can call this function. All task dependencies
-        /// must be completed before the task can be marked as completed.
+        /// Only the client can call this function. The task must be in
+        /// PendingReview status (submitted by coordinator for review).
         ///
         /// # Parameters
         /// - `task_id`: ID of the task to mark as completed
         ///
         /// # Errors
         /// - `NotAuthorized`: Caller is not the client
-        /// - `InvalidProjectState`: Project not in ScopeAccepted state
+        /// - `InvalidProjectState`: Project not in TeamAssigned state
         /// - `ScopeNotDefined`: Project scope not defined
         /// - `TaskNotFound`: Task with specified ID not found
         /// - `TaskAlreadyCompleted`: Task already marked as completed
-        /// - `DependenciesNotCompleted`: Task dependencies not completed yet
+        /// - `InvalidRevisionState`: Task is not in PendingReview status
         ///
         /// # State Changes
         /// - Marks the specified task as completed
@@ -1096,7 +1210,7 @@ mod projects {
             }
 
             // Check project state
-            if self.status != ProjectStatus::ScopeAccepted {
+            if self.status != ProjectStatus::TeamAssigned {
                 return Err(Error::InvalidProjectState);
             }
 
@@ -1106,28 +1220,23 @@ mod projects {
                 None => return Err(Error::ScopeNotDefined),
             };
 
-            // First check if task exists and get its info
-            let (task_completed, dependencies) = {
-                let task = scope.tasks.get(&task_id).ok_or(Error::TaskNotFound)?;
-                (task.completed, task.dependencies.clone())
-            };
+            // Get task
+            let task = scope.tasks.get_mut(&task_id).ok_or(Error::TaskNotFound)?;
 
             // Check if task is already completed
-            if task_completed {
+            if task.completed {
                 return Err(Error::TaskAlreadyCompleted);
             }
 
-            // Check if dependencies are completed
-            for dep_id in &dependencies {
-                let dep_task = scope.tasks.get(dep_id).ok_or(Error::TaskNotFound)?;
-
-                if !dep_task.completed {
-                    return Err(Error::DependenciesNotCompleted);
+            // Check if task is in PendingReview status
+            match task.status {
+                TaskStatus::PendingReview(_) => {
+                    // Task is pending review, can be completed
                 }
+                _ => return Err(Error::InvalidRevisionState),
             }
 
-            // Now mark task as completed
-            let task = scope.tasks.get_mut(&task_id).ok_or(Error::TaskNotFound)?;
+            // Mark task as completed
             task.completed = true;
 
             // Emit event
@@ -1151,6 +1260,18 @@ mod projects {
                         .filter(|task| matches!(task.status, TaskStatus::Pending))
                         .collect();
                 }
+            }
+            Vec::new()
+        }
+
+        /// Get all tasks that are pending client review
+        pub fn get_tasks_pending_review(&self) -> Vec<&Task> {
+            if let Some(scope) = &self.scope {
+                return scope
+                    .tasks
+                    .values()
+                    .filter(|task| matches!(task.status, TaskStatus::PendingReview(_)))
+                    .collect();
             }
             Vec::new()
         }
@@ -1228,7 +1349,7 @@ mod projects {
 
             // Set up coordinator
             project.coordinator = Some(accounts.charlie);
-            project.status = ProjectStatus::TeamAssigned;
+            project.status = ProjectStatus::CoordinatorAssigned;
 
             // Set up team members for testing
             project.team_members = vec![];
@@ -1274,21 +1395,45 @@ mod projects {
             assert_eq!(project.status, ProjectStatus::ScopeAccepted);
             assert_eq!(project.paid_amount, 1800); // 30% of 6000
 
-            // Complete tasks
-            // Complete task 1
+            // Assign team after scope is accepted
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.assign_team(2);
+            assert!(result.is_ok());
+            assert_eq!(project.status, ProjectStatus::TeamAssigned);
+
+            // Complete tasks - coordinator submits for review, client completes
+            // Submit task 1 for review (as coordinator)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.submit_task_for_review(1);
+            assert!(result.is_ok());
+
+            // Client completes task 1
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             let result = project.complete_task(1);
             assert!(result.is_ok());
 
-            // Try to complete task 3 before its dependencies
-            let result = project.complete_task(3);
+            // Try to submit task 3 before its dependencies are completed
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.submit_task_for_review(3);
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), Error::DependenciesNotCompleted);
 
-            // Complete task 2
+            // Submit task 2 for review (as coordinator)
+            let result = project.submit_task_for_review(2);
+            assert!(result.is_ok());
+
+            // Client completes task 2
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             let result = project.complete_task(2);
             assert!(result.is_ok());
 
-            // Now complete task 3
+            // Now submit task 3 for review (as coordinator)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.submit_task_for_review(3);
+            assert!(result.is_ok());
+
+            // Client completes task 3
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             let result = project.complete_task(3);
             assert!(result.is_ok());
 
@@ -1343,28 +1488,53 @@ mod projects {
             assert!(result.is_ok());
 
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            let result = project.approve_scope(vec![1, 2, 3]);
+            let result = project.approve_scope(vec![1, 2, 3, 4]);
             assert!(result.is_ok());
 
-            // Try to complete task with dependencies not completed
-            let result = project.complete_task(2);
+            // Assign team after scope is accepted
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.assign_team(2);
+            assert!(result.is_ok());
+
+            // Try to submit task 2 for review with dependencies not completed
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.submit_task_for_review(2);
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), Error::DependenciesNotCompleted);
 
-            // Complete task 1 (no dependencies)
+            // Submit task 1 for review (no dependencies)
+            let result = project.submit_task_for_review(1);
+            assert!(result.is_ok());
+
+            // Client completes task 1
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             let result = project.complete_task(1);
             assert!(result.is_ok());
 
-            // Now task 2 can be completed
+            // Now task 2 can be submitted for review
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.submit_task_for_review(2);
+            assert!(result.is_ok());
+
+            // Client completes task 2
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             let result = project.complete_task(2);
             assert!(result.is_ok());
 
-            // Try to complete task 2 again
-            let result = project.complete_task(2);
+            // Try to submit task 2 again
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.submit_task_for_review(2);
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), Error::TaskAlreadyCompleted);
 
-            // Complete tasks 3 and 4
+            // Submit tasks 3 and 4 for review
+            let result = project.submit_task_for_review(3);
+            assert!(result.is_ok());
+            let result = project.submit_task_for_review(4);
+            assert!(result.is_ok());
+
+            // Client completes tasks 3 and 4
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             let result = project.complete_task(3);
             assert!(result.is_ok());
             let result = project.complete_task(4);
@@ -1374,8 +1544,9 @@ mod projects {
             let tasks = project.get_all_tasks().unwrap();
             assert!(tasks.iter().all(|task| task.completed));
 
-            // Try to complete a non-existent task
-            let result = project.complete_task(10);
+            // Try to submit a non-existent task for review
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.submit_task_for_review(10);
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), Error::TaskNotFound);
         }
@@ -1404,7 +1575,19 @@ mod projects {
             let result = project.approve_scope(vec![1, 2, 3]);
             assert!(result.is_ok());
 
+            // Assign team after scope is accepted
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.assign_team(2);
+            assert!(result.is_ok());
+
             // Complete only some tasks (not all)
+            // Submit tasks 1 and 2 for review (as coordinator)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            project.submit_task_for_review(1).unwrap();
+            project.submit_task_for_review(2).unwrap();
+
+            // Client completes tasks 1 and 2
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             project.complete_task(1).unwrap();
             project.complete_task(2).unwrap();
             // Task 3 is left incomplete
@@ -1420,7 +1603,10 @@ mod projects {
             let result = project.mark_completed(ratings.clone());
             assert!(result.is_err());
 
-            // Complete all tasks
+            // Submit task 3 for review and client completes
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            project.submit_task_for_review(3).unwrap();
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             project.complete_task(3).unwrap();
 
             // Now mark project as completed
@@ -1475,8 +1661,8 @@ mod projects {
             // Note: we don't need to mock the response since our
             // implementation in select_team_members is overridden during tests
 
-            // Set caller to coordinator
-            test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            // Create project with client as caller (django is the client)
+            test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
 
             // Create a project with a calendar contract
             let mut project = Project::new(
@@ -1490,7 +1676,17 @@ mod projects {
             project.coordinator = Some(accounts.charlie);
             project.status = ProjectStatus::CoordinatorAssigned;
 
-            // Assign team
+            // First, propose and approve scope to get to ScopeAccepted
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks = vec![(1, TaskComplexity::Days(1), 100, vec![])];
+            project.propose_scope(tasks, 30, Hash::from([1u8; 32])).unwrap();
+
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+            project.approve_scope(vec![1]).unwrap();
+            assert_eq!(project.status, ProjectStatus::ScopeAccepted);
+
+            // Now assign team
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
             let result = project.assign_team(2);
             assert!(result.is_ok());
 
@@ -1630,10 +1826,8 @@ mod projects {
             // Setup accounts
             let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
 
-            // Set caller to client
-            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-
-            // Create project
+            // Create project (bob is the client)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
             let calendar_contract = Some(accounts.eve);
             let mut project = Project::new(
                 String::from("Website Development"),
@@ -1642,9 +1836,24 @@ mod projects {
                 None, // ratings_contract
             );
 
-            // Manually set coordinator and team members for testing
+            // Set coordinator and propose/approve scope to get to ScopeAccepted
             project.coordinator = Some(accounts.charlie);
-            project.status = ProjectStatus::TeamAssigned;
+            project.status = ProjectStatus::CoordinatorAssigned;
+
+            // Propose scope
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks = vec![(1, TaskComplexity::Days(1), 100, vec![])];
+            project.propose_scope(tasks, 30, Hash::from([1u8; 32])).unwrap();
+
+            // Approve scope
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+            project.approve_scope(vec![1]).unwrap();
+
+            // Assign team
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            project.assign_team(2).unwrap();
+
+            // Manually set team members for testing
             project.team_members = vec![
                 TeamMember {
                     account_id: accounts.django,
@@ -1659,7 +1868,14 @@ mod projects {
             ];
 
             // Set caller to client
-            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+
+            // Complete the task first
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            project.submit_task_for_review(1).unwrap();
+
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+            project.complete_task(1).unwrap();
 
             // Check ratings are not set
             assert_eq!(project.team_members[0].rating, None);
@@ -1724,25 +1940,49 @@ mod projects {
 
             // Test task completion with dependencies
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            project.approve_scope(vec![1, 2, 3, 4]).unwrap();
+            project.approve_scope(vec![1, 2, 3, 4, 5]).unwrap();
 
-            // Complete task 1 first
+            // Assign team after scope is accepted
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            project.assign_team(2).unwrap();
+
+            // Submit task 1 for review (as coordinator)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.submit_task_for_review(1);
+            assert!(result.is_ok());
+
+            // Client completes task 1
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             let result = project.complete_task(1);
             assert!(result.is_ok());
 
-            // Try to complete task 4 (depends on 2 and 3, but they're not completed)
-            let result = project.complete_task(4);
+            // Try to submit task 4 for review (depends on 2 and 3, but they're not completed)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.submit_task_for_review(4);
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), Error::DependenciesNotCompleted);
 
-            // Complete tasks 2 and 3
+            // Submit tasks 2 and 3 for review
+            assert!(project.submit_task_for_review(2).is_ok());
+            assert!(project.submit_task_for_review(3).is_ok());
+
+            // Client completes tasks 2 and 3
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             assert!(project.complete_task(2).is_ok());
             assert!(project.complete_task(3).is_ok());
 
-            // Now task 4 should complete
+            // Now task 4 can be submitted for review
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            assert!(project.submit_task_for_review(4).is_ok());
+
+            // Client completes task 4
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             assert!(project.complete_task(4).is_ok());
 
             // Task 5 has no dependencies, should complete anytime
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            assert!(project.submit_task_for_review(5).is_ok());
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             assert!(project.complete_task(5).is_ok());
         }
 
@@ -1818,7 +2058,25 @@ mod projects {
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             project.approve_scope(vec![0, 255, 128]).unwrap();
 
+            // Assign team after scope is accepted
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            project.assign_team(2).unwrap();
+
+            // Submit task 0 for review (as coordinator) - no dependencies
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            assert!(project.submit_task_for_review(0).is_ok());
+
+            // Client completes task 0
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             assert!(project.complete_task(0).is_ok());
+
+            // Now submit tasks 128 and 255 for review (both depend on 0)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            assert!(project.submit_task_for_review(128).is_ok());
+            assert!(project.submit_task_for_review(255).is_ok());
+
+            // Client completes tasks 128 and 255
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             assert!(project.complete_task(128).is_ok());
             assert!(project.complete_task(255).is_ok());
         }
