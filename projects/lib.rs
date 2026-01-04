@@ -97,6 +97,8 @@ mod projects {
         pub completed: bool,
         /// Current approval status of the task
         pub status: TaskStatus,
+        /// Optional team member assigned to this task
+        pub assigned_to: Option<AccountId>,
     }
 
     /// Tracks a single revision of scope proposals
@@ -493,6 +495,30 @@ mod projects {
 
             let team_members = self.select_team_members(ideal_team_size)?;
             self.team_members = team_members.clone();
+            
+            // Assign approved tasks to team members
+            if let Some(scope) = &mut self.scope {
+                // Get all approved tasks
+                let approved_tasks: Vec<(u8, AccountId)> = scope
+                    .tasks
+                    .iter()
+                    .filter(|(_, task)| matches!(task.status, TaskStatus::Approved(_)))
+                    .enumerate()
+                    .map(|(idx, (task_id, _))| {
+                        // Distribute tasks evenly using round-robin
+                        let team_member_idx = idx % team_members.len();
+                        (*task_id, team_members[team_member_idx].account_id)
+                    })
+                    .collect();
+
+                // Assign tasks to team members
+                for (task_id, member_account_id) in approved_tasks {
+                    if let Some(task) = scope.tasks.get_mut(&task_id) {
+                        task.assigned_to = Some(member_account_id);
+                    }
+                }
+            }
+            
             self.status = ProjectStatus::TeamAssigned;
             let team_size_u32 = self
                 .team_members
@@ -916,6 +942,7 @@ mod projects {
                     dependencies,
                     completed: false,
                     status: TaskStatus::Pending,
+                    assigned_to: None,
                 };
                 total_cost = total_cost.saturating_add(cost);
                 scope.tasks.insert(id, task);
@@ -1703,6 +1730,170 @@ mod projects {
             assert!(team.iter().any(|member| member.account_id == accounts.eve));
 
             assert_eq!(project.status, ProjectStatus::TeamAssigned);
+        }
+
+        #[ink::test]
+        fn task_assignment_on_team_assignment_works() {
+            // Setup accounts
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // Create project with client as caller
+            test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+            let mut project = Project::new(
+                String::from("Test Project"),
+                accounts.django,
+                Some(accounts.eve),
+                None, // ratings_contract
+            );
+
+            // Set coordinator
+            project.coordinator = Some(accounts.charlie);
+            project.status = ProjectStatus::CoordinatorAssigned;
+
+            // Propose scope with multiple tasks
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks = vec![
+                (1, TaskComplexity::Days(1), 100, vec![]),
+                (2, TaskComplexity::Days(2), 200, vec![]),
+                (3, TaskComplexity::Days(3), 300, vec![]),
+                (4, TaskComplexity::Days(4), 400, vec![]),
+            ];
+            project.propose_scope(tasks, 30, Hash::from([1u8; 32])).unwrap();
+
+            // Approve all tasks
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+            project.approve_scope(vec![1, 2, 3, 4]).unwrap();
+            assert_eq!(project.status, ProjectStatus::ScopeAccepted);
+
+            // Assign team - this should automatically assign tasks
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.assign_team(2);
+            assert!(result.is_ok());
+
+            let team = result.unwrap();
+            assert_eq!(team.len(), 3);
+            
+            // Get team member account IDs
+            let member1 = team[0].account_id;
+            let member2 = team[1].account_id;
+            let member3 = team[2].account_id;
+
+            // Verify tasks are assigned using round-robin distribution
+            let all_tasks = project.get_all_tasks().unwrap();
+            
+            // Task 1 should be assigned to member1 (index 0)
+            let task1 = all_tasks.iter().find(|t| t.id == 1).unwrap();
+            assert_eq!(task1.assigned_to, Some(member1));
+
+            // Task 2 should be assigned to member2 (index 1)
+            let task2 = all_tasks.iter().find(|t| t.id == 2).unwrap();
+            assert_eq!(task2.assigned_to, Some(member2));
+
+            // Task 3 should be assigned to member3 (index 2)
+            let task3 = all_tasks.iter().find(|t| t.id == 3).unwrap();
+            assert_eq!(task3.assigned_to, Some(member3));
+
+            // Task 4 should be assigned to member1 again (round-robin)
+            let task4 = all_tasks.iter().find(|t| t.id == 4).unwrap();
+            assert_eq!(task4.assigned_to, Some(member1));
+        }
+
+        #[ink::test]
+        fn task_assignment_only_assigns_approved_tasks() {
+            // Setup accounts
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // Create project
+            test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+            let mut project = Project::new(
+                String::from("Test Project"),
+                accounts.django,
+                Some(accounts.eve),
+                None, // ratings_contract
+            );
+
+            // Set coordinator
+            project.coordinator = Some(accounts.charlie);
+            project.status = ProjectStatus::CoordinatorAssigned;
+
+            // Propose scope with multiple tasks
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks = vec![
+                (1, TaskComplexity::Days(1), 100, vec![]),
+                (2, TaskComplexity::Days(2), 200, vec![]),
+                (3, TaskComplexity::Days(3), 300, vec![]),
+            ];
+            project.propose_scope(tasks, 30, Hash::from([1u8; 32])).unwrap();
+
+            // Approve only tasks 1 and 3, reject task 2
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+            project.approve_scope(vec![1, 3]).unwrap();
+            assert_eq!(project.status, ProjectStatus::ScopeAccepted);
+
+            // Assign team
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.assign_team(2);
+            assert!(result.is_ok());
+
+            let team = result.unwrap();
+            let member1 = team[0].account_id;
+            let member2 = team[1].account_id;
+
+            // Verify only approved tasks are assigned
+            let all_tasks = project.get_all_tasks().unwrap();
+            
+            // Task 1 (approved) should be assigned to member1
+            let task1 = all_tasks.iter().find(|t| t.id == 1).unwrap();
+            assert_eq!(task1.assigned_to, Some(member1));
+
+            // Task 2 (rejected) should NOT be assigned
+            let task2 = all_tasks.iter().find(|t| t.id == 2).unwrap();
+            assert_eq!(task2.assigned_to, None);
+
+            // Task 3 (approved) should be assigned to member2
+            let task3 = all_tasks.iter().find(|t| t.id == 3).unwrap();
+            assert_eq!(task3.assigned_to, Some(member2));
+        }
+
+        #[ink::test]
+        fn task_assignment_with_single_task() {
+            // Setup accounts
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // Create project
+            test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+            let mut project = Project::new(
+                String::from("Test Project"),
+                accounts.django,
+                Some(accounts.eve),
+                None, // ratings_contract
+            );
+
+            // Set coordinator
+            project.coordinator = Some(accounts.charlie);
+            project.status = ProjectStatus::CoordinatorAssigned;
+
+            // Propose scope with single task
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks = vec![(1, TaskComplexity::Days(1), 100, vec![])];
+            project.propose_scope(tasks, 30, Hash::from([1u8; 32])).unwrap();
+
+            // Approve task
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+            project.approve_scope(vec![1]).unwrap();
+
+            // Assign team
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let result = project.assign_team(2);
+            assert!(result.is_ok());
+
+            let team = result.unwrap();
+            let member1 = team[0].account_id;
+
+            // Verify task is assigned to first member
+            let all_tasks = project.get_all_tasks().unwrap();
+            let task1 = all_tasks.iter().find(|t| t.id == 1).unwrap();
+            assert_eq!(task1.assigned_to, Some(member1));
         }
 
         #[ink::test]
