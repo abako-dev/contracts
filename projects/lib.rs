@@ -499,17 +499,22 @@ mod projects {
             // Assign approved tasks to team members
             if let Some(scope) = &mut self.scope {
                 // Get all approved tasks
-                let approved_tasks: Vec<(u8, AccountId)> = scope
-                    .tasks
-                    .iter()
-                    .filter(|(_, task)| matches!(task.status, TaskStatus::Approved(_)))
-                    .enumerate()
-                    .map(|(idx, (task_id, _))| {
-                        // Distribute tasks evenly using round-robin
-                        let team_member_idx = idx % team_members.len();
-                        (*task_id, team_members[team_member_idx].account_id)
-                    })
-                    .collect();
+                let approved_tasks: Vec<(u8, AccountId)> = if team_members.is_empty() {
+                    Vec::new()
+                } else {
+                    let team_size = team_members.len();
+                    scope
+                        .tasks
+                        .iter()
+                        .filter(|(_, task)| matches!(task.status, TaskStatus::Approved(_)))
+                        .enumerate()
+                        .map(|(idx, (task_id, _))| {
+                            // Distribute tasks evenly using round-robin
+                            let team_member_idx = idx.checked_rem(team_size).unwrap_or(0);
+                            (*task_id, team_members[team_member_idx].account_id)
+                        })
+                        .collect()
+                };
 
                 // Assign tasks to team members
                 for (task_id, member_account_id) in approved_tasks {
