@@ -383,13 +383,6 @@ mod projects {
     /// Convenient Result type alias for contract operations
     pub type Result<T> = core::result::Result<T, Error>;
 
-    #[ink(event)]
-    pub struct DebugPayment {
-        payment_due: Balance,
-        asset_id: u32,
-        is_test: bool,
-    }
-
     impl Project {
         /// Creates a new project instance
         ///
@@ -1139,13 +1132,6 @@ mod projects {
                 let payment_due = advance_payment.saturating_sub(self.paid_amount);
 
                 if payment_due > 0 {
-                    let is_test = cfg!(test);
-                    self.env().emit_event(DebugPayment {
-                        payment_due,
-                        asset_id: self.asset_id,
-                        is_test,
-                    });
-
                     // Transfer Asset from client to contract
                     {
                         use kreivo_apis::{apis::{AssetsAPI, KreivoAPI}, KreivoApi};
