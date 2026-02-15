@@ -134,16 +134,22 @@ impl crate::projects::Project {
                     account_id: accounts.django,
                     role: String::from("Designer"),
                     rating: None,
+                    rating_from_coordinator: None,
+                    rating_for_coordinator: None,
                 },
                 TeamMember {
                     account_id: accounts.frank,
                     role: String::from("Developer"),
                     rating: None,
+                    rating_from_coordinator: None,
+                    rating_for_coordinator: None,
                 },
                 TeamMember {
                     account_id: accounts.eve,
                     role: String::from("Tester"),
                     rating: None,
+                    rating_from_coordinator: None,
+                    rating_for_coordinator: None,
                 },
             ];
 
@@ -185,6 +191,8 @@ impl crate::projects::Project {
                     account_id: designer_info.worker,
                     role: String::from("Designer"),
                     rating: None,
+                    rating_from_coordinator: None,
+                    rating_for_coordinator: None,
                 });
             }
 
@@ -194,6 +202,8 @@ impl crate::projects::Project {
                     account_id: developer_info.worker,
                     role: String::from("Developer"),
                     rating: None,
+                    rating_from_coordinator: None,
+                    rating_for_coordinator: None,
                 });
             }
 
@@ -203,6 +213,8 @@ impl crate::projects::Project {
                     account_id: tester_info.worker,
                     role: String::from("Tester"),
                     rating: None,
+                    rating_from_coordinator: None,
+                    rating_for_coordinator: None,
                 });
             }
 
