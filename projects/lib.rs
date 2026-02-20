@@ -26,7 +26,7 @@ mod assignment;
 ///
 /// ## Integration
 /// The contract integrates with a Calendar contract for worker availability management.
-#[ink::contract]
+#[ink::contract(env = kreivo_apis::KreivoApiEnvironment)]
 mod projects {
     use ink::prelude::collections::{BTreeMap, BTreeSet};
     use ink::prelude::string::String;
@@ -148,7 +148,6 @@ mod projects {
         pub tasks: BTreeMap<u8, Task>,
         /// Percentage (0-100) of total cost to be paid upfront by client
         pub advance_payment_percentage: u8,
-        /// Hash of project specification/requirements document
 
         /// History of all scope revisions
         pub revisions: Vec<ScopeRevision>,
@@ -236,6 +235,8 @@ mod projects {
         total_cost: Balance,
         /// Amount already paid by the client
         paid_amount: Balance,
+        /// Asset ID used for payments
+        asset_id: u32,
     }
 
     /// Event emitted when a coordinator is assigned to the project
@@ -391,6 +392,16 @@ mod projects {
         TaskIdAlreadyExists,
         /// Task must be approved before it can be submitted for review
         TaskNotApproved,
+        /// Insufficient payment sent with the transaction
+        InsufficientPayment,
+        /// Transfer of funds failed
+        TransferFailed,
+        /// Asset transfer failed via Kreivo API
+        AssetTransferFailed,
+        /// Asset deposit from client to contract failed
+        AssetDepositFailed,
+        /// Asset payment from contract to coordinator failed
+        AssetPaymentFailed,
     }
 
     /// Convenient Result type alias for contract operations
@@ -414,6 +425,7 @@ mod projects {
         #[ink(constructor)]
         pub fn new(
             name: String,
+            client: AccountId,
             dao_address: AccountId,
             calendar_contract: Option<AccountId>,
             ratings_contract: Option<AccountId>,
@@ -427,7 +439,7 @@ mod projects {
 
             Self {
                 name,
-                client: Self::env().caller(),
+                client,
                 dao_address,
                 coordinator: None,
                 team_members: Vec::new(),
@@ -439,6 +451,7 @@ mod projects {
                 client_rating_from_coordinator: None,
                 total_cost: 0,
                 paid_amount: 0,
+                asset_id: 1, // Default to Asset ID 1
             }
         }
 
@@ -520,6 +533,9 @@ mod projects {
             }
 
             let team_members = self.select_team_members(ideal_team_size)?;
+            if team_members.is_empty() {
+                return Err(Error::NoAvailableTeamMembers);
+            }
             self.team_members = team_members.clone();
             
             // Assign approved tasks to team members
@@ -686,9 +702,47 @@ mod projects {
                     .checked_sub(self.paid_amount)
                     .ok_or(Error::ArithmeticFailure)?;
 
-                // TODO: this would trigger the remaining payment
-                // to be transferred from client to coordinator/team
-                // For now, just update the paid amount
+                // Transfer remaining Asset 1 from client to contract
+                if remaining_payment > 0 {
+                    {
+                        use kreivo_apis::{apis::{AssetsAPI, KreivoAPI}, KreivoApi};
+
+                        <KreivoApi as KreivoAPI<_>>::Assets::deposit(
+                            &self.env(),
+                            virto_common::FungibleAssetLocation::Here(self.asset_id),
+                            remaining_payment,
+                        )
+                        .map_err(|_| Error::AssetDepositFailed)?;
+                    }
+                }
+
+                // Transfer total cost to coordinator
+                if let Some(coordinator) = self.coordinator {
+                    {
+                        use kreivo_apis::{apis::{AssetsAPI, KreivoAPI}, KreivoApi};
+
+                        // Check contract balance before transfer
+                        let contract_balance = <KreivoApi as KreivoAPI<_>>::Assets::balance(
+                            &self.env(),
+                            virto_common::FungibleAssetLocation::Here(self.asset_id),
+                            &self.env().account_id(),
+                        );
+
+                        // Transfer balance - 1 to avoid issues (Existential Deposit) Probably exclude the fee by the community?
+                        let transfer_amount = contract_balance.saturating_sub(1);
+
+                        if transfer_amount > 0 {
+                            <KreivoApi as KreivoAPI<_>>::Assets::transfer(
+                                &self.env(),
+                                virto_common::FungibleAssetLocation::Here(self.asset_id),
+                                transfer_amount,
+                                &coordinator,
+                            )
+                            .map_err(|_| Error::AssetPaymentFailed)?;
+                        }
+                    }
+                }
+
                 self.paid_amount = self.total_cost;
             }
 
@@ -1260,6 +1314,23 @@ mod projects {
                     .saturating_mul(advance_payment_percentage as u128)
                     .saturating_div(100);
 
+                // Calculate payment due (incremental)
+                let payment_due = advance_payment.saturating_sub(self.paid_amount);
+
+                if payment_due > 0 {
+                    // Transfer Asset from client to contract
+                    {
+                        use kreivo_apis::{apis::{AssetsAPI, KreivoAPI}, KreivoApi};
+                        
+                        <KreivoApi as KreivoAPI<_>>::Assets::deposit(
+                            &self.env(),
+                            virto_common::FungibleAssetLocation::Here(self.asset_id),
+                            payment_due,
+                        )
+                        .map_err(|_| Error::AssetTransferFailed)?;
+                    }
+                }
+                
                 self.paid_amount = advance_payment;
             }
 
@@ -1545,17 +1616,19 @@ mod projects {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use ink::codegen::Env;
         use ink::env::test;
 
         // No test helper functions needed - we handle testing directly in the test methods
 
         fn setup_project() -> Project {
+            
             let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
-
+            test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
             // Create a project with a calendar contract and ratings contract
             let mut project = Project::new(
                 String::from("Test Project"),
-                accounts.django,
+                accounts.bob,
                 Some(accounts.eve),
                 None, // ratings_contract
             );
@@ -1601,6 +1674,7 @@ mod projects {
 
             // Approve all tasks (as client)
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            // 30% of 6000 = 1800
             let result = project.approve_scope(vec![1, 2, 3]);
             assert!(result.is_ok());
             assert_eq!(project.status, ProjectStatus::ScopeAccepted);
@@ -1679,7 +1753,9 @@ mod projects {
                 ratings.push((member.account_id, 90));
             }
 
-            let result = project.mark_completed(ratings, 100);
+            // Send remaining payment (6000 - 1800 = 4200)
+            ink::env::test::set_value_transferred::<ink::env::DefaultEnvironment>(4200);
+            let result = project.mark_completed(ratings);
             assert!(result.is_ok());
             assert_eq!(project.status, ProjectStatus::Completed);
             assert_eq!(project.paid_amount, 6000); // Full payment should be made
@@ -1705,6 +1781,8 @@ mod projects {
             assert!(result.is_ok());
 
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            // 20% of 7500 = 1500
+            ink::env::test::set_value_transferred::<ink::env::DefaultEnvironment>(1500);
             let result = project.approve_scope(vec![1, 2, 3, 4]);
             assert!(result.is_ok());
 
@@ -1789,6 +1867,8 @@ mod projects {
 
             // Approve scope as client
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            // 20% of 6000 = 1200
+            ink::env::test::set_value_transferred::<ink::env::DefaultEnvironment>(1200);
             let result = project.approve_scope(vec![1, 2, 3]);
             assert!(result.is_ok());
 
@@ -1827,7 +1907,9 @@ mod projects {
             project.complete_task(3).unwrap();
 
             // Now mark project as completed
-            let result = project.mark_completed(ratings, 100);
+            // Remaining payment: 6000 - 1200 = 4800
+            ink::env::test::set_value_transferred::<ink::env::DefaultEnvironment>(4800);
+            let result = project.mark_completed(ratings);
             assert!(result.is_ok());
             assert_eq!(project.status, ProjectStatus::Completed);
 
@@ -2776,6 +2858,69 @@ mod projects {
             // Test get_current_revision
             let current = project.get_current_revision().unwrap();
             assert_eq!(current.version, 1);
+        }
+
+        #[ink::test]
+        fn escrow_flow_works() {
+            let mut project = setup_project();
+            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            // Initial balances
+            let client_initial_balance = test::get_account_balance::<ink::env::DefaultEnvironment>(accounts.alice).unwrap();
+            let coordinator_initial_balance = test::get_account_balance::<ink::env::DefaultEnvironment>(accounts.charlie).unwrap();
+            let contract_address = project.env().account_id();
+            
+            // Contract should start with 0 balance (or endowment)
+            let contract_initial_balance = test::get_account_balance::<ink::env::DefaultEnvironment>(contract_address).unwrap();
+
+            // Propose scope
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            let tasks = vec![(1, TaskComplexity::Days(1), 1000, vec![])];
+            project.propose_scope(tasks, 30, Hash::from([1u8; 32])).unwrap();
+
+            // Approve scope (Client pays advance: 30% of 1000 = 300)
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            // No need to set_value_transferred anymore as we use assets
+            // ink::env::test::set_value_transferred::<ink::env::DefaultEnvironment>(300);
+            
+            // We don't need to manually credit contract balance for native tokens anymore
+            // But we rely on the mocked chain extension to return success
+            
+            project.approve_scope(vec![1]).unwrap();
+
+            // Verify contract state
+            assert_eq!(project.paid_amount, 300);
+
+            // Assign team
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+            project.assign_team(2).unwrap();
+
+            // Complete task
+            project.submit_task_for_review(1).unwrap();
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            project.complete_task(1).unwrap();
+
+            // Mark completed (Client pays remaining: 700)
+            // We need team members for mark_completed
+            // Manually set team members for testing
+            project.team_members = vec![
+                TeamMember {
+                    account_id: accounts.django,
+                    role: String::from("Designer"),
+                    rating: None,
+                },
+            ];
+            let ratings = vec![(accounts.django, 10)];
+
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            // No need to set_value_transferred
+            // ink::env::test::set_value_transferred::<ink::env::DefaultEnvironment>(700);
+            
+            project.mark_completed(ratings).unwrap();
+
+            // Verify contract state
+            assert_eq!(project.paid_amount, 1000);
+            assert_eq!(project.status, ProjectStatus::Completed);
         }
     }
 }

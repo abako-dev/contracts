@@ -8,6 +8,9 @@ edition = "2021"
 ink = { version = "5.1.1", default-features = false }
 scale = { package = "parity-scale-codec", version = "3", default-features = false, features = ["derive"] }
 scale-info = { version = "2.6", default-features = false, features = ["derive"], optional = true }
+kreivo-apis = { git = "https://github.com/b-avb/kreivo", branch = "downgrade-storage-compatibility", default-features = false, features = ["contract"] }
+virto-common = { git = "https://github.com/b-avb/kreivo", branch = "downgrade-storage-compatibility", default-features = false, features = ["scale"] }
+
 
 [dev-dependencies]
 ink_e2e = { version = "5.1.1" }
@@ -21,6 +24,8 @@ std = [
     "ink/std",
     "scale/std",
     "scale-info/std",
+    "kreivo-apis/std",
+    "virto-common/std",
 ]
 ink-as-dependency = []
 e2e-tests = []
