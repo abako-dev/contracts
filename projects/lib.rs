@@ -46,8 +46,12 @@ mod projects {
         pub(crate) account_id: AccountId,
         /// The role of the team member (e.g., "Developer", "Designer", "Tester")
         pub(crate) role: String,
-        /// Optional rating from 0-10 given by client upon project completion
+        /// Optional rating from 0-100 given by client upon project completion
         pub(crate) rating: Option<u8>,
+        /// Optional rating from 0-100 given by coordinator to team member
+        pub(crate) rating_from_coordinator: Option<u8>,
+        /// Optional rating from 0-100 given by team member to coordinator
+        pub(crate) rating_for_coordinator: Option<u8>,
     }
 
     /// Defines the complexity level of a task for estimation purposes
@@ -76,6 +80,22 @@ mod projects {
         Rejected(u32),
         /// Task has been completed by coordinator and is pending client review
         PendingReview(u32),
+    }
+
+    /// Categories for different types of ratings in the platform ecosystem
+    #[derive(Debug, scale::Encode, scale::Decode, PartialEq, Clone, Copy)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
+    pub enum RatingCategory {
+        /// Client rating the Coordinator (Consultant)
+        ClientToCoordinator,
+        /// Client rating a Team Member (Developer/Designer)
+        ClientToTeamMember,
+        /// Coordinator rating the Client
+        CoordinatorToClient,
+        /// Coordinator rating a Team Member
+        CoordinatorToTeamMember,
+        /// Team Member rating the Coordinator
+        TeamMemberToCoordinator,
     }
 
     /// Represents an individual work item within the project scope
@@ -180,7 +200,7 @@ mod projects {
     pub trait WorkerRatings {
         /// Add a rating for a worker
         #[ink(message)]
-        fn add_rating(&mut self, worker: AccountId, rating: u8) -> Result<()>;
+        fn add_rating(&mut self, worker: AccountId, rating: u8, category: RatingCategory) -> Result<()>;
     }
 
     /// Main project contract storage containing all project state
@@ -207,6 +227,10 @@ mod projects {
         ratings_contract: Option<AccountId>,
         /// Optional project scope defined by the coordinator
         scope: Option<ProjectScope>,
+        /// Rating given by client to coordinator
+        coordinator_rating_from_client: Option<u8>,
+        /// Rating given by coordinator to client
+        client_rating_from_coordinator: Option<u8>,
         /// Total cost of the project in tokens (sum of all task costs)
         total_cost: Balance,
         /// Amount already paid by the client
@@ -309,7 +333,7 @@ mod projects {
         CoordinatorNotAssigned,
         /// Specified team member not found in project team
         TeamMemberNotFound,
-        /// Rating value must be between 0-10
+        /// Rating value must be between 0-100
         InvalidRatingValue,
         /// Number of ratings doesn't match number of team members
         RatingsCountMismatch,
@@ -423,6 +447,8 @@ mod projects {
                 calendar_contract,
                 ratings_contract,
                 scope: None,
+                coordinator_rating_from_client: None,
+                client_rating_from_coordinator: None,
                 total_cost: 0,
                 paid_amount: 0,
                 asset_id: 1, // Default to Asset ID 1
@@ -550,14 +576,15 @@ mod projects {
             Ok(team_members)
         }
 
-        /// Marks the project as completed with team member ratings
+        /// Marks the project as completed with team member and coordinator ratings
         ///
         /// Only the client can call this function once all tasks are completed.
-        /// The client must provide ratings for all team members.
+        /// The client must provide ratings for all team members and the coordinator.
         ///
         /// # Parameters
         /// - `ratings`: Vector of (AccountId, rating) pairs for each team member
-        ///   where rating is 0-10
+        ///   where rating is 0-100
+        /// - `coordinator_rating`: Rating for the coordinator (0-100)
         ///
         /// # Errors
         /// - `NotAuthorized`: Caller is not the client
@@ -565,16 +592,21 @@ mod projects {
         /// - `InvalidProjectState`: Project not in TeamAssigned state
         /// - `TasksNotCompleted`: Not all tasks are completed
         /// - `RatingsCountMismatch`: Number of ratings doesn't match team size
-        /// - `InvalidRatingValue`: Rating value not between 0-10
+        /// - `InvalidRatingValue`: Rating value not between 0-100
         /// - `TeamMemberNotFound`: Rating provided for non-existent team member
         ///
         /// # State Changes
         /// - Updates team member ratings
+        /// - Updates coordinator rating
         /// - Sets status to Completed
         /// - Updates paid_amount to total_cost
         /// - Emits ProjectCompleted event
         #[ink(message)]
-        pub fn mark_completed(&mut self, ratings: Vec<(AccountId, u8)>) -> Result<()> {
+        pub fn mark_completed(
+            &mut self,
+            ratings: Vec<(AccountId, u8)>,
+            coordinator_rating: u8,
+        ) -> Result<()> {
             let caller = self.env().caller();
 
             if caller != self.client {
@@ -604,6 +636,12 @@ mod projects {
                 return Err(Error::RatingsCountMismatch);
             }
 
+            if coordinator_rating > 100 {
+                return Err(Error::InvalidRatingValue);
+            }
+
+            self.coordinator_rating_from_client = Some(coordinator_rating);
+
             // Apply ratings to team members
             for (account_id, rating) in &ratings {
                 if *rating > 100 {
@@ -626,6 +664,7 @@ mod projects {
             if let Some(ratings_contract) = self.ratings_contract {
                 use ink::env::call::{build_call, ExecutionInput, Selector};
                 
+                // Add ratings for team members
                 for (account_id, rating) in &ratings {
                     let _ = build_call::<ink::env::DefaultEnvironment>()
                         .call(ratings_contract)
@@ -633,6 +672,21 @@ mod projects {
                             ExecutionInput::new(Selector::new(ink::selector_bytes!("add_rating")))
                                 .push_arg(*account_id)
                                 .push_arg(*rating)
+                                .push_arg(RatingCategory::ClientToTeamMember)
+                        )
+                        .returns::<Result<()>>()
+                        .try_invoke();
+                }
+
+                // Add rating for coordinator
+                if let Some(coordinator) = self.coordinator {
+                    let _ = build_call::<ink::env::DefaultEnvironment>()
+                        .call(ratings_contract)
+                        .exec_input(
+                            ExecutionInput::new(Selector::new(ink::selector_bytes!("add_rating")))
+                                .push_arg(coordinator)
+                                .push_arg(coordinator_rating)
+                                .push_arg(RatingCategory::ClientToCoordinator)
                         )
                         .returns::<Result<()>>()
                         .try_invoke();
@@ -700,6 +754,138 @@ mod projects {
                 client: self.client,
                 final_payment: remaining_payment,
             });
+
+            Ok(())
+        }
+
+
+        /// Allows the coordinator to rate the client and team members
+        ///
+        /// Can only be called after project is completed.
+        #[ink(message)]
+        pub fn submit_coordinator_ratings(
+            &mut self,
+            client_rating: u8,
+            team_ratings: Vec<(AccountId, u8)>,
+        ) -> Result<()> {
+            let caller = self.env().caller();
+
+            // Verify caller is coordinator
+            if Some(caller) != self.coordinator {
+                return Err(Error::NotAuthorized);
+            }
+
+            // Verify project is completed
+            if self.status != ProjectStatus::Completed {
+                return Err(Error::InvalidProjectState);
+            }
+
+            // Verify ratings
+            if client_rating > 100 {
+                return Err(Error::InvalidRatingValue);
+            }
+
+            if team_ratings.len() != self.team_members.len() {
+                return Err(Error::RatingsCountMismatch);
+            }
+
+            self.client_rating_from_coordinator = Some(client_rating);
+
+            // Apply ratings to team members
+            for (account_id, rating) in &team_ratings {
+                if *rating > 100 {
+                    return Err(Error::InvalidRatingValue);
+                }
+
+                let team_member = self
+                    .team_members
+                    .iter_mut()
+                    .find(|m| m.account_id == *account_id);
+
+                if let Some(member) = team_member {
+                    member.rating_from_coordinator = Some(*rating);
+                } else {
+                    return Err(Error::TeamMemberNotFound);
+                }
+            }
+
+            // Push ratings to ratings contract
+            if let Some(ratings_contract) = self.ratings_contract {
+                use ink::env::call::{build_call, ExecutionInput, Selector};
+                
+                // Rate client
+                let _ = build_call::<ink::env::DefaultEnvironment>()
+                    .call(ratings_contract)
+                    .exec_input(
+                        ExecutionInput::new(Selector::new(ink::selector_bytes!("add_rating")))
+                            .push_arg(self.client)
+                            .push_arg(client_rating)
+                            .push_arg(RatingCategory::CoordinatorToClient)
+                    )
+                    .returns::<Result<()>>()
+                    .try_invoke();
+
+                // Rate team members
+                for (account_id, rating) in &team_ratings {
+                     let _ = build_call::<ink::env::DefaultEnvironment>()
+                        .call(ratings_contract)
+                        .exec_input(
+                            ExecutionInput::new(Selector::new(ink::selector_bytes!("add_rating")))
+                                .push_arg(*account_id)
+                                .push_arg(*rating)
+                                .push_arg(RatingCategory::CoordinatorToTeamMember)
+                        )
+                        .returns::<Result<()>>()
+                        .try_invoke();
+                }
+            }
+
+            Ok(())
+        }
+
+        /// Allows a team member to rate the coordinator
+        ///
+        /// Can only be called after project is completed.
+        #[ink(message)]
+        pub fn submit_developer_rating(&mut self, rating: u8) -> Result<()> {
+            let caller = self.env().caller();
+
+            // Verify caller is a team member
+            let team_member_idx = self
+                .team_members
+                .iter()
+                .position(|m| m.account_id == caller)
+                .ok_or(Error::NotAuthorized)?;
+
+            // Verify project is completed
+            if self.status != ProjectStatus::Completed {
+                return Err(Error::InvalidProjectState);
+            }
+
+            if rating > 100 {
+                return Err(Error::InvalidRatingValue);
+            }
+
+            // Update local state
+            self.team_members[team_member_idx].rating_for_coordinator = Some(rating);
+
+            // Push rating to ratings contract
+            if let Some(ratings_contract) = self.ratings_contract {
+                if let Some(coordinator) = self.coordinator {
+                     use ink::env::call::{build_call, ExecutionInput, Selector};
+                     
+                     let _ = build_call::<ink::env::DefaultEnvironment>()
+                        .call(ratings_contract)
+                        .exec_input(
+                            ExecutionInput::new(Selector::new(ink::selector_bytes!("add_rating")))
+                                .push_arg(coordinator)
+                                .push_arg(rating)
+                                .push_arg(RatingCategory::TeamMemberToCoordinator)
+                        )
+                        .returns::<Result<()>>()
+                        .try_invoke();
+                }
+            }
 
             Ok(())
         }
@@ -1547,11 +1733,15 @@ mod projects {
                         account_id: accounts.django,
                         role: String::from("Designer"),
                         rating: None,
+                        rating_from_coordinator: None,
+                        rating_for_coordinator: None,
                     },
                     TeamMember {
                         account_id: accounts.frank,
                         role: String::from("Developer"),
                         rating: None,
+                        rating_from_coordinator: None,
+                        rating_for_coordinator: None,
                     },
                 ];
             }
@@ -1560,7 +1750,7 @@ mod projects {
             let team = project.get_team();
             let mut ratings = Vec::new();
             for member in &team {
-                ratings.push((member.account_id, 9));
+                ratings.push((member.account_id, 90));
             }
 
             // Send remaining payment (6000 - 1800 = 4200)
@@ -1651,7 +1841,7 @@ mod projects {
 
             // Try to submit a non-existent task for review
             ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
-            let result = project.submit_task_for_review(10);
+            let result = project.submit_task_for_review(100);
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), Error::TaskNotFound);
         }
@@ -1707,7 +1897,7 @@ mod projects {
             }
 
             // Try to mark project as completed with incomplete tasks
-            let result = project.mark_completed(ratings.clone());
+            let result = project.mark_completed(ratings.clone(), 100);
             assert!(result.is_err());
 
             // Submit task 3 for review and client completes
@@ -2132,11 +2322,15 @@ mod projects {
                     account_id: accounts.django,
                     role: String::from("Designer"),
                     rating: None,
+                    rating_from_coordinator: None,
+                    rating_for_coordinator: None,
                 },
                 TeamMember {
                     account_id: accounts.frank,
                     role: String::from("Developer"),
                     rating: None,
+                    rating_from_coordinator: None,
+                    rating_for_coordinator: None,
                 },
             ];
 
@@ -2155,15 +2349,15 @@ mod projects {
             assert_eq!(project.team_members[1].rating, None);
 
             // Mark project as completed with ratings
-            let ratings = vec![(accounts.django, 8), (accounts.frank, 9)];
+            let ratings = vec![(accounts.django, 80), (accounts.frank, 90)];
 
-            let result = project.mark_completed(ratings);
+            let result = project.mark_completed(ratings, 100);
             assert!(result.is_ok());
             assert_eq!(project.status, ProjectStatus::Completed);
 
             // Check ratings are set
-            assert_eq!(project.team_members[0].rating, Some(8));
-            assert_eq!(project.team_members[1].rating, Some(9));
+            assert_eq!(project.team_members[0].rating, Some(80));
+            assert_eq!(project.team_members[1].rating, Some(90));
         }
 
         #[ink::test]

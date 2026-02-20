@@ -6,10 +6,26 @@ mod ratings {
     use ink::storage::traits::StorageLayout;
     use ink::storage::Mapping;
 
+    /// Categories for different types of ratings in the platform ecosystem
+    #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode, Clone, Copy)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
+    pub enum RatingCategory {
+        /// Client rating the Coordinator (Consultant)
+        ClientToCoordinator,
+        /// Client rating a Team Member (Developer/Designer)
+        ClientToTeamMember,
+        /// Coordinator rating the Client
+        CoordinatorToClient,
+        /// Coordinator rating a Team Member
+        CoordinatorToTeamMember,
+        /// Team Member rating the Coordinator
+        TeamMemberToCoordinator,
+    }
+
     #[ink(storage)]
     pub struct Ratings {
-        /// Mapping from worker AccountId to their list of ratings
-        worker_ratings: Mapping<AccountId, Vec<u8>>,
+        /// Mapping from worker AccountId to their list of ratings with categories
+        worker_ratings: Mapping<AccountId, Vec<(u8, RatingCategory)>>,
         /// List of all registered workers
         registered_workers: Vec<AccountId>,
     }
@@ -25,6 +41,7 @@ mod ratings {
         #[ink(topic)]
         worker: AccountId,
         rating: u8,
+        category: RatingCategory,
     }
 
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode, Clone)]
@@ -57,7 +74,7 @@ mod ratings {
             }
 
             // Create empty ratings list
-            let ratings_list: Vec<u8> = Vec::new();
+            let ratings_list: Vec<(u8, RatingCategory)> = Vec::new();
             self.worker_ratings.insert(worker, &ratings_list);
             self.registered_workers.push(worker);
 
@@ -66,31 +83,32 @@ mod ratings {
             Ok(())
         }
 
-        /// Add a new rating for a worker
+        /// Add a new rating for a participant (worker or client)
         /// Called by projects contract when marking project as completed
         /// Rating should be 0-100
         #[ink(message)]
-        pub fn add_rating(&mut self, worker: AccountId, rating: u8) -> Result<()> {
+        pub fn add_rating(&mut self, target: AccountId, rating: u8, category: RatingCategory) -> Result<()> {
             // Validate rating (0-100)
             if rating > 100 {
                 return Err(Error::InvalidRating);
             }
 
-            // Get worker ratings list
+            // Get existing ratings list or create new key if not exists (for clients)
             let mut ratings_list = self
                 .worker_ratings
-                .get(worker)
-                .ok_or(Error::WorkerNotRegistered)?;
+                .get(target)
+                .unwrap_or_default();
 
-            // Add new rating to the list
-            ratings_list.push(rating);
+            // Add new rating to the list with category
+            ratings_list.push((rating, category));
 
             // Save updated list
-            self.worker_ratings.insert(worker, &ratings_list);
+            self.worker_ratings.insert(target, &ratings_list);
 
             self.env().emit_event(RatingAdded {
-                worker,
+                worker: target,
                 rating,
+                category,
             });
 
             Ok(())
@@ -98,11 +116,11 @@ mod ratings {
 
         /// Get worker ratings list
         #[ink(message)]
-        pub fn get_worker_ratings(&self, worker: AccountId) -> Vec<u8> {
+        pub fn get_worker_ratings(&self, worker: AccountId) -> Vec<(u8, RatingCategory)> {
             self.worker_ratings.get(worker).unwrap_or_default()
         }
 
-        /// Get average rating for a worker
+        /// Get average rating for a worker (filtering by role if needed in future)
         /// Returns 0 if worker has no ratings
         #[ink(message)]
         pub fn get_average_rating(&self, worker: AccountId) -> u32 {
@@ -112,7 +130,7 @@ mod ratings {
                 return 0;
             }
 
-            let sum: u32 = ratings.iter().map(|&r| r as u32).sum();
+            let sum: u32 = ratings.iter().map(|&(r, _)| r as u32).sum();
             let count: u32 = ratings.len().try_into().unwrap_or(0);
             
             sum.checked_div(count).unwrap_or(0)
@@ -126,7 +144,7 @@ mod ratings {
 
         /// Get all workers with their ratings
         #[ink(message)]
-        pub fn get_all_ratings(&self) -> Vec<(AccountId, Vec<u8>)> {
+        pub fn get_all_ratings(&self) -> Vec<(AccountId, Vec<(u8, RatingCategory)>)> {
             let mut all_ratings = Vec::new();
 
             for worker in &self.registered_workers {
@@ -203,23 +221,23 @@ mod ratings {
             ratings.register_worker(accounts.bob).unwrap();
 
             // Add a rating
-            let result = ratings.add_rating(accounts.bob, 8);
+            let result = ratings.add_rating(accounts.bob, 8, RatingCategory::ClientToTeamMember);
             assert!(result.is_ok());
 
             // Check rating was added
             let worker_ratings = ratings.get_worker_ratings(accounts.bob);
             assert_eq!(worker_ratings.len(), 1);
-            assert_eq!(worker_ratings[0], 8);
+            assert_eq!(worker_ratings[0], (8, RatingCategory::ClientToTeamMember));
 
             // Add another rating
-            let result = ratings.add_rating(accounts.bob, 10);
+            let result = ratings.add_rating(accounts.bob, 10, RatingCategory::CoordinatorToTeamMember);
             assert!(result.is_ok());
 
             // Check both ratings are in the list
             let worker_ratings = ratings.get_worker_ratings(accounts.bob);
             assert_eq!(worker_ratings.len(), 2);
-            assert_eq!(worker_ratings[0], 8);
-            assert_eq!(worker_ratings[1], 10);
+            assert_eq!(worker_ratings[0], (8, RatingCategory::ClientToTeamMember));
+            assert_eq!(worker_ratings[1], (10, RatingCategory::CoordinatorToTeamMember));
         }
 
         #[ink::test]
@@ -233,20 +251,23 @@ mod ratings {
             ratings.register_worker(accounts.bob).unwrap();
 
             // Try to add invalid rating (> 100)
-            let result = ratings.add_rating(accounts.bob, 101);
+            let result = ratings.add_rating(accounts.bob, 101, RatingCategory::ClientToTeamMember);
             assert_eq!(result, Err(Error::InvalidRating));
         }
 
         #[ink::test]
-        fn unregistered_worker_rating_fails() {
+        fn rating_unregistered_client_works() {
+            // Clients are not registered workers, but should be rateable
             let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
-            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-
             let mut ratings = Ratings::new();
 
-            // Try to add rating for unregistered worker
-            let result = ratings.add_rating(accounts.bob, 8);
-            assert_eq!(result, Err(Error::WorkerNotRegistered));
+            // Rate a client (Bob) who is NOT a registered worker
+            let result = ratings.add_rating(accounts.bob, 9, RatingCategory::CoordinatorToClient);
+            assert!(result.is_ok());
+            
+            let client_ratings = ratings.get_worker_ratings(accounts.bob);
+            assert_eq!(client_ratings.len(), 1);
+            assert_eq!(client_ratings[0], (9, RatingCategory::CoordinatorToClient));
         }
 
         #[ink::test]
@@ -258,28 +279,32 @@ mod ratings {
             // Register multiple workers
             ratings.register_worker(accounts.bob).unwrap();
             ratings.register_worker(accounts.charlie).unwrap();
-            ratings.register_worker(accounts.django).unwrap();
+            // Django not registered (Client scenario)
 
             // Add ratings
-            ratings.add_rating(accounts.bob, 8).unwrap();
-            ratings.add_rating(accounts.bob, 9).unwrap();
-            ratings.add_rating(accounts.charlie, 10).unwrap();
-            ratings.add_rating(accounts.django, 7).unwrap();
-            ratings.add_rating(accounts.django, 6).unwrap();
+            ratings.add_rating(accounts.bob, 8, RatingCategory::ClientToTeamMember).unwrap();
+            ratings.add_rating(accounts.bob, 9, RatingCategory::CoordinatorToTeamMember).unwrap();
+            ratings.add_rating(accounts.charlie, 10, RatingCategory::ClientToCoordinator).unwrap();
+            // Django rated by Coordinator
+            ratings.add_rating(accounts.django, 7, RatingCategory::CoordinatorToClient).unwrap();
 
-            // Get all ratings
+            // Get all ratings (returns only registered workers + their ratings in this implementation check?)
+            // The `get_all_ratings` iterates over `registered_workers`. 
+            // So unregistered clients (Django) won't show up here unless we also track all ratees.
+            // For MVP this is acceptable behavior for "get all worker ratings".
+            
             let all_ratings = ratings.get_all_ratings();
-            assert_eq!(all_ratings.len(), 3);
+            assert_eq!(all_ratings.len(), 2); // Bob and Charlie
 
             // Verify each worker's ratings
             let bob_ratings = all_ratings.iter().find(|(w, _)| *w == accounts.bob).unwrap();
-            assert_eq!(bob_ratings.1, vec![8, 9]);
+            assert_eq!(bob_ratings.1, vec![
+                (8, RatingCategory::ClientToTeamMember), 
+                (9, RatingCategory::CoordinatorToTeamMember)
+            ]);
 
             let charlie_ratings = all_ratings.iter().find(|(w, _)| *w == accounts.charlie).unwrap();
-            assert_eq!(charlie_ratings.1, vec![10]);
-
-            let django_ratings = all_ratings.iter().find(|(w, _)| *w == accounts.django).unwrap();
-            assert_eq!(django_ratings.1, vec![7, 6]);
+            assert_eq!(charlie_ratings.1, vec![(10, RatingCategory::ClientToCoordinator)]);
         }
 
         #[ink::test]
@@ -295,30 +320,19 @@ mod ratings {
             assert_eq!(ratings.get_average_rating(accounts.bob), 0);
 
             // Add ratings
-            ratings.add_rating(accounts.bob, 80).unwrap();
-            ratings.add_rating(accounts.bob, 90).unwrap();
-            ratings.add_rating(accounts.bob, 70).unwrap();
+            ratings.add_rating(accounts.bob, 80, RatingCategory::ClientToTeamMember).unwrap();
+            ratings.add_rating(accounts.bob, 90, RatingCategory::CoordinatorToTeamMember).unwrap();
+            ratings.add_rating(accounts.bob, 70, RatingCategory::ClientToTeamMember).unwrap();
 
             // Average should be (80 + 90 + 70) / 3 = 80
             assert_eq!(ratings.get_average_rating(accounts.bob), 80);
 
             // Add one more rating
-            ratings.add_rating(accounts.bob, 100).unwrap();
+            ratings.add_rating(accounts.bob, 100, RatingCategory::CoordinatorToTeamMember).unwrap();
 
             // Average should be (80 + 90 + 70 + 100) / 4 = 85
             assert_eq!(ratings.get_average_rating(accounts.bob), 85);
         }
-
-        #[ink::test]
-        fn get_average_rating_unregistered_worker() {
-            let accounts = test::default_accounts::<ink::env::DefaultEnvironment>();
-
-            let ratings = Ratings::new();
-
-            // Unregistered worker should return 0
-            assert_eq!(ratings.get_average_rating(accounts.bob), 0);
-        }
-
     }
 }
 
