@@ -7,10 +7,10 @@ use ink::{
 pub type Id = [u8; 16];
 pub type Result<T> = core::result::Result<T, String>;
 macro_rules! dto {
-    ($name:ident { $($field:ident:$ty:ty),* $(,)? })=>{
+    ($name:ident { $($(#[$attribute:meta])* $field:ident:$ty:ty),* $(,)? })=>{
         #[derive(Debug,Clone,PartialEq,Eq,scale::Encode,scale::Decode)]
         #[cfg_attr(feature="std",derive(scale_info::TypeInfo,ink::storage::traits::StorageLayout))]
-        pub struct $name {$(pub $field:$ty,)*}
+        pub struct $name {$($(#[$attribute])* pub $field:$ty,)*}
     }
 }
 macro_rules! enumeration {
@@ -66,8 +66,8 @@ enumeration!(TaskStatus {
     Closed
 });
 dto!(RequirementDefinition {key:u32,role_id:u32,skill_ids:Vec<u32>,minutes:u32,budget:u64});
-dto!(MilestoneDefinition {key:u32,title:String,window:WeekWindow,coordinator_fee:u64,coordinator_minutes:u32,requirements:Vec<RequirementDefinition>});
-dto!(ProposalDefinition {title:String,description:String,milestones:Vec<MilestoneDefinition>});
+dto!(MilestoneDefinition {key:u32,#[codec(encoded_as="storage_v5::Text")] title:String,window:WeekWindow,coordinator_fee:u64,coordinator_minutes:u32,requirements:Vec<RequirementDefinition>});
+dto!(ProposalDefinition {#[codec(encoded_as="storage_v5::Text")] title:String,#[codec(encoded_as="storage_v5::Text")] description:String,milestones:Vec<MilestoneDefinition>});
 dto!(CompensationPolicy {
     coordinator_percent: u8
 });
@@ -84,9 +84,12 @@ pub enum DeliveryPreference {
     WithinOneMonth {},
     OneToThreeMonths {},
     ThreeToSixMonths {},
-    SpecificDate { date: String },
+    SpecificDate {
+        #[codec(encoded_as = "storage_v5::Text")]
+        date: String,
+    },
 }
-dto!(TaskDefinition {title:String,description:String,task_type:TaskType,priority:TaskPriority,status:TaskStatus,assignees:Vec<AccountId>,estimated_minutes:u32,logged_minutes:u32,due_at:Option<u64>});
+dto!(TaskDefinition {#[codec(encoded_as="storage_v5::Text")] title:String,#[codec(encoded_as="storage_v5::Text")] description:String,task_type:TaskType,priority:TaskPriority,status:TaskStatus,assignees:Vec<AccountId>,estimated_minutes:u32,logged_minutes:u32,due_at:Option<u64>});
 dto!(TaskView {
     task_id: u32,
     reporter: AccountId,
@@ -104,6 +107,7 @@ dto!(WorkerRating {
     score: u8
 });
 dto!(EvidenceReference {
+    #[codec(encoded_as = "storage_v5::Text")]
     url: String,
     legacy_sha256: [u8; 32]
 });
@@ -139,7 +143,7 @@ pub enum SubmissionReview {
 }
 dto!(CompletionSubmission {submission_id:Id,version:u64,deliverable:Option<EvidenceReference>,submitted_by:AccountId,submitted_at:u64,worker_ratings:Vec<WorkerRating>,review:SubmissionReview});
 dto!(MilestoneView {milestone_id:Id,definition:MilestoneDefinition,status:Option<MilestoneStatus>,assignments:Vec<AssignmentView>,worker_ratings:Vec<WorkerRating>,task_storage:TaskStorageView,frozen:bool,submissions:Vec<CompletionSubmission>});
-dto!(ProposalView {proposal_id:Id,revision:u64,title:String,description:String,status:ProposalStatus,milestones:Vec<MilestoneView>,change_request:Option<String>,delivery:Option<DeliveryPreference>,compensation_policy:Option<CompensationPolicy>});
+dto!(ProposalView {proposal_id:Id,revision:u64,#[codec(encoded_as="storage_v5::Text")] title:String,#[codec(encoded_as="storage_v5::Text")] description:String,status:ProposalStatus,milestones:Vec<MilestoneView>,#[codec(encoded_as="storage_v5::OptionalText")] change_request:Option<String>,delivery:Option<DeliveryPreference>,compensation_policy:Option<CompensationPolicy>});
 dto!(PlanningQuote {
     fee: u64,
     minutes: u32,
@@ -151,8 +155,8 @@ dto!(AccountRating {
     score: u8
 });
 dto!(ProjectEvaluation {author:AccountId,submitted_at:u64,ratings:Vec<AccountRating>});
-dto!(ProjectView {project_id:Id,created_at:Option<u64>,client:AccountId,coordinator:AccountId,title:String,description:String,planning:PlanningView,proposals:Vec<ProposalView>,execution_escrow:u64,cancelled:bool,completed:bool,evaluations:Vec<ProjectEvaluation>,active_dispute_id:Option<Id>});
-dto!(ReasonRecord {project_id:Id,milestone_id:Option<Id>,origin:AccountId,reason:String,occurred_at:u64,kind:u8});
+dto!(ProjectView {project_id:Id,created_at:Option<u64>,client:AccountId,coordinator:AccountId,#[codec(encoded_as="storage_v5::Text")] title:String,#[codec(encoded_as="storage_v5::Text")] description:String,planning:PlanningView,proposals:Vec<ProposalView>,execution_escrow:u64,cancelled:bool,completed:bool,evaluations:Vec<ProjectEvaluation>,active_dispute_id:Option<Id>});
+dto!(ReasonRecord {project_id:Id,milestone_id:Option<Id>,origin:AccountId,#[codec(encoded_as="storage_v5::Text")] reason:String,occurred_at:u64,kind:u8});
 pub(crate) fn require(condition: bool, code: &str) -> Result<()> {
     if condition {
         Ok(())

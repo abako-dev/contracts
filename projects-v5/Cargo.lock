@@ -382,7 +382,7 @@ dependencies = [
  "parity-scale-codec",
  "rand 0.10.2",
  "scale-info",
- "storage-v5",
+ "storage-v5 0.1.0 (git+https://github.com/abako-dev/contracts.git?rev=f147e595be06cddd8a8346cb86fd000721f8df23)",
 ]
 
 [[package]]
@@ -990,7 +990,7 @@ dependencies = [
  "parity-scale-codec",
  "rand 0.10.2",
  "scale-info",
- "storage-v5",
+ "storage-v5 0.1.0 (git+https://github.com/abako-dev/contracts.git?rev=09ca7bec6edaf81dd52fbdc9e3ab0dc767c91a35)",
 ]
 
 [[package]]
@@ -1449,6 +1449,15 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "storage-v5"
+version = "0.1.0"
+source = "git+https://github.com/abako-dev/contracts.git?rev=09ca7bec6edaf81dd52fbdc9e3ab0dc767c91a35#09ca7bec6edaf81dd52fbdc9e3ab0dc767c91a35"
+dependencies = [
+ "ink",
+ "parity-scale-codec",
+]
 
 [[package]]
 name = "storage-v5"
