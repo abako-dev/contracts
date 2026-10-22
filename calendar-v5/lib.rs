@@ -48,6 +48,14 @@ pub mod calendar_v5 {
         start: Week,
         end: Week,
     }
+    impl WeekWindow {
+        pub fn start(self) -> Week {
+            self.start
+        }
+        pub fn end(self) -> Week {
+            self.end
+        }
+    }
     impl scale::Decode for WeekWindow {
         fn decode<I: scale::Input>(input: &mut I) -> core::result::Result<Self, scale::Error> {
             let start = Week::decode(input)?;
