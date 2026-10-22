@@ -225,7 +225,6 @@ pub mod directory_v5 {
         pub(crate) score_policy: ScorePolicy,
         pub(crate) compensation_percent: u8,
         pub(crate) project_code: Option<Hash>,
-        pub(crate) references: Option<(Hash, AccountId)>,
         pub(crate) project_addresses: Mapping<Id, AccountId, 8>,
         pub(crate) project_ids: Vec<Id>,
         pub(crate) registered_projects: Mapping<AccountId, Id, 9>,
@@ -284,7 +283,6 @@ pub mod directory_v5 {
                 score_policy: ScorePolicy::default(),
                 compensation_percent: 10,
                 project_code: None,
-                references: None,
                 project_addresses: Mapping::default(),
                 project_ids: Vec::new(),
                 registered_projects: Mapping::default(),
@@ -475,24 +473,6 @@ pub mod directory_v5 {
             self.project_code = Some(code);
             Ok(())
         }
-        pub fn configure_reference_code(&mut self, code: Hash) -> Result<()> {
-            self.root()?;
-            if let Some((installed, _)) = self.references {
-                return require(installed == code, "reference_code_fixed");
-            }
-            let address = crate::factory::instantiate_references(code)?;
-            self.references = Some((code, address));
-            Ok(())
-        }
-        pub fn reference_address(&self) -> Option<AccountId> {
-            self.references.map(|(_, address)| address)
-        }
-        pub fn validate_reference(&self, url: String) -> Result<()> {
-            let (_, address) = self
-                .references
-                .ok_or_else(|| String::from("incomplete_reference_coverage"))?;
-            crate::factory::validate_reference(address, url)
-        }
         pub fn project_address(&self, id: Id) -> Option<AccountId> {
             self.project_addresses.get(id)
         }
@@ -582,7 +562,6 @@ pub mod directory_v5 {
         pub fn configure_money(&mut self, mock_funding: bool) -> Result<()> {
             self.root()?;
             require(self.project_code.is_some(), "project_code_missing")?;
-            require(self.references.is_some(), "incomplete_reference_coverage")?;
             require(
                 crate::assets::balance(self.env().account_id())? > 1,
                 "invalid_asset_state",
@@ -1421,18 +1400,6 @@ pub mod directory_v5 {
         #[ink(message)]
         pub fn configure_project_code(&mut self, code: Hash) -> Result<()> {
             self.change(|data| data.configure_project_code(code))
-        }
-        #[ink(message)]
-        pub fn configure_reference_code(&mut self, code: Hash) -> Result<()> {
-            self.change(|data| data.configure_reference_code(code))
-        }
-        #[ink(message)]
-        pub fn reference_address(&self) -> Option<AccountId> {
-            self.read_state(|data| data.reference_address())
-        }
-        #[ink(message)]
-        pub fn validate_reference(&self, url: String) -> Result<()> {
-            self.read_state(|data| data.validate_reference(url))
         }
         #[ink(message)]
         pub fn project_address(&self, id: Id) -> Option<AccountId> {

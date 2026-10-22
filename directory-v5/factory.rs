@@ -1,4 +1,4 @@
-//! Explicit constructor ABIs avoid source cycles and embedding the parser in Directory.
+//! Explicit constructor ABIs avoid source cycles between Directory and Project.
 use ink::{
     env::{
         call::{build_create, ExecutionInput, FromAccountId, Selector},
@@ -49,32 +49,6 @@ pub(crate) fn instantiate(
         .map_err(|_| String::from("project_instantiation_failed"))?
         .map_err(|_| String::from("project_instantiation_failed"))??;
     Ok(result.0)
-}
-
-pub(crate) fn instantiate_references(code: Hash) -> Result<AccountId, String> {
-    let result = build_create::<ContractHandle>()
-        .code_hash(code)
-        .endowment(0)
-        .exec_input(ExecutionInput::new(Selector::new(ink::selector_bytes!(
-            "new"
-        ))))
-        .salt_bytes(b"references-v5")
-        .returns::<ContractHandle>()
-        .try_instantiate()
-        .map_err(|_| String::from("reference_instantiation_failed"))?
-        .map_err(|_| String::from("reference_instantiation_failed"))?;
-    Ok(result.0)
-}
-pub(crate) fn validate_reference(address: AccountId, url: String) -> Result<(), String> {
-    ink::env::call::build_call::<DefaultEnvironment>()
-        .call(address)
-        .exec_input(
-            ExecutionInput::new(Selector::new(ink::selector_bytes!("validate"))).push_arg(url),
-        )
-        .returns::<Result<(), String>>()
-        .try_invoke()
-        .map_err(|_| String::from("reference_call_failed"))?
-        .map_err(|_| String::from("reference_call_failed"))?
 }
 
 /// Identical fresh-import constructor ABI for Calendar and Project.

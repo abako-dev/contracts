@@ -101,7 +101,7 @@ impl DirectoryData {
                 && self.bank.fresh()
                 && self.reason_count == 0,
         )?;
-        require(self.project_code.is_some() && self.references.is_some() && self.bank.enabled())?;
+        require(self.project_code.is_some() && self.bank.enabled())?;
         self.migration_phase = 1;
         Ok(())
     }
@@ -305,7 +305,6 @@ mod tests {
         )
         .unwrap();
         data.project_code = Some(Hash::from([2; 32]));
-        data.references = Some((Hash::from([3; 32]), accounts.charlie));
         data.bank.configure(false).unwrap();
         data
     }

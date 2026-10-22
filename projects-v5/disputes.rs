@@ -16,9 +16,6 @@ pub fn open(
     seed: [u8; 32],
     event_cursor: u64,
 ) -> Result<Effect> {
-    if let Some(reference) = &evidence {
-        state.registry().validate_reference(reference.url.clone())?;
-    }
     require(evidence.is_some() != comment.is_some(), "invalid_contract")?;
     require(!state.project.cancelled, "project_cancelled")?;
     require(
@@ -83,7 +80,6 @@ pub fn open(
     Ok(state.effect(25, id))
 }
 pub fn respond(state: &mut ProjectsV5, id: Id, evidence: EvidenceReference) -> Result<Effect> {
-    state.registry().validate_reference(evidence.url.clone())?;
     require(!state.project.cancelled, "project_cancelled")?;
     let project = state
         .registry()

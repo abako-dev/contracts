@@ -9,7 +9,6 @@ block production is needed locally. v6 is outside this work.
 | [Directory](directory-v5/README.md) | Catalog, workers, selection, Project factory, shared accounting and Bramp |
 | [Calendar](calendar-v5/README.md) | Integer-minute capacity and reservations |
 | [Project](projects-v5/README.md) | Planning, tasks, escrow, settlement, disputes and evaluations |
-| [References](references-v5/README.md) | Shared exact URL validation within the code-size limit |
 | [Storage helper](storage-v5/README.md) | Bounded pages and primitive index cells |
 
 Build the paged contracts from this directory with cargo-contract 5.0.3 and
@@ -30,3 +29,6 @@ Legacy contract directories and the sandbox probe retain regression/provenance
 coverage. The default backend remains Rust. Promotion, onchain deployment, formal
 performance acceptance and two observed stable releases are separate gates;
 this candidate does not retire the native reference or authorize a release.
+
+Evidence records and URL validation belong to the adapter. Project stores fixed-size
+commitments. The SDK retains legacy URL preimages offchain for complete rollback.

@@ -10,7 +10,7 @@ Public DTOs retain the backend SCALE layouts, integer u64 money and captured
 version-1 rand 0.10.2 stream. Proposal edits retain milestones and task storage by
 declared key. Largest-remainder allocation preserves each captured budget exactly.
 A Project stores its own read model and reason history; Directory owns catalog,
-workers, registry, references and global IDs. Execution, escrow, settlement,
+workers, registry and global IDs. Execution, escrow, settlement,
 disputes and evaluations are implemented; Directory owns Bramp. Complete retained
 Project state can be imported fresh and permanently sealed without replaying
 payments or reputation. The default backend remains Rust; deployment, formal
@@ -47,8 +47,7 @@ serialization boundary. Each Project supplies its complete ordered identity
 layout after proposal creation/update/deletion; Directory performs no callbacks.
 Failed validation reverts the layout, Project and all nested writes together.
 
-M6 uses the immutable references-v5 contract for the backend's exact HTTPS
-parser. Compiling that parser into every Project exceeded Kreivo's pinned
-192 KiB code limit (286.3 KiB before disputes). Shared validation preserves the
-same accepted inputs while keeping each contract inside the real chain limit.
-See references-v5/README.md for dependency and build details.
+Evidence is stored as fixed-size hashes, with a record ID for new commitments.
+The adapter validates URLs and retains complete evidence. Contracts enforce
+permissions and business state without parsing or fetching references. The SDK
+preserves old URL preimages offchain for old signatures, export and rollback.

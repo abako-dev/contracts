@@ -106,11 +106,22 @@ dto!(WorkerRating {
     worker: AccountId,
     score: u8
 });
-dto!(EvidenceReference {
-    #[codec(encoded_as = "storage_v5::Text")]
-    url: String,
-    legacy_sha256: [u8; 32]
-});
+/// Offchain evidence only; contracts enforce business permissions, never URLs.
+#[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
+#[cfg_attr(
+    feature = "std",
+    derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Two explicit SCALE variants."
+)]
+pub enum EvidenceReference {
+    #[codec(index = 0)]
+    LegacyReferenceHash([u8; 32]),
+    #[codec(index = 1)]
+    Committed { record_id: Id, hash: [u8; 32] },
+}
 #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
 #[cfg_attr(
     feature = "std",

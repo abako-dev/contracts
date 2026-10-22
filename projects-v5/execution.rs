@@ -151,9 +151,6 @@ pub fn submit(
     ratings: Option<Vec<WorkerRating>>,
     seed: [u8; 32],
 ) -> Result<Effect> {
-    if let Some(reference) = &deliverable {
-        state.registry().validate_reference(reference.url.clone())?;
-    }
     if let Some(votes) = &ratings {
         require(
             votes.iter().all(|r| (1..=5).contains(&r.score))
@@ -216,9 +213,6 @@ pub fn reject(
     reason: Option<EvidenceReference>,
     comment: Option<Id>,
 ) -> Result<Effect> {
-    if let Some(reference) = &reason {
-        state.registry().validate_reference(reference.url.clone())?;
-    }
     state.guard()?;
     state.client()?;
     let origin = state.env().caller();
