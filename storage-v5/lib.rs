@@ -33,39 +33,15 @@ impl Storable for Bytes<'_> {
         Encode::encoded_size(&self.0)
     }
 }
-struct Block {
-    bytes: [u8; CHUNK_BYTES],
-    length: usize,
-}
-impl Storable for Block {
-    fn encode<T: Output + ?Sized>(&self, dest: &mut T) {
-        self.bytes[..self.length].encode_to(dest);
-    }
-    fn decode<I: Input>(input: &mut I) -> Result<Self, scale::Error> {
-        let length = <scale::Compact<u32> as Decode>::decode(input)?.0 as usize;
-        if length > CHUNK_BYTES {
-            return Err("oversized page".into());
-        }
-        let mut page = Self {
-            bytes: [0; CHUNK_BYTES],
-            length,
-        };
-        input.read(&mut page.bytes[..length])?;
-        Ok(page)
-    }
-    fn encoded_size(&self) -> usize {
-        Encode::encoded_size(&self.bytes[..self.length])
-    }
-}
 struct Pages<F> {
     next: F,
     length: usize,
     position: usize,
     index: u32,
-    page: Block,
+    page: Vec<u8>,
     offset: usize,
 }
-impl<F: FnMut(u32) -> Option<Block>> Input for Pages<F> {
+impl<F: FnMut(u32) -> Option<Vec<u8>>> Input for Pages<F> {
     fn remaining_len(&mut self) -> Result<Option<usize>, scale::Error> {
         Ok(Some(self.length - self.position))
     }
@@ -74,18 +50,18 @@ impl<F: FnMut(u32) -> Option<Block>> Input for Pages<F> {
             return Err("truncated paged value".into());
         }
         while !into.is_empty() {
-            if self.offset == self.page.length {
+            if self.offset == self.page.len() {
                 let page = (self.next)(self.index).ok_or("missing page")?;
                 let expected = core::cmp::min(CHUNK_BYTES, self.length - self.position);
-                if page.length != expected {
+                if page.len() != expected {
                     return Err("invalid page length".into());
                 }
                 self.page = page;
                 self.offset = 0;
                 self.index += 1;
             }
-            let copied = core::cmp::min(into.len(), self.page.length - self.offset);
-            into[..copied].copy_from_slice(&self.page.bytes[self.offset..self.offset + copied]);
+            let copied = core::cmp::min(into.len(), self.page.len() - self.offset);
+            into[..copied].copy_from_slice(&self.page[self.offset..self.offset + copied]);
             self.position += copied;
             self.offset += copied;
             into = &mut into[copied..];
@@ -93,16 +69,13 @@ impl<F: FnMut(u32) -> Option<Block>> Input for Pages<F> {
         Ok(())
     }
 }
-fn decode<T: Decode>(length: u32, next: impl FnMut(u32) -> Option<Block>) -> T {
+fn decode<T: Decode>(length: u32, next: impl FnMut(u32) -> Option<Vec<u8>>) -> T {
     let mut pages = Pages {
         next,
         length: length as usize,
         position: 0,
         index: 0,
-        page: Block {
-            bytes: [0; CHUNK_BYTES],
-            length: 0,
-        },
+        page: Vec::new(),
         offset: 0,
     };
     let value = T::decode(&mut pages).unwrap_or_else(|_| panic!("invalid paged value"));

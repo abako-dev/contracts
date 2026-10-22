@@ -284,6 +284,7 @@ pub mod directory_v5 {
                 result.roles.insert(role.id, &role);
             }
             require(result.roles.contains(1), "invalid_catalog_state")?;
+            let mut names = BTreeSet::new();
             for skill in seed.skills {
                 require(
                     skill.id != 0
@@ -292,7 +293,7 @@ pub mod directory_v5 {
                         && !result.skills.contains(skill.id),
                     "invalid_catalog_state",
                 )?;
-                result.unique_skill(&skill.name, None)?;
+                require(names.insert(normalized(&skill.name)), "skill_name_exists")?;
                 insert_sorted(&mut result.skill_ids, skill.id);
                 result.skills.insert(skill.id, &skill);
             }

@@ -29,9 +29,9 @@ the existing 256 KiB signed payload; stored cells remain 8 KiB. The backend bund
 manifest records this build setting, and fresh reproduction sets it explicitly.
 This does not raise the chain's memory-page, storage-value or code-size limits.
 
-SCALE reading and writing stream through fixed stack pages. Encoding borrows the
-same page for each storage write; decoding fills a reusable block rather than
-allocating a Vec per cell or a second full encoded value. This matters because
+SCALE reading and writing stream page by page. Encoding borrows the same fixed
+page for each storage write. Decoding reads small cells without assembling a
+second complete encoded buffer. This matters because
 ink's bump allocator retains temporary allocations for the duration of a call.
 The helper is pinned to an immutable Git revision by each consumer: a separate
 checkout reproduced different Calendar WASM with a local helper path dependency.
