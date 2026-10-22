@@ -162,6 +162,7 @@ pub mod calendar_v5 {
     #[ink(storage)]
     pub struct CalendarV5 {
         bytes: u32,
+        import: storage_v5::Import,
     }
 
     #[derive(scale::Encode, scale::Decode)]
@@ -287,43 +288,53 @@ pub mod calendar_v5 {
             result
         }
         fn change<T>(&mut self, change: impl FnOnce(&mut CalendarData) -> Result<T>) -> Result<T> {
+            if self.import.is_some() {
+                return Err(String::from("migration_in_progress"));
+            }
             self.transact(|data| {
                 data.ensure_live()?;
                 change(data)
             })
         }
 
-        /// Fresh, dormant instance. Only the creating Directory can make it live.
+        /// Fresh dormant storage accepts bounded pages only from its Directory.
         #[ink(constructor)]
-        pub fn from_archive(directory: AccountId, id: [u8; 16], bytes: Vec<u8>) -> Result<Self> {
-            if <Self as ink::codegen::StaticEnv>::env().caller() != directory
-                || !<Self as ink::codegen::StaticEnv>::env().is_contract(&directory)
-            {
-                return Err(String::from("directory_required"));
-            }
-            let calendar: CalendarView = scale::DecodeAll::decode_all(&mut &bytes[..])
-                .map_err(|_| String::from("invalid_archive"))?;
-            if calendar.calendar_id != id {
-                return Err(String::from("invalid_archive"));
-            }
-            calendar.definition.validate()?;
-            for (week, minutes) in calendar.totals()? {
-                if minutes > calendar.definition.capacity(week) {
-                    return Err(String::from("calendar_overcommitted"));
-                }
-            }
-            let data = CalendarData {
-                calendar,
-                directory,
-                reservation_controller: directory,
-                live: false,
-            };
+        pub fn from_archive(directory: AccountId, id: [u8; 16]) -> Result<Self> {
             Ok(Self {
-                bytes: storage_v5::save(0, &data),
+                bytes: 0,
+                import: storage_v5::import_from(directory, id)?,
             })
         }
         #[ink(message)]
+        pub fn import_page(&mut self, index: u32, bytes: Vec<u8>) -> Result<()> {
+            storage_v5::append_import(&mut self.import, index, &bytes)
+        }
+        #[ink(message)]
+        pub fn finish_import(&mut self) -> Result<()> {
+            let (data, length, parent, id): (CalendarData, u32, AccountId, [u8; 16]) =
+                storage_v5::decode_import(&self.import)?;
+            if data.directory != parent
+                || data.reservation_controller != parent
+                || data.calendar.calendar_id != id
+                || data.live
+            {
+                return Err(String::from("invalid_archive"));
+            }
+            data.calendar.definition.validate()?;
+            for (week, minutes) in data.calendar.totals()? {
+                if minutes > data.calendar.definition.capacity(week) {
+                    return Err(String::from("calendar_overcommitted"));
+                }
+            }
+            self.bytes = length;
+            self.import = None;
+            Ok(())
+        }
+        #[ink(message)]
         pub fn seal_import(&mut self) -> Result<()> {
+            if self.import.is_some() {
+                return Err(String::from("import_incomplete"));
+            }
             self.transact(|data| {
                 if data.live
                     || <CalendarData as ink::codegen::StaticEnv>::env().caller() != data.directory
@@ -348,6 +359,7 @@ pub mod calendar_v5 {
             let data = CalendarData::new(owner, reservation_controller, calendar_id, definition)?;
             Ok(Self {
                 bytes: storage_v5::save(0, &data),
+                import: None,
             })
         }
         #[ink(message)]
@@ -400,6 +412,7 @@ pub mod calendar_v5 {
             data.live = false;
             let mut calendar = CalendarV5 {
                 bytes: storage_v5::save(0, &data),
+                import: None,
             };
             assert_eq!(
                 calendar.set_calendar(definition.clone()),

@@ -82,7 +82,6 @@ pub(crate) fn instantiate_archive(
     code: Hash,
     directory: AccountId,
     id: [u8; 16],
-    bytes: ink::prelude::vec::Vec<u8>,
 ) -> Result<AccountId, String> {
     let result = build_create::<ContractHandle>()
         .code_hash(code)
@@ -90,8 +89,7 @@ pub(crate) fn instantiate_archive(
         .exec_input(
             ExecutionInput::new(Selector::new(ink::selector_bytes!("from_archive")))
                 .push_arg(directory)
-                .push_arg(id)
-                .push_arg(bytes),
+                .push_arg(id),
         )
         .salt_bytes(id)
         .returns::<Result<ContractHandle, String>>()
@@ -105,6 +103,35 @@ pub(crate) fn seal_import(address: AccountId) -> Result<(), String> {
         .call(address)
         .exec_input(ExecutionInput::new(Selector::new(ink::selector_bytes!(
             "seal_import"
+        ))))
+        .returns::<Result<(), String>>()
+        .try_invoke()
+        .map_err(|_| String::from("archive_call_failed"))?
+        .map_err(|_| String::from("archive_call_failed"))?
+}
+
+pub(crate) fn import_page(
+    address: AccountId,
+    index: u32,
+    bytes: ink::prelude::vec::Vec<u8>,
+) -> Result<(), String> {
+    ink::env::call::build_call::<DefaultEnvironment>()
+        .call(address)
+        .exec_input(
+            ExecutionInput::new(Selector::new(ink::selector_bytes!("import_page")))
+                .push_arg(index)
+                .push_arg(bytes),
+        )
+        .returns::<Result<(), String>>()
+        .try_invoke()
+        .map_err(|_| String::from("archive_call_failed"))?
+        .map_err(|_| String::from("archive_call_failed"))?
+}
+pub(crate) fn finish_import(address: AccountId) -> Result<(), String> {
+    ink::env::call::build_call::<DefaultEnvironment>()
+        .call(address)
+        .exec_input(ExecutionInput::new(Selector::new(ink::selector_bytes!(
+            "finish_import"
         ))))
         .returns::<Result<(), String>>()
         .try_invoke()

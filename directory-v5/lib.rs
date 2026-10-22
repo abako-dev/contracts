@@ -1326,6 +1326,22 @@ pub mod directory_v5 {
             self.transact(|data| data.import_record(record))
         }
         #[ink(message)]
+        pub fn import_child_page(
+            &mut self,
+            target: crate::migration::ImportTarget,
+            index: u32,
+            bytes: Vec<u8>,
+        ) -> Result<()> {
+            self.transact(|data| data.import_child_page(target, index, bytes))
+        }
+        #[ink(message)]
+        pub fn finish_child_import(
+            &mut self,
+            target: crate::migration::ImportTarget,
+        ) -> Result<()> {
+            self.transact(|data| data.finish_child_import(target))
+        }
+        #[ink(message)]
         pub fn seal_import(&mut self) -> Result<()> {
             self.transact(|data| data.seal_import())
         }
@@ -1556,44 +1572,6 @@ pub mod directory_v5 {
         #[ink(message)]
         pub fn worker(&self, account: AccountId) -> Option<WorkerView> {
             self.read_state(|data| data.worker(account))
-        }
-        /// Private provider ABI: read independent fields without allocating large names.
-        #[ink(message)]
-        pub fn worker_accounts(&self) -> Vec<AccountId> {
-            self.read_state(|data| data.accounts)
-        }
-        #[ink(message)]
-        pub fn worker_metadata(
-            &self,
-            account: AccountId,
-        ) -> Option<(
-            Qualifications,
-            WorkerMode,
-            bool,
-            AccountId,
-            ReputationView,
-            ReputationView,
-        )> {
-            self.read_state(|data| {
-                data.workers.get(account).map(|worker| {
-                    (
-                        worker.qualifications,
-                        worker.mode,
-                        worker.coordinator_eligible,
-                        worker.calendar,
-                        worker.worker_score,
-                        worker.coordinator_score,
-                    )
-                })
-            })
-        }
-        #[ink(message)]
-        pub fn worker_name_len(&self, account: AccountId) -> Option<u32> {
-            self.read_state(|data| data.display_names.encoded_len(account))
-        }
-        #[ink(message)]
-        pub fn worker_name_page(&self, account: AccountId, index: u32) -> Option<Vec<u8>> {
-            self.read_state(|data| data.display_names.page(account, index))
         }
         #[ink(message)]
         pub fn workers(&self) -> Vec<WorkerView> {

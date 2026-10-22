@@ -25,9 +25,30 @@ pub enum RecordedEvaluation {
 }
 #[derive(Debug, Clone, Encode, Decode)]
 #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+pub struct WorkerImport {
+    pub account: AccountId,
+    pub display_name: String,
+    pub qualifications: Qualifications,
+    pub mode: WorkerMode,
+    pub coordinator_eligible: bool,
+    pub calendar_id: Id,
+    pub worker_score: ReputationView,
+    pub coordinator_score: ReputationView,
+}
+#[derive(Debug, Clone, Copy, Encode, Decode)]
+#[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Two fixed SCALE discriminants fit u8."
+)]
+pub enum ImportTarget {
+    Calendar(AccountId),
+    Project(Id),
+}
+#[derive(Debug, Clone, Encode, Decode)]
+#[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
 pub struct ProjectImport {
     pub id: Id,
-    pub state: Vec<u8>,
     pub layout: ProjectIdentities,
     pub proposal_references: Vec<(Id, Qualifications)>,
     pub submissions: Vec<Id>,
@@ -42,16 +63,16 @@ pub struct ProjectImport {
     reason = "Ten fixed SCALE discriminants fit u8."
 )]
 pub enum MigrationRecordV1 {
-    Worker(WorkerView),
+    Worker(WorkerImport),
     Project(ProjectImport),
     Deposit(Deposit),
     Withdrawal(Withdrawal),
     Balance(AccountId, u64),
     Issuance(u64),
     SkillRequest(SkillRequestView),
-    Category(u32, String),
     Policies(ScorePolicy, u8, u32),
     Reason(Vec<u8>),
+    Catalog(CatalogKind, CatalogEntry, Vec<u32>, String),
 }
 fn require(condition: bool) -> Result<()> {
     if condition {
@@ -84,15 +105,13 @@ impl DirectoryData {
             MigrationRecordV1::Worker(view) => {
                 require(
                     !self.workers.contains(view.account)
-                        && !self.calendar_ids.contains(view.calendar.calendar_id)
-                        && view.calendar.owner == view.account,
+                        && !self.calendar_ids.contains(view.calendar_id),
                 )?;
                 self.qualifications(&view.qualifications)?;
                 let calendar = factory::instantiate_archive(
                     self.calendar_code,
                     self.env().account_id(),
-                    view.calendar.calendar_id,
-                    view.calendar.encode(),
+                    view.calendar_id,
                 )?;
                 self.index_add(view.account, &view.qualifications.skill_ids)?;
                 self.display_names.insert(view.account, &view.display_name);
@@ -103,12 +122,12 @@ impl DirectoryData {
                         mode: view.mode,
                         coordinator_eligible: view.coordinator_eligible,
                         calendar,
-                        calendar_id: view.calendar.calendar_id,
+                        calendar_id: view.calendar_id,
                         worker_score: view.worker_score,
                         coordinator_score: view.coordinator_score,
                     },
                 );
-                self.calendar_ids.insert(view.calendar.calendar_id, &true);
+                self.calendar_ids.insert(view.calendar_id, &true);
                 insert_sorted(&mut self.accounts, view.account);
             }
             MigrationRecordV1::Project(record) => {
@@ -118,7 +137,6 @@ impl DirectoryData {
                         .ok_or_else(|| String::from("project_code_missing"))?,
                     self.env().account_id(),
                     record.id,
-                    record.state,
                 )?;
                 self.project_addresses.insert(record.id, &address);
                 self.registered_projects.insert(address, &record.id);
@@ -154,10 +172,6 @@ impl DirectoryData {
                 insert_sorted(&mut self.request_ids, record.request_id);
                 self.requests.insert(record.request_id, &record);
             }
-            MigrationRecordV1::Category(id, category) => {
-                require(self.skills.contains(id))?;
-                self.categories.insert(id, &category);
-            }
             MigrationRecordV1::Policies(score, compensation, next) => {
                 require(compensation <= 100 && next > 0)?;
                 self.score_policy = score;
@@ -165,8 +179,51 @@ impl DirectoryData {
                 self.next_task_id = next;
             }
             MigrationRecordV1::Reason(bytes) => self.push_reason(bytes)?,
+            MigrationRecordV1::Catalog(kind, entry, roles, category) => {
+                require(
+                    entry.id > 0
+                        && !entry.name.trim().is_empty()
+                        && entry.fixed == (kind == CatalogKind::Role && entry.id == 1),
+                )?;
+                match kind {
+                    CatalogKind::Role => {
+                        require(entry.id != 1 || entry.name == "coordinator")?;
+                        insert_sorted(&mut self.role_ids, entry.id);
+                        self.roles.insert(entry.id, &entry);
+                    }
+                    CatalogKind::Skill => {
+                        require(!self.skills.contains(entry.id))?;
+                        insert_sorted(&mut self.skill_ids, entry.id);
+                        self.skill_roles.insert(entry.id, &roles);
+                        self.categories.insert(entry.id, &category);
+                        self.skills.insert(entry.id, &entry);
+                    }
+                }
+            }
         }
         Ok(())
+    }
+    fn import_child(&self, target: ImportTarget) -> Result<AccountId> {
+        self.root()?;
+        require(self.migration_phase == 1)?;
+        match target {
+            ImportTarget::Calendar(account) => Ok(self.worker_record(account)?.calendar),
+            ImportTarget::Project(id) => self
+                .project_addresses
+                .get(id)
+                .ok_or_else(|| String::from("project_not_found")),
+        }
+    }
+    pub(crate) fn import_child_page(
+        &mut self,
+        target: ImportTarget,
+        index: u32,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
+        factory::import_page(self.import_child(target)?, index, bytes)
+    }
+    pub(crate) fn finish_child_import(&mut self, target: ImportTarget) -> Result<()> {
+        factory::finish_import(self.import_child(target)?)
     }
     pub(crate) fn seal_import(&mut self) -> Result<()> {
         self.root()?;
