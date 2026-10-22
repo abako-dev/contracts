@@ -1,10 +1,19 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+mod matching;
 mod names;
+mod reputation;
 
 #[ink::contract]
 pub mod directory_v5 {
-    use calendar_v5::calendar_v5::{CalendarDefinition, CalendarV5Ref, CalendarView};
+    use crate::{
+        matching::{Milestone, Requirement},
+        reputation::{self, Contribution, ScorePolicy, VoteKind},
+    };
+    use calendar_v5::calendar_v5::{
+        CalendarDefinition, CalendarV5Ref, CalendarView, ReservationView, Week, WeekWindow,
+    };
+    use core::cmp::Ordering;
     #[cfg(feature = "std")]
     use ink::storage::traits::StorageLayout;
     use ink::{
@@ -13,6 +22,8 @@ pub mod directory_v5 {
         storage::Mapping,
         ToAccountId,
     };
+    use rand::{rngs::StdRng, Rng, RngExt, SeedableRng};
+    use scale::Encode;
 
     pub type Result<T> = core::result::Result<T, String>;
     pub type Id = [u8; 16];
@@ -118,6 +129,8 @@ pub mod directory_v5 {
         coordinator_eligible: bool,
         calendar: AccountId,
         calendar_id: Id,
+        worker_score: ReputationView,
+        coordinator_score: ReputationView,
     }
 
     /// The kind uses the unchanged v1 DomainEventKind SCALE discriminant. The
@@ -186,6 +199,11 @@ pub mod directory_v5 {
         request_ids: Vec<Id>,
         proposal_references: Mapping<Id, Qualifications>,
         proposal_ids: Vec<Id>,
+        score_policy: ScorePolicy,
+        evaluations: Mapping<(Id, AccountId), Hash>,
+        skill_counts: Mapping<u32, u32>,
+        skill_members: Mapping<(u32, u32), AccountId>,
+        skill_positions: Mapping<(u32, AccountId), u32>,
     }
     impl DirectoryV5 {
         #[ink(constructor)]
@@ -212,6 +230,11 @@ pub mod directory_v5 {
                 request_ids: Vec::new(),
                 proposal_references: Mapping::default(),
                 proposal_ids: Vec::new(),
+                score_policy: ScorePolicy::default(),
+                evaluations: Mapping::default(),
+                skill_counts: Mapping::default(),
+                skill_members: Mapping::default(),
+                skill_positions: Mapping::default(),
             };
             for role in seed.roles {
                 require(
@@ -297,6 +320,268 @@ pub mod directory_v5 {
                 "skill_name_exists",
             )
         }
+        // Dense per-skill entries avoid packing a whole index into ink's 16 KiB
+        // storage buffer. Candidate iteration has no fixed search/truncation limit.
+        fn index_add(&mut self, account: AccountId, skills: &[u32]) -> Result<()> {
+            for skill in skills {
+                let count = self.skill_counts.get(skill).unwrap_or(0);
+                let next = count
+                    .checked_add(1)
+                    .ok_or_else(|| String::from("invalid_worker_state"))?;
+                self.skill_members.insert((skill, count), &account);
+                self.skill_positions.insert((skill, account), &count);
+                self.skill_counts.insert(skill, &next);
+            }
+            Ok(())
+        }
+        fn index_remove(&mut self, account: AccountId, skills: &[u32]) -> Result<()> {
+            for skill in skills {
+                let position = self
+                    .skill_positions
+                    .get((skill, account))
+                    .ok_or_else(|| String::from("invalid_worker_state"))?;
+                let last = self
+                    .skill_counts
+                    .get(skill)
+                    .and_then(|n: u32| n.checked_sub(1))
+                    .ok_or_else(|| String::from("invalid_worker_state"))?;
+                let moved = self
+                    .skill_members
+                    .get((skill, last))
+                    .ok_or_else(|| String::from("invalid_worker_state"))?;
+                self.skill_members.insert((skill, position), &moved);
+                self.skill_positions.insert((skill, moved), &position);
+                self.skill_members.remove((skill, last));
+                self.skill_positions.remove((skill, account));
+                self.skill_counts.insert(skill, &last);
+            }
+            Ok(())
+        }
+        fn choose(
+            &self,
+            candidates: &[AccountId],
+            mode: WorkerMode,
+            rng: &mut StdRng,
+        ) -> Result<AccountId> {
+            let mut winners = Vec::new();
+            let mut best = None;
+            for account in candidates {
+                let worker = self.worker_record(*account)?;
+                let score = if mode == WorkerMode::Worker {
+                    worker.worker_score
+                } else {
+                    worker.coordinator_score
+                };
+                let order = best.as_ref().map_or(Ordering::Greater, |current| {
+                    reputation::compare(&score, current)
+                });
+                if order == Ordering::Greater {
+                    winners.clear();
+                    best = Some(score);
+                }
+                if order != Ordering::Less {
+                    winners.push(*account);
+                }
+            }
+            require(!winners.is_empty(), "no_available_candidate")?;
+            // rand 0.10's usize sampler uses u32 for these ranges on both native
+            // and WASM. A sole winner consumes no entropy, matching the reference.
+            let index = if winners.len() == 1 {
+                0
+            } else {
+                rng.random_range(0..winners.len())
+            };
+            Ok(winners[index])
+        }
+        fn project_controller(&self) -> Result<()> {
+            require(
+                self.env().caller() == self.reservation_controller,
+                "reservation_controller_required",
+            )
+        }
+        #[ink(message)]
+        pub fn score_policy(&self) -> ScorePolicy {
+            self.score_policy
+        }
+        #[ink(message)]
+        pub fn set_score_policy(&mut self, policy: ScorePolicy) -> Result<Effect> {
+            self.root()?;
+            self.score_policy = policy;
+            Ok(Effect::new(5, None, self.env().caller()))
+        }
+        /// Project authorization/required targets are checked by the Project
+        /// controller (M6). This narrow hook applies only verified contributions.
+        #[ink(message)]
+        pub fn apply_reputation(
+            &mut self,
+            project_id: Id,
+            author: AccountId,
+            votes: Vec<Contribution>,
+        ) -> Result<()> {
+            self.project_controller()?;
+            let mut hash =
+                <ink::env::hash::Blake2x256 as ink::env::hash::HashOutput>::Type::default();
+            ink::env::hash_bytes::<ink::env::hash::Blake2x256>(&votes.encode(), &mut hash);
+            let hash = Hash::from(hash);
+            let key = (project_id, author);
+            if let Some(prior) = self.evaluations.get(key) {
+                return require(prior == hash, "evaluation_conflict");
+            }
+            for vote in votes {
+                let mut worker = self.worker_record(vote.account)?;
+                let score = if vote.kind == VoteKind::CoordinatorToWorker {
+                    &mut worker.worker_score
+                } else {
+                    &mut worker.coordinator_score
+                };
+                *score = reputation::add(
+                    score,
+                    vote.stars,
+                    vote.minutes,
+                    self.score_policy.weight(vote.kind),
+                )?;
+                self.workers.insert(vote.account, &worker);
+            }
+            self.evaluations.insert(key, &hash);
+            Ok(())
+        }
+        /// Used by the Project factory. Captured entropy derives the same ID
+        /// after any tied coordinator selection, without a second host RNG.
+        #[ink(message)]
+        pub fn select_coordinator(
+            &self,
+            client: AccountId,
+            week: Week,
+            seed: [u8; 32],
+        ) -> Result<(AccountId, Id)> {
+            self.project_controller()?;
+            let mut candidates = Vec::new();
+            for account in &self.accounts {
+                let worker = self.worker_record(*account)?;
+                if worker.mode == WorkerMode::Coordinator
+                    && worker.coordinator_eligible
+                    && *account != client
+                    && CalendarV5Ref::from_account_id(worker.calendar).available(week)? != 0
+                {
+                    candidates.push(*account);
+                }
+            }
+            let mut rng = StdRng::from_seed(seed);
+            let chosen = self.choose(&candidates, WorkerMode::Coordinator, &mut rng)?;
+            let mut id = [0; 16];
+            rng.fill_bytes(&mut id);
+            Ok((chosen, id))
+        }
+        /// Internal controller hook also used by explicit reservation fixtures.
+        #[ink(message)]
+        pub fn reserve_calendar(
+            &mut self,
+            worker: AccountId,
+            window: WeekWindow,
+            minutes: u32,
+            reference: ReservationView,
+        ) -> Result<()> {
+            self.project_controller()?;
+            let worker = self.worker_record(worker)?;
+            CalendarV5Ref::from_account_id(worker.calendar).reserve(window, minutes, reference)
+        }
+        /// All milestones share one RNG and transaction. Returning Err reverts
+        /// every nested Calendar reservation, including earlier slots/milestones.
+        #[ink(message)]
+        pub fn assign_team(
+            &mut self,
+            project_id: Id,
+            client: AccountId,
+            coordinator: AccountId,
+            milestones: Vec<Milestone>,
+            seed: [u8; 32],
+        ) -> Result<Vec<Vec<(u32, AccountId)>>> {
+            self.project_controller()?;
+            let mut rng = StdRng::from_seed(seed);
+            let mut earlier = BTreeSet::new();
+            let mut result = Vec::new();
+            for milestone in milestones {
+                let reference = ReservationView {
+                    project_id,
+                    milestone_id: Some(milestone.id),
+                    requirement_key: None,
+                    week: milestone.window.start(),
+                    minutes: 0,
+                };
+                CalendarV5Ref::from_account_id(self.worker_record(coordinator)?.calendar).reserve(
+                    milestone.window,
+                    milestone.coordinator_minutes,
+                    reference.clone(),
+                )?;
+                let mut used = BTreeSet::from([client, coordinator]);
+                let mut assignments = Vec::new();
+                for Requirement {
+                    key,
+                    skill_ids,
+                    minutes,
+                    ..
+                } in milestone.requirements
+                {
+                    let first = skill_ids
+                        .first()
+                        .ok_or_else(|| String::from("missing_skills"))?;
+                    let mut candidates = BTreeSet::new();
+                    for position in 0..self.skill_counts.get(first).unwrap_or(0) {
+                        let account = self
+                            .skill_members
+                            .get((first, position))
+                            .ok_or_else(|| String::from("invalid_worker_state"))?;
+                        if skill_ids
+                            .iter()
+                            .all(|skill| self.skill_positions.contains((skill, account)))
+                        {
+                            candidates.insert(account);
+                        }
+                    }
+                    let mut available = Vec::new();
+                    for account in candidates {
+                        let worker = self.worker_record(account)?;
+                        if used.contains(&account) || worker.mode != WorkerMode::Worker {
+                            continue;
+                        }
+                        match CalendarV5Ref::from_account_id(worker.calendar)
+                            .allocation(milestone.window, minutes)
+                        {
+                            Ok(_) => available.push(account),
+                            Err(code) if code == "insufficient_capacity" => {}
+                            Err(code) => return Err(code),
+                        }
+                    }
+                    let previous: Vec<_> = available
+                        .iter()
+                        .copied()
+                        .filter(|account| earlier.contains(account))
+                        .collect();
+                    let chosen = self.choose(
+                        if previous.is_empty() {
+                            &available
+                        } else {
+                            &previous
+                        },
+                        WorkerMode::Worker,
+                        &mut rng,
+                    )?;
+                    CalendarV5Ref::from_account_id(self.worker_record(chosen)?.calendar).reserve(
+                        milestone.window,
+                        minutes,
+                        ReservationView {
+                            requirement_key: Some(key),
+                            ..reference.clone()
+                        },
+                    )?;
+                    assignments.push((key, chosen));
+                    used.insert(chosen);
+                }
+                earlier.extend(assignments.iter().map(|(_, account)| *account));
+                result.push(assignments);
+            }
+            Ok(result)
+        }
         #[ink(message)]
         pub fn catalog(&self) -> CatalogSeed {
             CatalogSeed {
@@ -333,14 +618,8 @@ pub mod directory_v5 {
                 mode: worker.mode,
                 coordinator_eligible: worker.coordinator_eligible,
                 calendar: CalendarV5Ref::from_account_id(worker.calendar).view(),
-                worker_score: ReputationView {
-                    weighted_score_sum: 0,
-                    rated_minutes: 0,
-                },
-                coordinator_score: ReputationView {
-                    weighted_score_sum: 0,
-                    rated_minutes: 0,
-                },
+                worker_score: worker.worker_score,
+                coordinator_score: worker.coordinator_score,
             })
         }
         #[ink(message)]
@@ -378,7 +657,7 @@ pub mod directory_v5 {
             // Native storage deposits use the runtime's technical funding, never assets.
             let calendar = CalendarV5Ref::new(
                 origin,
-                self.reservation_controller,
+                self.env().account_id(),
                 calendar_id,
                 request.calendar,
             )
@@ -397,8 +676,12 @@ pub mod directory_v5 {
                     coordinator_eligible: false,
                     calendar: calendar.to_account_id(),
                     calendar_id,
+                    worker_score: reputation::empty(),
+                    coordinator_score: reputation::empty(),
                 },
             );
+            let skills = self.worker_record(origin)?.qualifications.skill_ids;
+            self.index_add(origin, &skills)?;
             insert_sorted(&mut self.accounts, origin);
             self.calendar_ids.insert(calendar_id, &true);
             Ok(Effect::new(0, Some(calendar_id), origin))
@@ -408,6 +691,8 @@ pub mod directory_v5 {
             self.qualifications(&qualifications)?;
             let origin = self.env().caller();
             let mut worker = self.worker_record(origin)?;
+            self.index_remove(origin, &worker.qualifications.skill_ids)?;
+            self.index_add(origin, &qualifications.skill_ids)?;
             worker.qualifications = qualifications;
             self.workers.insert(origin, &worker);
             Ok(Effect::new(1, None, origin))

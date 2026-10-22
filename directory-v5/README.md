@@ -1,100 +1,57 @@
-# Candidate v5 Directory
+# Directory v5 candidate
 
-SPEC-0013 M3 Directory slice. This candidate ports the current Rust engine's
-catalogs, descriptive skill/role associations, worker registration/qualifications,
-mode and coordinator eligibility, skill requests and moderation. Rust remains
-the application authority; neither this contract nor its backend artifact is
-deployed. Old deployed contract source stays unchanged.
+The current application rules in backend SPEC-0013/SPEC-0003/SPEC-0006 are
+canonical. This contract remains a staged candidate; deployment and migration
+are separate gates.
 
-Directory's creator is the immutable system authority. Seed catalogs are explicit
-constructor data, with coordinator role 1 fixed. Verified users call their own
-worker messages directly. Registration creates exactly one `calendar-v5` instance
-in the same transaction, retaining the supplied public Calendar ID. The caller's
-technical native funding covers storage; no pallet-assets balance is used or
-changed. Nested errors revert the parent and child effects.
+M4 adds mode-specific exact reputation, the validated four-byte score policy,
+skill-index matching, prior-team preference and atomic Calendar reservations.
+Scores retain hundredths-of-stars times committed weighted minutes. Unrated is
+exactly 2.5; continued fractions compare without overflowing cross-products.
+Vote-policy changes affect future contributions only. The internal Project
+controller must verify evaluation participants and committed minutes (M6);
+`apply_reputation` records its `(project_id, author)` content hash to avoid
+repeated accumulation. It accepts only the fixed controller and rejects a
+conflicting repeat. No user can directly submit reputation contributions.
 
-Directory composes worker views from the actual Calendar instance, rather than
-copying its definition/reservations. Root can grant eligibility; only the worker
-changes active mode. Catalog deletion checks worker, skill-association and retained
-proposal references. A fixed internal reference controller maintains proposal
-references; it must track every retained proposal, including drafts/history. Its
-fixture account is not a browser API or complete Project authorization. M5 must
-wire this to Project lifecycle transactions before Project parity is claimed.
+Directory creates each child Calendar with Directory as its reservation
+controller. Only the fixed Project controller may ask Directory to reserve or
+match; the existing direct worker capacity-update permission is unchanged.
+The existing constructor's reservation-controller argument identifies this
+Project capability, not an additional public worker permission. The explicit
+fixtures use a disposable controller account; M5/M6 must wire actual Projects.
+Old candidate checkpoints are incompatible; ordinary backend data is untouched.
 
-New-skill requests retain the trimmed name and requested role associations without
-changing qualifications. Only root decides requests. Approval rechecks duplicate
-names and role existence, allocates a checked catalog ID, and retains metadata
-on later renames. Request queries derive visibility from `env().caller()`.
+A dense per-skill index stores entries separately to avoid a packed-index
+16 KiB limit. Matching intersects every skill index, checks mode/capacity,
+excludes client/coordinator and used slots, and prefers earlier-milestone team
+members before comparing relevant scores. Role metadata never filters matching.
+Candidate order is sorted before uniform ties; there is no search truncation.
+All milestones use one captured seed and transaction. Any error reverts earlier
+reservations. Initial coordinator selection also returns the following public
+ID from that same captured stream for the future Project factory.
 
-Backend fixtures supply captured IDs and compare existing v1 SCALE views, error
-codes and effect kind/entity/recipient fields. The provider shell must bind the
-verified origin, inputs, nonce, receipt and durable event. That signed bridge is
-the next M3 slice. Do not expose these raw fixture calls as a provider mode.
-Reputation is zero for fresh fixtures; updates/matching belong to M4. Large-state
-import, complete project references, performance acceptance and promotion are open.
+## Locked entropy dependency
 
-## Builds and dependency review
+rand =0.10.2, defaults disabled, `std_rng` only, reuses the backend's version-1
+stream. Its additions rand_core 0.10.1, chacha20 0.10.2 and cpufeatures 0.3.1
+match the already reviewed backend application/SDK versions and checksums.
+All declare MSRV 1.85 and MIT OR Apache-2.0; current primary registry metadata
+was checked 2026-10-22 (not yanked). The published source documents ChaCha12,
+upstream SIMD/CPU-detection unsafe code and non-portability. On WASM this uses
+the portable Rust backend; native CPU/platform implications remain upstream.
+No system/thread entropy, new native library or handwritten cryptography is
+added. Another RNG version or a handwritten sampling algorithm would change
+accepted inputs and is not substituted. The Calendar dependency pins immutable
+Git source to make fresh-checkout WASM reproduction reliable.
 
-```sh
-cargo +1.88.0 contract build --release --offline --manifest-path directory-v5/Cargo.toml
-cargo +1.96.1 test --manifest-path directory-v5/Cargo.toml --offline --locked --lib
-```
+Sources: https://crates.io/api/v1/crates/rand/0.10.2,
+https://crates.io/api/v1/crates/rand_core/0.10.1,
+https://crates.io/api/v1/crates/chacha20/0.10.2,
+https://crates.io/api/v1/crates/cpufeatures/0.3.1.
 
-The first command produces release v5 WASM with cargo-contract 5.0.3. The second
-checks every Unicode scalar and sigma context against the app's stdlib. Normal
-runtime tests need neither compiler nor node; they use pinned immutable artifacts.
-
-Reviewed 2026-10-22: ink 5.1.1, SCALE 3.7.5, scale-info 2.11.6 and the pinned
-Calendar dependency reuse the approved v5 family. No registry package/version
-is added beyond Calendar's locked graph. No new native/cryptographic dependency
-or handwritten unsafe is added. Calendar reuses Chrono as already reviewed.
-The Unicode data uses Unicode-3.0; its notice is in `LICENSE-UNICODE`.
-
-The Calendar crate is pinned to the already reviewed public source revision
-`4687748658763a1e9fdc8e5198f6df71709fe8c4`. A local path dependency made Cargo's
-dependency identity depend on the checkout directory and changed WASM function /
-data ordering between fresh builds. The immutable Git dependency gives it a
-stable source identity without duplicating Calendar types or adding a build tool.
-Run `cargo fetch --manifest-path directory-v5/Cargo.toml --locked` once before
-an offline source rebuild. Backend runtime/CI only reads committed bundles and
-does not fetch or compile contract sources.
-
-## Stable name normalization
-
-The app's Rust 1.96.1 uses Unicode 17; the v5 compiler's Rust 1.88.0 uses Unicode
-16. That changes 28 lowercase mappings and sigma context properties. Blindly
-using the older `to_lowercase()` would allow duplicate normalized skill names.
-Newer Rust also conflicts with cargo-contract 5.0.3's `panic_immediate_abort`
-build flag, so changing compiler alone does not produce a working release build.
-
-`names.rs` uses the standard character conversion plus those 28 changed mappings
-and the Unicode 17 Cased/Case_Ignorable ranges for final sigma. The data is
-generated by `generate-names.py`; source hashes are recorded in `names_data.rs`.
-The compiler's Unicode version is checked. Future compiler or app Unicode changes
-require a fresh compatibility review. Whitespace behavior is unchanged between
-the two toolchains and is included in the cross-toolchain comparison.
-
-Download these official, versioned inputs and pass them to `generate-names.py`
-in this order, followed by the output path `directory-v5/names_data.rs`:
-
-- [Unicode 16 UnicodeData](https://www.unicode.org/Public/16.0.0/ucd/UnicodeData.txt)
-- [Unicode 16 SpecialCasing](https://www.unicode.org/Public/16.0.0/ucd/SpecialCasing.txt)
-- [Unicode 17 UnicodeData](https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt)
-- [Unicode 17 SpecialCasing](https://www.unicode.org/Public/17.0.0/ucd/SpecialCasing.txt)
-- [Unicode 17 DerivedCoreProperties](https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt)
-
-`verify-names.rs` can also compare the actual contract compiler against the app
-compiler, without ink or any extra dependency:
-
-```sh
-set -euo pipefail
-rustc +1.88.0 --edition=2021 -O directory-v5/verify-names.rs -o /tmp/names-compat
-rustc +1.96.1 --edition=2021 -O directory-v5/verify-names.rs -o /tmp/names-reference
-/tmp/names-compat | sha256sum > /tmp/names-compat.sha256
-/tmp/names-reference --reference | sha256sum > /tmp/names-reference.sha256
-cmp /tmp/names-compat.sha256 /tmp/names-reference.sha256
-```
-
-This compares 3,336,192 length-delimited scalar/sigma cases plus every scalar's
-whitespace classification. Both streams produced SHA256
-`a807122c9e20dfa9b4cc079e2eaa0d18341ecf3c642621b7338d09eacb138c38`.
+Build production WASM with Rust 1.88.0 and cargo-contract 5.0.3. Arithmetic tests
+run on that compiler; the Unicode-17 semantic test intentionally runs with the
+backend's Rust 1.96.1 compiler. Backend tests replay frozen native traces against
+this production WASM and check the locked ABI and full trie restart. Large-state
+import capacity and benchmark acceptance remain later gates.
