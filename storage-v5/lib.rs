@@ -251,6 +251,55 @@ pub fn decode_import<T: Decode>(
     Ok((load(*length), *length, *directory, *id))
 }
 
+/// SCALE strings use one exact allocation in the bounded WASM bump heap.
+/// The stock decoder grows vectors repeatedly and cannot reclaim older buffers.
+pub fn decode_text<I: Input>(input: &mut I) -> Result<ink::prelude::string::String, scale::Error> {
+    let length = usize::try_from(<scale::Compact<u32> as Decode>::decode(input)?.0)
+        .map_err(|_| scale::Error::from("text length"))?;
+    let remaining = input.remaining_len()?.ok_or("unknown text bound")?;
+    if length > remaining {
+        return Err("truncated text".into());
+    }
+    input.on_before_alloc_mem(length)?;
+    let mut bytes = ink::prelude::vec![0u8;length];
+    input.read(&mut bytes)?;
+    ink::prelude::string::String::from_utf8(bytes).map_err(|_| "invalid UTF-8".into())
+}
+
+/// Field adapter changes allocation only; the field remains a SCALE String.
+pub struct Text(ink::prelude::string::String);
+impl Decode for Text {
+    fn decode<I: Input>(input: &mut I) -> Result<Self, scale::Error> {
+        decode_text(input).map(Self)
+    }
+}
+impl From<Text> for ink::prelude::string::String {
+    fn from(text: Text) -> Self {
+        text.0
+    }
+}
+impl<'a> scale::EncodeAsRef<'a, ink::prelude::string::String> for Text {
+    type RefType = &'a ink::prelude::string::String;
+}
+pub struct OptionalText(Option<ink::prelude::string::String>);
+impl Decode for OptionalText {
+    fn decode<I: Input>(input: &mut I) -> Result<Self, scale::Error> {
+        match <u8 as Decode>::decode(input)? {
+            0 => Ok(Self(None)),
+            1 => decode_text(input).map(|text| Self(Some(text))),
+            _ => Err("invalid text option".into()),
+        }
+    }
+}
+impl From<OptionalText> for Option<ink::prelude::string::String> {
+    fn from(text: OptionalText) -> Self {
+        text.0
+    }
+}
+impl<'a> scale::EncodeAsRef<'a, Option<ink::prelude::string::String>> for OptionalText {
+    type RefType = &'a Option<ink::prelude::string::String>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,5 +364,13 @@ mod tests {
         import = None;
         assert!(append_import(&mut import, 0, &[0]).is_err());
         assert!(decode_import::<Vec<u8>>(&import).is_err());
+    }
+    #[ink::test]
+    fn exact_text_decoder_retains_scale_bytes_and_rejects_truncated_or_invalid_text() {
+        let text = ink::prelude::string::String::from("x").repeat(280_000);
+        let bytes = Encode::encode(&text);
+        assert_eq!(decode_text(&mut &bytes[..]).unwrap(), text);
+        assert!(decode_text(&mut &bytes[..bytes.len() - 1]).is_err());
+        assert!(decode_text(&mut &[4u8, 255][..]).is_err());
     }
 }
