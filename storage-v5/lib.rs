@@ -211,6 +211,15 @@ pub fn append_import(
     index: u32,
     bytes: &[u8],
 ) -> Result<(), ink::prelude::string::String> {
+    append_import_in(import, ROOT, index, bytes)
+}
+/// A separate namespace stages registry records without touching live root pages.
+pub fn append_import_in(
+    import: &mut Import,
+    namespace: u32,
+    index: u32,
+    bytes: &[u8],
+) -> Result<(), ink::prelude::string::String> {
     use ink::prelude::string::String;
     let (directory, _, length) = import
         .as_mut()
@@ -230,13 +239,19 @@ pub fn append_import(
         .checked_add(u32::try_from(bytes.len()).map_err(|_| String::from("invalid_archive_page"))?)
         .filter(|next| *next <= 64 * 1024 * 1024)
         .ok_or_else(|| String::from("invalid_archive_page"))?;
-    write(&(ROOT, index), &Bytes(bytes));
+    write(&(namespace, index), &Bytes(bytes));
     *length = next;
     Ok(())
 }
 /// Decode the complete stored image before publishing its header or enabling writes.
 pub fn decode_import<T: Decode>(
     import: &Import,
+) -> Result<(T, u32, ink::primitives::AccountId, [u8; 16]), ink::prelude::string::String> {
+    decode_import_in(import, ROOT)
+}
+pub fn decode_import_in<T: Decode>(
+    import: &Import,
+    namespace: u32,
 ) -> Result<(T, u32, ink::primitives::AccountId, [u8; 16]), ink::prelude::string::String> {
     use ink::prelude::string::String;
     let (directory, id, length) = import
@@ -248,7 +263,21 @@ pub fn decode_import<T: Decode>(
     if *length == 0 {
         return Err(String::from("invalid_archive"));
     }
-    Ok((load(*length), *length, *directory, *id))
+    Ok((
+        decode(*length, |index| read(&(namespace, index))),
+        *length,
+        *directory,
+        *id,
+    ))
+}
+
+/// Remove temporary registry pages only after their record has been applied.
+pub fn clear_import(import: &mut Import, namespace: u32) {
+    if let Some((_, _, length)) = import.take() {
+        for index in 0..count(length as usize) {
+            clear(&(namespace, index as u32));
+        }
+    }
 }
 
 /// SCALE strings use one exact allocation in the bounded WASM bump heap.
@@ -364,6 +393,27 @@ mod tests {
         import = None;
         assert!(append_import(&mut import, 0, &[0]).is_err());
         assert!(decode_import::<Vec<u8>>(&import).is_err());
+    }
+    #[ink::test]
+    fn registry_staging_preserves_root_pages_and_clears_temporary_cells() {
+        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+        let root = ink::prelude::vec![1u8; 100];
+        let length = save(0, &root);
+        let value = ink::prelude::vec![9u8; CHUNK_BYTES + 100];
+        let bytes = Encode::encode(&value);
+        let mut import = Some((accounts.alice, [0; 16], 0));
+        for (index, page) in bytes.chunks(CHUNK_BYTES).enumerate() {
+            append_import_in(&mut import, ROOT - 1, index as u32, page).unwrap();
+        }
+        assert_eq!(
+            decode_import_in::<Vec<u8>>(&import, ROOT - 1).unwrap().0,
+            value
+        );
+        assert_eq!(load::<Vec<u8>>(length), root);
+        clear_import(&mut import, ROOT - 1);
+        assert!(import.is_none());
+        assert!(read::<_, Vec<u8>>(&(ROOT - 1, 0u32)).is_none());
+        assert_eq!(load::<Vec<u8>>(length), root);
     }
     #[ink::test]
     fn exact_text_decoder_retains_scale_bytes_and_rejects_truncated_or_invalid_text() {
