@@ -6,7 +6,7 @@ that runtime limit and store encoded values in 8 KiB cells instead.
 
 Each contract's ink storage header contains its root record byte length. Root
 pages use namespace u32::MAX. Explicit mapping namespaces are unique within the
-owning contract (Directory 1–16, Bank 100–103); each value has a length cell and
+owning contract (Directory 1–17, Bank 100–103); each value has a length cell and
 numbered byte pages. Shrinking/removing values clears obsolete cells. No other
 contract can address these cells. The artifact identity fixes the encoding and
 namespaces; importing old raw storage into this new layout is forbidden.
@@ -35,3 +35,8 @@ second complete encoded buffer. This matters because
 ink's bump allocator retains temporary allocations for the duration of a call.
 The helper is pinned to an immutable Git revision by each consumer: a separate
 checkout reproduced different Calendar WASM with a local helper path dependency.
+
+Worker display names live in their own paged mapping. Business checks, matching
+and global ID validation read the small worker record and do not load descriptive
+strings. The public worker view joins the two records. This preserves its ABI
+while keeping a valid maximum-size profile within the unchanged WASM memory cap.

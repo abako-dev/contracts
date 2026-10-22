@@ -130,7 +130,6 @@ pub mod directory_v5 {
     #[derive(Debug, Clone, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     struct Worker {
-        display_name: String,
         qualifications: Qualifications,
         mode: WorkerMode,
         coordinator_eligible: bool,
@@ -205,6 +204,7 @@ pub mod directory_v5 {
         skill_ids: Vec<u32>,
         skill_roles: Mapping<u32, Vec<u32>, 3>,
         workers: Mapping<AccountId, Worker, 4>,
+        display_names: Mapping<AccountId, String, 17>,
         calendar_ids: Mapping<Id, bool, 5>,
         accounts: Vec<AccountId>,
         requests: Mapping<Id, SkillRequestView, 6>,
@@ -247,6 +247,7 @@ pub mod directory_v5 {
                 skill_ids: Vec::new(),
                 skill_roles: Mapping::default(),
                 workers: Mapping::default(),
+                display_names: Mapping::default(),
                 calendar_ids: Mapping::default(),
                 accounts: Vec::new(),
                 requests: Mapping::default(),
@@ -950,7 +951,10 @@ pub mod directory_v5 {
         pub fn worker(&self, account: AccountId) -> Option<WorkerView> {
             self.workers.get(account).map(|worker| WorkerView {
                 account,
-                display_name: worker.display_name,
+                display_name: self
+                    .display_names
+                    .get(account)
+                    .unwrap_or_else(|| panic!("missing worker name")),
                 qualifications: worker.qualifications,
                 mode: worker.mode,
                 coordinator_eligible: worker.coordinator_eligible,
@@ -1002,10 +1006,10 @@ pub mod directory_v5 {
             .map_err(|_| String::from("calendar_instantiation_failed"))?
             .map_err(|_| String::from("calendar_instantiation_failed"))??;
             let skills = request.qualifications.skill_ids.clone();
+            self.display_names.insert(origin, &request.display_name);
             self.workers.insert(
                 origin,
                 &Worker {
-                    display_name: request.display_name,
                     qualifications: request.qualifications,
                     mode: WorkerMode::Worker,
                     coordinator_eligible: false,
