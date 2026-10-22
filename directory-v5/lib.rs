@@ -214,6 +214,9 @@ pub mod directory_v5 {
         next_task_id: u32,
         bank: Bank,
         project_layouts: Mapping<Id, ProjectIdentities>,
+        project_submissions: Mapping<Id, Vec<Id>>,
+        dispute_ids: Vec<Id>,
+        dispute_owners: Mapping<Id, Id>,
         evaluations: Mapping<(Id, AccountId), Hash>,
         skill_counts: Mapping<u32, u32>,
         skill_members: Mapping<(u32, u32), AccountId>,
@@ -253,6 +256,9 @@ pub mod directory_v5 {
                 next_task_id: 1,
                 bank: Bank::default(),
                 project_layouts: Mapping::default(),
+                project_submissions: Mapping::default(),
+                dispute_ids: Vec::new(),
+                dispute_owners: Mapping::default(),
                 evaluations: Mapping::default(),
                 skill_counts: Mapping::default(),
                 skill_members: Mapping::default(),
@@ -651,7 +657,16 @@ pub mod directory_v5 {
                     }
                 }
             }
-            self.bank.validate_ids(&mut identities)
+            self.bank.validate_ids(&mut identities)?;
+            for id in &self.project_ids {
+                for submission in self.project_submissions.get(id).unwrap_or_default() {
+                    require(identities.insert(submission), "invalid_submission_state")?;
+                }
+            }
+            for id in &self.dispute_ids {
+                require(identities.insert(*id), "invalid_dispute_state")?;
+            }
+            Ok(())
         }
         #[ink(message)]
         pub fn set_project_identities(&mut self, layout: ProjectIdentities) -> Result<()> {
@@ -661,6 +676,55 @@ pub mod directory_v5 {
                 .ok_or_else(|| String::from("registered_project_required"))?;
             self.project_layouts.insert(id, &layout);
             self.validate_public_ids()
+        }
+        #[ink(message)]
+        pub fn set_project_submissions(&mut self, submissions: Vec<Id>) -> Result<()> {
+            let id = self
+                .registered_projects
+                .get(self.env().caller())
+                .ok_or_else(|| String::from("registered_project_required"))?;
+            self.project_submissions.insert(id, &submissions);
+            self.validate_public_ids()
+        }
+        #[ink(message)]
+        pub fn register_dispute(&mut self, id: Id) -> Result<()> {
+            let project = self
+                .registered_projects
+                .get(self.env().caller())
+                .ok_or_else(|| String::from("registered_project_required"))?;
+            require(!self.dispute_owners.contains(id), "invalid_dispute_state")?;
+            self.dispute_owners.insert(id, &project);
+            insert_sorted(&mut self.dispute_ids, id);
+            self.validate_public_ids()
+        }
+        #[ink(message)]
+        pub fn dispute_project(&self, id: Id) -> Option<Id> {
+            self.dispute_owners.get(id)
+        }
+        #[ink(message)]
+        pub fn disputes(&self) -> Vec<(Id, Id)> {
+            self.dispute_ids
+                .iter()
+                .filter_map(|id| self.dispute_owners.get(id).map(|project| (*id, project)))
+                .collect()
+        }
+        /// Retained signed settlement variants contribute exact hundredths.
+        #[ink(message)]
+        pub fn apply_legacy_reputation(
+            &mut self,
+            votes: Vec<(AccountId, WorkerMode, u16, u32)>,
+        ) -> Result<()> {
+            self.registered_project()?;
+            for (account, mode, score, minutes) in votes {
+                let mut worker = self.worker_record(account)?;
+                let target = match mode {
+                    WorkerMode::Coordinator => &mut worker.coordinator_score,
+                    WorkerMode::Worker => &mut worker.worker_score,
+                };
+                *target = reputation::add_hundredths(target, score, minutes, 1)?;
+                self.workers.insert(account, &worker);
+            }
+            Ok(())
         }
         #[ink(message)]
         pub fn next_task_key(&mut self) -> Result<u32> {

@@ -46,6 +46,15 @@ impl scale::Decode for ScorePolicy {
     }
 }
 impl ScorePolicy {
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn blend(self, coordinator: u8, client: u8) -> Result<u16> {
+        if !(1..=5).contains(&coordinator) || !(1..=5).contains(&client) {
+            return Err("invalid_contract".into());
+        }
+        // Both scores <=5 and weights sum to100, so the sum fits u16.
+        Ok(u16::from(coordinator) * u16::from(self.coordinator_percent)
+            + u16::from(client) * u16::from(self.client_percent))
+    }
     pub(crate) fn weight(self, kind: VoteKind) -> u8 {
         match kind {
             VoteKind::CoordinatorToWorker => 1,
@@ -94,6 +103,18 @@ pub(crate) fn add(
     if !(1..=5).contains(&stars) {
         return Err("invalid_contract".into());
     }
+    add_hundredths(score, u16::from(stars) * 100, minutes, weight)
+}
+#[allow(clippy::arithmetic_side_effects)]
+pub(crate) fn add_hundredths(
+    score: &ReputationView,
+    hundredths: u16,
+    minutes: u32,
+    weight: u8,
+) -> Result<ReputationView> {
+    if !(100..=500).contains(&hundredths) {
+        return Err("invalid_contract".into());
+    }
     let minutes = u64::from(minutes) * u64::from(weight);
     let result = ReputationView {
         rated_minutes: score
@@ -102,7 +123,7 @@ pub(crate) fn add(
             .ok_or_else(|| String::from("score_overflow"))?,
         weighted_score_sum: score
             .weighted_score_sum
-            .checked_add(u128::from(stars) * 100 * u128::from(minutes))
+            .checked_add(u128::from(hundredths) * u128::from(minutes))
             .ok_or_else(|| String::from("score_overflow"))?,
     };
     if result.weighted_score_sum > u128::from(result.rated_minutes) * 500 {
