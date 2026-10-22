@@ -1,5 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+mod factory;
 mod matching;
 mod names;
 mod reputation;
@@ -13,6 +14,7 @@ pub mod directory_v5 {
     use calendar_v5::calendar_v5::{
         CalendarDefinition, CalendarV5Ref, CalendarView, ReservationView, Week, WeekWindow,
     };
+    use chrono::Datelike;
     use core::cmp::Ordering;
     #[cfg(feature = "std")]
     use ink::storage::traits::StorageLayout;
@@ -200,6 +202,13 @@ pub mod directory_v5 {
         proposal_references: Mapping<Id, Qualifications>,
         proposal_ids: Vec<Id>,
         score_policy: ScorePolicy,
+        compensation_percent: u8,
+        project_code: Option<Hash>,
+        project_addresses: Mapping<Id, AccountId>,
+        project_ids: Vec<Id>,
+        registered_projects: Mapping<AccountId, Id>,
+        next_task_id: u32,
+        project_child_ids: Mapping<Id, AccountId>,
         evaluations: Mapping<(Id, AccountId), Hash>,
         skill_counts: Mapping<u32, u32>,
         skill_members: Mapping<(u32, u32), AccountId>,
@@ -231,6 +240,13 @@ pub mod directory_v5 {
                 proposal_references: Mapping::default(),
                 proposal_ids: Vec::new(),
                 score_policy: ScorePolicy::default(),
+                compensation_percent: 10,
+                project_code: None,
+                project_addresses: Mapping::default(),
+                project_ids: Vec::new(),
+                registered_projects: Mapping::default(),
+                next_task_id: 0,
+                project_child_ids: Mapping::default(),
                 evaluations: Mapping::default(),
                 skill_counts: Mapping::default(),
                 skill_members: Mapping::default(),
@@ -395,9 +411,151 @@ pub mod directory_v5 {
         }
         fn project_controller(&self) -> Result<()> {
             require(
-                self.env().caller() == self.reservation_controller,
+                self.env().caller() == self.reservation_controller
+                    || self.registered_projects.contains(self.env().caller()),
                 "reservation_controller_required",
             )
+        }
+        #[ink(message)]
+        pub fn configure_project_code(&mut self, code: Hash) -> Result<()> {
+            self.root()?;
+            require(
+                self.project_code.is_none() || self.project_code == Some(code),
+                "project_code_fixed",
+            )?;
+            self.project_code = Some(code);
+            Ok(())
+        }
+        #[ink(message)]
+        pub fn project_address(&self, id: Id) -> Option<AccountId> {
+            self.project_addresses.get(id)
+        }
+        #[ink(message)]
+        pub fn projects(&self) -> Vec<(Id, AccountId)> {
+            self.project_ids
+                .iter()
+                .filter_map(|id| self.project_addresses.get(id).map(|address| (*id, address)))
+                .collect()
+        }
+        #[ink(message)]
+        pub fn create_project(
+            &mut self,
+            title: String,
+            description: String,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            require(!title.trim().is_empty(), "invalid_contract")?;
+            let now = self
+                .env()
+                .block_timestamp()
+                .checked_div(1000)
+                .ok_or_else(|| String::from("invalid_time"))?;
+            let seconds = i64::try_from(now).map_err(|_| String::from("invalid_time"))?;
+            let iso = chrono::DateTime::from_timestamp(seconds, 0)
+                .ok_or_else(|| String::from("invalid_time"))?
+                .iso_week();
+            let week = Week::new(
+                iso.year(),
+                u8::try_from(iso.week()).map_err(|_| String::from("invalid_time"))?,
+            )?;
+            let client = self.env().caller();
+            let (coordinator, id) = self.coordinator_selection(client, week, seed)?;
+            require(
+                !self.project_addresses.contains(id)
+                    && !self.calendar_ids.contains(id)
+                    && !self.project_child_ids.contains(id),
+                "invalid_project_state",
+            )?;
+            let code = self
+                .project_code
+                .ok_or_else(|| String::from("project_code_missing"))?;
+            let address = crate::factory::instantiate(
+                code,
+                self.env().account_id(),
+                id,
+                client,
+                coordinator,
+                title,
+                description,
+                now,
+            )?;
+            self.project_addresses.insert(id, &address);
+            self.registered_projects.insert(address, &id);
+            insert_sorted(&mut self.project_ids, id);
+            Ok(Effect {
+                kind: 7,
+                entity_id: Some(id),
+                recipients: BTreeSet::from([client, coordinator]).into_iter().collect(),
+            })
+        }
+        #[ink(message)]
+        pub fn compensation_policy(&self) -> u8 {
+            self.compensation_percent
+        }
+        #[ink(message)]
+        pub fn set_compensation_policy(&mut self, percent: u8) -> Result<Effect> {
+            self.root()?;
+            require(percent <= 100, "invalid_contract")?;
+            self.compensation_percent = percent;
+            Ok(Effect::new(37, None, self.env().caller()))
+        }
+        #[ink(message)]
+        pub fn validate_qualifications(&self, qualifications: Qualifications) -> Result<()> {
+            self.qualifications(&qualifications)
+        }
+        #[ink(message)]
+        pub fn validate_task_assignees(&self, accounts: Vec<AccountId>) -> Result<()> {
+            require(
+                accounts
+                    .iter()
+                    .all(|account| self.workers.contains(account)),
+                "unknown_task_assignee",
+            )
+        }
+        #[ink(message)]
+        pub fn claim_project_ids(&mut self, ids: Vec<Id>) -> Result<()> {
+            let caller = self.env().caller();
+            require(
+                self.registered_projects.contains(caller),
+                "registered_project_required",
+            )?;
+            let unique: BTreeSet<_> = ids.iter().collect();
+            require(unique.len() == ids.len(), "duplicate_entity")?;
+            for id in ids {
+                require(
+                    !self.calendar_ids.contains(id)
+                        && !self.project_addresses.contains(id)
+                        && !self.project_child_ids.contains(id),
+                    "duplicate_entity",
+                )?;
+                self.project_child_ids.insert(id, &caller);
+            }
+            Ok(())
+        }
+        #[ink(message)]
+        pub fn release_project_ids(&mut self, ids: Vec<Id>) -> Result<()> {
+            let caller = self.env().caller();
+            require(
+                self.registered_projects.contains(caller),
+                "registered_project_required",
+            )?;
+            for id in ids {
+                require(
+                    self.project_child_ids.get(id) == Some(caller),
+                    "invalid_project_state",
+                )?;
+                self.project_child_ids.remove(id);
+            }
+            Ok(())
+        }
+        #[ink(message)]
+        pub fn next_task_key(&mut self) -> Result<u32> {
+            self.project_controller()?;
+            let id = self.next_task_id;
+            self.next_task_id = id
+                .checked_add(1)
+                .ok_or_else(|| String::from("task_keys_exhausted"))?;
+            Ok(id)
         }
         #[ink(message)]
         pub fn score_policy(&self) -> ScorePolicy {
@@ -455,6 +613,14 @@ pub mod directory_v5 {
             seed: [u8; 32],
         ) -> Result<(AccountId, Id)> {
             self.project_controller()?;
+            self.coordinator_selection(client, week, seed)
+        }
+        fn coordinator_selection(
+            &self,
+            client: AccountId,
+            week: Week,
+            seed: [u8; 32],
+        ) -> Result<(AccountId, Id)> {
             let mut candidates = Vec::new();
             for account in &self.accounts {
                 let worker = self.worker_record(*account)?;
@@ -652,6 +818,11 @@ pub mod directory_v5 {
             require(
                 !self.calendar_ids.contains(calendar_id),
                 "invalid_worker_state",
+            )?;
+            require(
+                !self.project_addresses.contains(calendar_id)
+                    && !self.project_child_ids.contains(calendar_id),
+                "invalid_project_state",
             )?;
             // Creation and Directory registration share the parent transaction.
             // Native storage deposits use the runtime's technical funding, never assets.
@@ -906,7 +1077,8 @@ pub mod directory_v5 {
             qualifications: Option<Qualifications>,
         ) -> Result<()> {
             require(
-                self.env().caller() == self.reference_controller,
+                self.env().caller() == self.reference_controller
+                    || self.registered_projects.contains(self.env().caller()),
                 "reference_controller_required",
             )?;
             if let Some(qualifications) = qualifications {
