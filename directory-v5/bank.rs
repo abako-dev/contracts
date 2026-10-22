@@ -199,6 +199,7 @@ impl Bank {
             "deposit_already_confirmed",
         )?;
         self.mint(record.destination, record.amount, false)?;
+        require(now >= record.created_at, "invalid_deposit_state")?;
         record.status = DepositStatus::Confirmed;
         record.confirmed_at = Some(now);
         self.deposits.insert(id, &record);
@@ -258,6 +259,7 @@ impl Bank {
         )?;
         self.credit(record.owner, record.amount)?;
         assets::transfer(u128::from(record.amount), record.owner)?;
+        require(now >= record.created_at, "invalid_withdrawal_state")?;
         record.status = WithdrawalStatus::Cancelled;
         record.cancelled_at = Some(now);
         self.withdrawals.insert(id, &record);

@@ -243,6 +243,10 @@ pub fn reject(
         _ => return Err(String::from("invalid_contract")),
     };
     milestone.status = Some(MilestoneStatus::ChangesRequested);
+    require(
+        now >= current_mut(milestone)?.submitted_at,
+        "invalid_review_state",
+    )?;
     Ok(state.effect(24, submission_id))
 }
 pub fn accept(
@@ -360,6 +364,14 @@ pub fn accept(
     } else {
         state.project.completed = true;
     }
+    require(
+        now >= milestone(&state.project, milestone_id)?
+            .submissions
+            .last()
+            .ok_or_else(|| String::from("invalid_submission_state"))?
+            .submitted_at,
+        "invalid_review_state",
+    )?;
     Ok(state.effect(23, milestone_id))
 }
 pub fn evaluate(state: &mut ProjectsV5, ratings: Vec<AccountRating>) -> Result<Effect> {
