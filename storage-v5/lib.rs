@@ -192,6 +192,65 @@ impl<K: Encode, V: Encode + Decode, const PREFIX: u32> PagedMapping<K, V, PREFIX
     }
 }
 
+/// Dormant child import header. Completed contracts retain None permanently.
+pub type Import = Option<(ink::primitives::AccountId, [u8; 16], u32)>;
+pub fn import_from(
+    directory: ink::primitives::AccountId,
+    id: [u8; 16],
+) -> Result<Import, ink::prelude::string::String> {
+    if ink::env::caller::<ink::env::DefaultEnvironment>() != directory
+        || !ink::env::is_contract::<ink::env::DefaultEnvironment>(&directory)
+    {
+        return Err(ink::prelude::string::String::from("directory_required"));
+    }
+    Ok(Some((directory, id, 0)))
+}
+/// Each page appends once in order. A failed call changes neither cells nor header.
+pub fn append_import(
+    import: &mut Import,
+    index: u32,
+    bytes: &[u8],
+) -> Result<(), ink::prelude::string::String> {
+    use ink::prelude::string::String;
+    let (directory, _, length) = import
+        .as_mut()
+        .ok_or_else(|| String::from("import_closed"))?;
+    if ink::env::caller::<ink::env::DefaultEnvironment>() != *directory {
+        return Err(String::from("directory_required"));
+    }
+    let chunk = u32::try_from(CHUNK_BYTES).map_err(|_| String::from("invalid_archive"))?;
+    if bytes.is_empty()
+        || bytes.len() > CHUNK_BYTES
+        || *length % chunk != 0
+        || index != *length / chunk
+    {
+        return Err(String::from("invalid_archive_page"));
+    }
+    let next = length
+        .checked_add(u32::try_from(bytes.len()).map_err(|_| String::from("invalid_archive_page"))?)
+        .filter(|next| *next <= 64 * 1024 * 1024)
+        .ok_or_else(|| String::from("invalid_archive_page"))?;
+    write(&(ROOT, index), &Bytes(bytes));
+    *length = next;
+    Ok(())
+}
+/// Decode the complete stored image before publishing its header or enabling writes.
+pub fn decode_import<T: Decode>(
+    import: &Import,
+) -> Result<(T, u32, ink::primitives::AccountId, [u8; 16]), ink::prelude::string::String> {
+    use ink::prelude::string::String;
+    let (directory, id, length) = import
+        .as_ref()
+        .ok_or_else(|| String::from("import_closed"))?;
+    if ink::env::caller::<ink::env::DefaultEnvironment>() != *directory {
+        return Err(String::from("directory_required"));
+    }
+    if *length == 0 {
+        return Err(String::from("invalid_archive"));
+    }
+    Ok((load(*length), *length, *directory, *id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +292,28 @@ mod tests {
         assert_eq!(left.get(key), None);
         assert!(ink::env::contains_contract_storage(&(1u32, key, 1u32)).is_none());
         assert!(right.contains(key));
+    }
+    #[ink::test]
+    fn staged_pages_reject_gaps_duplicates_and_wrong_callers_then_decode_completely() {
+        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+        let value = ink::prelude::vec![9u8;CHUNK_BYTES+100];
+        let bytes = Encode::encode(&value);
+        let mut import = Some((accounts.alice, [1; 16], 0));
+        assert!(append_import(&mut import, 1, &bytes[..CHUNK_BYTES]).is_err());
+        assert!(page(bytes.len() as u32, 0).is_none());
+        append_import(&mut import, 0, &bytes[..CHUNK_BYTES]).unwrap();
+        let retained = import;
+        assert!(append_import(&mut import, 0, &bytes[..CHUNK_BYTES]).is_err());
+        assert_eq!(import, retained);
+        ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+        assert!(append_import(&mut import, 1, &bytes[CHUNK_BYTES..]).is_err());
+        assert_eq!(import, retained);
+        ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+        append_import(&mut import, 1, &bytes[CHUNK_BYTES..]).unwrap();
+        assert_eq!(decode_import::<Vec<u8>>(&import).unwrap().0, value);
+        assert!(append_import(&mut import, 2, &[0]).is_err());
+        import = None;
+        assert!(append_import(&mut import, 0, &[0]).is_err());
+        assert!(decode_import::<Vec<u8>>(&import).is_err());
     }
 }
