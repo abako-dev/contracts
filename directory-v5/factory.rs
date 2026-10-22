@@ -76,3 +76,38 @@ pub(crate) fn validate_reference(address: AccountId, url: String) -> Result<(), 
         .map_err(|_| String::from("reference_call_failed"))?
         .map_err(|_| String::from("reference_call_failed"))?
 }
+
+/// Identical fresh-import constructor ABI for Calendar and Project.
+pub(crate) fn instantiate_archive(
+    code: Hash,
+    directory: AccountId,
+    id: [u8; 16],
+    bytes: ink::prelude::vec::Vec<u8>,
+) -> Result<AccountId, String> {
+    let result = build_create::<ContractHandle>()
+        .code_hash(code)
+        .endowment(0)
+        .exec_input(
+            ExecutionInput::new(Selector::new(ink::selector_bytes!("from_archive")))
+                .push_arg(directory)
+                .push_arg(id)
+                .push_arg(bytes),
+        )
+        .salt_bytes(id)
+        .returns::<Result<ContractHandle, String>>()
+        .try_instantiate()
+        .map_err(|_| String::from("archive_instantiation_failed"))?
+        .map_err(|_| String::from("archive_instantiation_failed"))??;
+    Ok(result.0)
+}
+pub(crate) fn seal_import(address: AccountId) -> Result<(), String> {
+    ink::env::call::build_call::<DefaultEnvironment>()
+        .call(address)
+        .exec_input(ExecutionInput::new(Selector::new(ink::selector_bytes!(
+            "seal_import"
+        ))))
+        .returns::<Result<(), String>>()
+        .try_invoke()
+        .map_err(|_| String::from("archive_call_failed"))?
+        .map_err(|_| String::from("archive_call_failed"))?
+}

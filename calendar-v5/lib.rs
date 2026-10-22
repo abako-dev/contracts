@@ -166,11 +166,20 @@ pub mod calendar_v5 {
 
     #[derive(scale::Encode, scale::Decode)]
     pub(crate) struct CalendarData {
-        calendar: CalendarView,
-        directory: AccountId,
-        reservation_controller: AccountId,
+        pub(crate) calendar: CalendarView,
+        pub(crate) directory: AccountId,
+        pub(crate) reservation_controller: AccountId,
+        pub(crate) live: bool,
     }
     impl CalendarData {
+        pub(crate) fn ensure_live(&self) -> Result<()> {
+            if self.live {
+                Ok(())
+            } else {
+                Err(String::from("migration_in_progress"))
+            }
+        }
+
         /// Directory creates one instance per worker. The controller is a fixed
         /// internal capability; Project authorization is implemented in M5/M6.
         pub fn new(
@@ -181,6 +190,7 @@ pub mod calendar_v5 {
         ) -> Result<Self> {
             definition.validate()?;
             Ok(Self {
+                live: true,
                 calendar: CalendarView {
                     calendar_id,
                     owner,
@@ -262,6 +272,68 @@ pub mod calendar_v5 {
     }
 
     impl CalendarV5 {
+        fn read_state<T>(&self, read: impl FnOnce(CalendarData) -> T) -> T {
+            read(storage_v5::load(self.bytes))
+        }
+        fn transact<T>(
+            &mut self,
+            change: impl FnOnce(&mut CalendarData) -> Result<T>,
+        ) -> Result<T> {
+            let mut data: CalendarData = storage_v5::load(self.bytes);
+            let result = change(&mut data);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        fn change<T>(&mut self, change: impl FnOnce(&mut CalendarData) -> Result<T>) -> Result<T> {
+            self.transact(|data| {
+                data.ensure_live()?;
+                change(data)
+            })
+        }
+
+        /// Fresh, dormant instance. Only the creating Directory can make it live.
+        #[ink(constructor)]
+        pub fn from_archive(directory: AccountId, id: [u8; 16], bytes: Vec<u8>) -> Result<Self> {
+            if <Self as ink::codegen::StaticEnv>::env().caller() != directory
+                || !<Self as ink::codegen::StaticEnv>::env().is_contract(&directory)
+            {
+                return Err(String::from("directory_required"));
+            }
+            let calendar: CalendarView = scale::DecodeAll::decode_all(&mut &bytes[..])
+                .map_err(|_| String::from("invalid_archive"))?;
+            if calendar.calendar_id != id {
+                return Err(String::from("invalid_archive"));
+            }
+            calendar.definition.validate()?;
+            for (week, minutes) in calendar.totals()? {
+                if minutes > calendar.definition.capacity(week) {
+                    return Err(String::from("calendar_overcommitted"));
+                }
+            }
+            let data = CalendarData {
+                calendar,
+                directory,
+                reservation_controller: directory,
+                live: false,
+            };
+            Ok(Self {
+                bytes: storage_v5::save(0, &data),
+            })
+        }
+        #[ink(message)]
+        pub fn seal_import(&mut self) -> Result<()> {
+            self.transact(|data| {
+                if data.live
+                    || <CalendarData as ink::codegen::StaticEnv>::env().caller() != data.directory
+                {
+                    return Err(String::from("directory_required"));
+                }
+                data.live = true;
+                Ok(())
+            })
+        }
         #[ink(constructor)]
         #[allow(
             clippy::too_many_arguments,
@@ -280,27 +352,19 @@ pub mod calendar_v5 {
         }
         #[ink(message)]
         pub fn view(&self) -> CalendarView {
-            let data: CalendarData = storage_v5::load(self.bytes);
-            data.view()
+            self.read_state(|data| data.view())
         }
         #[ink(message)]
         pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<()> {
-            let mut data: CalendarData = storage_v5::load(self.bytes);
-            let result = data.set_calendar(definition);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.set_calendar(definition))
         }
         #[ink(message)]
         pub fn available(&self, week: Week) -> Result<u32> {
-            let data: CalendarData = storage_v5::load(self.bytes);
-            data.available(week)
+            self.read_state(|data| data.available(week))
         }
         #[ink(message)]
         pub fn allocation(&self, window: WeekWindow, minutes: u32) -> Result<Vec<(Week, u32)>> {
-            let data: CalendarData = storage_v5::load(self.bytes);
-            data.allocation(window, minutes)
+            self.read_state(|data| data.allocation(window, minutes))
         }
         #[ink(message)]
         pub fn reserve(
@@ -309,12 +373,7 @@ pub mod calendar_v5 {
             minutes: u32,
             reference: ReservationView,
         ) -> Result<()> {
-            let mut data: CalendarData = storage_v5::load(self.bytes);
-            let result = data.reserve(window, minutes, reference);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.reserve(window, minutes, reference))
         }
         #[ink(message)]
         pub fn archive_len(&self) -> u32 {
@@ -323,6 +382,38 @@ pub mod calendar_v5 {
         #[ink(message)]
         pub fn archive_page(&self, index: u32) -> Option<ink::prelude::vec::Vec<u8>> {
             storage_v5::page(self.bytes, index)
+        }
+    }
+    #[cfg(test)]
+    mod migration_tests {
+        use super::*;
+        #[ink::test]
+        fn dormant_calendars_reject_business_writes_until_directory_seals_once() {
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            let definition = CalendarDefinition {
+                default_weekly_minutes: 600,
+                overrides: Vec::new(),
+            };
+            let mut data =
+                CalendarData::new(accounts.alice, accounts.alice, [1; 16], definition.clone())
+                    .unwrap();
+            data.live = false;
+            let mut calendar = CalendarV5 {
+                bytes: storage_v5::save(0, &data),
+            };
+            assert_eq!(
+                calendar.set_calendar(definition.clone()),
+                Err(String::from("migration_in_progress"))
+            );
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+            assert_eq!(
+                calendar.seal_import(),
+                Err(String::from("directory_required"))
+            );
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+            calendar.seal_import().unwrap();
+            calendar.set_calendar(definition).unwrap();
+            assert!(calendar.seal_import().is_err());
         }
     }
 }

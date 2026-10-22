@@ -4,6 +4,7 @@ pub mod assets;
 pub mod bank;
 mod factory;
 pub mod matching;
+pub mod migration;
 mod names;
 pub mod reputation;
 
@@ -129,14 +130,14 @@ pub mod directory_v5 {
     }
     #[derive(Debug, Clone, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
-    struct Worker {
-        qualifications: Qualifications,
-        mode: WorkerMode,
-        coordinator_eligible: bool,
-        calendar: AccountId,
-        calendar_id: Id,
-        worker_score: ReputationView,
-        coordinator_score: ReputationView,
+    pub(crate) struct Worker {
+        pub(crate) qualifications: Qualifications,
+        pub(crate) mode: WorkerMode,
+        pub(crate) coordinator_eligible: bool,
+        pub(crate) calendar: AccountId,
+        pub(crate) calendar_id: Id,
+        pub(crate) worker_score: ReputationView,
+        pub(crate) coordinator_score: ReputationView,
     }
 
     /// The kind uses the unchanged v1 DomainEventKind SCALE discriminant. The
@@ -181,7 +182,7 @@ pub mod directory_v5 {
     fn normalized(name: &str) -> String {
         crate::names::lowercase(&name.split_whitespace().collect::<Vec<_>>().join(" "))
     }
-    fn insert_sorted<T: Ord>(items: &mut Vec<T>, item: T) {
+    pub(crate) fn insert_sorted<T: Ord>(items: &mut Vec<T>, item: T) {
         if let Err(index) = items.binary_search(&item) {
             items.insert(index, item);
         }
@@ -194,42 +195,54 @@ pub mod directory_v5 {
 
     #[derive(scale::Encode, scale::Decode)]
     pub(crate) struct DirectoryData {
-        root: AccountId,
-        calendar_code: Hash,
-        reservation_controller: AccountId,
-        reference_controller: AccountId,
-        roles: Mapping<u32, CatalogEntry, 1>,
-        role_ids: Vec<u32>,
-        skills: Mapping<u32, CatalogEntry, 2>,
-        skill_ids: Vec<u32>,
-        skill_roles: Mapping<u32, Vec<u32>, 3>,
-        workers: Mapping<AccountId, Worker, 4>,
-        display_names: Mapping<AccountId, String, 17>,
-        calendar_ids: Mapping<Id, bool, 5>,
-        accounts: Vec<AccountId>,
-        requests: Mapping<Id, SkillRequestView, 6>,
-        request_ids: Vec<Id>,
-        proposal_references: Mapping<Id, Qualifications, 7>,
-        proposal_ids: Vec<Id>,
-        score_policy: ScorePolicy,
-        compensation_percent: u8,
-        project_code: Option<Hash>,
-        references: Option<(Hash, AccountId)>,
-        project_addresses: Mapping<Id, AccountId, 8>,
-        project_ids: Vec<Id>,
-        registered_projects: Mapping<AccountId, Id, 9>,
-        next_task_id: u32,
-        bank: Bank,
-        project_layouts: Mapping<Id, ProjectIdentities, 10>,
-        project_submissions: Mapping<Id, Vec<Id>, 11>,
-        dispute_ids: Vec<Id>,
-        dispute_owners: Mapping<Id, Id, 12>,
-        evaluations: Mapping<(Id, AccountId), Hash, 13>,
-        skill_counts: Mapping<u32, u32, 14>,
-        skill_members: Mapping<(u32, u32), AccountId, 15>,
-        skill_positions: Mapping<(u32, AccountId), u32, 16>,
+        pub(crate) root: AccountId,
+        pub(crate) calendar_code: Hash,
+        pub(crate) reservation_controller: AccountId,
+        pub(crate) reference_controller: AccountId,
+        pub(crate) roles: Mapping<u32, CatalogEntry, 1>,
+        pub(crate) role_ids: Vec<u32>,
+        pub(crate) skills: Mapping<u32, CatalogEntry, 2>,
+        pub(crate) skill_ids: Vec<u32>,
+        pub(crate) skill_roles: Mapping<u32, Vec<u32>, 3>,
+        pub(crate) workers: Mapping<AccountId, Worker, 4>,
+        pub(crate) display_names: Mapping<AccountId, String, 17>,
+        pub(crate) calendar_ids: Mapping<Id, bool, 5>,
+        pub(crate) accounts: Vec<AccountId>,
+        pub(crate) requests: Mapping<Id, SkillRequestView, 6>,
+        pub(crate) request_ids: Vec<Id>,
+        pub(crate) proposal_references: Mapping<Id, Qualifications, 7>,
+        pub(crate) proposal_ids: Vec<Id>,
+        pub(crate) score_policy: ScorePolicy,
+        pub(crate) compensation_percent: u8,
+        pub(crate) project_code: Option<Hash>,
+        pub(crate) references: Option<(Hash, AccountId)>,
+        pub(crate) project_addresses: Mapping<Id, AccountId, 8>,
+        pub(crate) project_ids: Vec<Id>,
+        pub(crate) registered_projects: Mapping<AccountId, Id, 9>,
+        pub(crate) next_task_id: u32,
+        pub(crate) bank: Bank,
+        pub(crate) project_layouts: Mapping<Id, ProjectIdentities, 10>,
+        pub(crate) project_submissions: Mapping<Id, Vec<Id>, 11>,
+        pub(crate) dispute_ids: Vec<Id>,
+        pub(crate) dispute_owners: Mapping<Id, Id, 12>,
+        pub(crate) evaluations: Mapping<(Id, AccountId), crate::migration::RecordedEvaluation, 13>,
+        pub(crate) skill_counts: Mapping<u32, u32, 14>,
+        pub(crate) skill_members: Mapping<(u32, u32), AccountId, 15>,
+        pub(crate) skill_positions: Mapping<(u32, AccountId), u32, 16>,
+        pub(crate) migration_phase: u8,
+        pub(crate) categories: Mapping<u32, String, 18>,
+        pub(crate) reason_records: Mapping<u64, Vec<u8>, 19>,
+        pub(crate) reason_count: u64,
     }
     impl DirectoryData {
+        pub(crate) fn ensure_live(&self) -> Result<()> {
+            if self.migration_phase != 1 {
+                Ok(())
+            } else {
+                Err(String::from("migration_in_progress"))
+            }
+        }
+
         pub fn new(
             calendar_code: Hash,
             reservation_controller: AccountId,
@@ -238,6 +251,10 @@ pub mod directory_v5 {
         ) -> Result<Self> {
             let mut result = Self {
                 root: <Self as ink::codegen::StaticEnv>::env().caller(),
+                migration_phase: 0,
+                categories: Mapping::default(),
+                reason_records: Mapping::default(),
+                reason_count: 0,
                 calendar_code,
                 reservation_controller,
                 reference_controller,
@@ -321,10 +338,10 @@ pub mod directory_v5 {
             )?;
             Ok(result)
         }
-        fn root(&self) -> Result<()> {
+        pub(crate) fn root(&self) -> Result<()> {
             require(self.env().caller() == self.root, "system_origin_required")
         }
-        fn qualifications(&self, qualifications: &Qualifications) -> Result<()> {
+        pub(crate) fn qualifications(&self, qualifications: &Qualifications) -> Result<()> {
             qualifications.validate()?;
             require(
                 qualifications
@@ -338,7 +355,7 @@ pub mod directory_v5 {
                 "unknown_qualification",
             )
         }
-        fn worker_record(&self, account: AccountId) -> Result<Worker> {
+        pub(crate) fn worker_record(&self, account: AccountId) -> Result<Worker> {
             self.workers
                 .get(account)
                 .ok_or_else(|| String::from("worker_not_found"))
@@ -359,7 +376,7 @@ pub mod directory_v5 {
         }
         // Dense per-skill entries avoid packing a whole index into ink's 16 KiB
         // storage buffer. Candidate iteration has no fixed search/truncation limit.
-        fn index_add(&mut self, account: AccountId, skills: &[u32]) -> Result<()> {
+        pub(crate) fn index_add(&mut self, account: AccountId, skills: &[u32]) -> Result<()> {
             for skill in skills {
                 let count = self.skill_counts.get(skill).unwrap_or(0);
                 let next = count
@@ -646,7 +663,7 @@ pub mod directory_v5 {
         }
         /// Keep the same global traversal as the reference validation boundary.
         /// Error identity depends on the later entity, not on which command generated it.
-        fn validate_public_ids(&self) -> Result<()> {
+        pub(crate) fn validate_public_ids(&self) -> Result<()> {
             let mut identities = BTreeSet::new();
             for account in &self.accounts {
                 let worker = self.worker_record(*account)?;
@@ -761,7 +778,14 @@ pub mod directory_v5 {
             let hash = Hash::from(hash);
             let key = (project_id, author);
             if let Some(prior) = self.evaluations.get(key) {
-                return require(prior == hash, "evaluation_conflict");
+                return match prior {
+                    crate::migration::RecordedEvaluation::Applied(prior) => {
+                        require(prior == hash, "evaluation_conflict")
+                    }
+                    crate::migration::RecordedEvaluation::Imported => {
+                        Err(String::from("project_already_evaluated"))
+                    }
+                };
             }
             for vote in votes {
                 let mut worker = self.worker_record(vote.account)?;
@@ -778,7 +802,8 @@ pub mod directory_v5 {
                 )?;
                 self.workers.insert(vote.account, &worker);
             }
-            self.evaluations.insert(key, &hash);
+            self.evaluations
+                .insert(key, &crate::migration::RecordedEvaluation::Applied(hash));
             Ok(())
         }
         /// Used by the Project factory. Captured entropy derives the same ID
@@ -1087,6 +1112,7 @@ pub mod directory_v5 {
                     insert_sorted(&mut self.skill_ids, id);
                     if !self.skill_roles.contains(id) {
                         self.skill_roles.insert(id, &Vec::<u32>::new());
+                        self.categories.insert(id, &String::from("requested"));
                     }
                 }
             }
@@ -1136,6 +1162,7 @@ pub mod directory_v5 {
                     require(self.skills.contains(id), "catalog_entry_not_found")?;
                     self.skills.remove(id);
                     self.skill_roles.remove(id);
+                    self.categories.remove(id);
                     self.skill_ids.retain(|item| *item != id);
                 }
             }
@@ -1210,6 +1237,7 @@ pub mod directory_v5 {
                     );
                     insert_sorted(&mut self.skill_ids, id);
                     self.skill_roles.insert(id, &request.role_ids);
+                    self.categories.insert(id, &String::from("requested"));
                     request.status = SkillRequestStatus::Approved;
                     request.skill_id = Some(id);
                     32
@@ -1267,6 +1295,56 @@ pub mod directory_v5 {
     }
 
     impl DirectoryV5 {
+        fn read_state<T>(&self, read: impl FnOnce(DirectoryData) -> T) -> T {
+            read(storage_v5::load(self.bytes))
+        }
+        fn transact<T>(
+            &mut self,
+            change: impl FnOnce(&mut DirectoryData) -> Result<T>,
+        ) -> Result<T> {
+            let mut data: DirectoryData = storage_v5::load(self.bytes);
+            let result = change(&mut data);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        fn change<T>(&mut self, change: impl FnOnce(&mut DirectoryData) -> Result<T>) -> Result<T> {
+            self.transact(|data| {
+                data.ensure_live()?;
+                change(data)
+            })
+        }
+
+        /// Migration is available only on a fresh root-owned instance, then seals forever.
+        #[ink(message)]
+        pub fn begin_import(&mut self) -> Result<()> {
+            self.transact(|data| data.begin_import())
+        }
+        #[ink(message)]
+        pub fn import_record(&mut self, record: crate::migration::MigrationRecordV1) -> Result<()> {
+            self.transact(|data| data.import_record(record))
+        }
+        #[ink(message)]
+        pub fn seal_import(&mut self) -> Result<()> {
+            self.transact(|data| data.seal_import())
+        }
+        #[ink(message)]
+        pub fn migration_info(&self) -> (u8, u32, u64) {
+            self.read_state(|data| (data.migration_phase, data.next_task_id, data.reason_count))
+        }
+        #[ink(message)]
+        pub fn skill_category(&self, id: u32) -> Option<String> {
+            self.read_state(|data| data.categories.get(id))
+        }
+        #[ink(message)]
+        pub fn reason_at(&self, index: u64) -> Option<Vec<u8>> {
+            self.read_state(|data| data.reason_records.get(index))
+        }
+        #[ink(message)]
+        pub fn append_reason(&mut self, project_id: Id, bytes: Vec<u8>) -> Result<()> {
+            self.change(|data| data.append_reason(project_id, bytes))
+        }
         #[ink(constructor)]
         #[allow(
             clippy::too_many_arguments,
@@ -1290,46 +1368,31 @@ pub mod directory_v5 {
         }
         #[ink(message)]
         pub fn configure_project_code(&mut self, code: Hash) -> Result<()> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.configure_project_code(code);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.configure_project_code(code))
         }
         #[ink(message)]
         pub fn configure_reference_code(&mut self, code: Hash) -> Result<()> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.configure_reference_code(code);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.configure_reference_code(code))
         }
         #[ink(message)]
         pub fn reference_address(&self) -> Option<AccountId> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.reference_address()
+            self.read_state(|data| data.reference_address())
         }
         #[ink(message)]
         pub fn validate_reference(&self, url: String) -> Result<()> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.validate_reference(url)
+            self.read_state(|data| data.validate_reference(url))
         }
         #[ink(message)]
         pub fn project_address(&self, id: Id) -> Option<AccountId> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.project_address(id)
+            self.read_state(|data| data.project_address(id))
         }
         #[ink(message)]
         pub fn resolve_project(&self, id: Id) -> Result<AccountId> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.resolve_project(id)
+            self.read_state(|data| data.resolve_project(id))
         }
         #[ink(message)]
         pub fn projects(&self) -> Vec<(Id, AccountId)> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.projects()
+            self.read_state(|data| data.projects())
         }
         #[ink(message)]
         pub fn create_project(
@@ -1338,200 +1401,110 @@ pub mod directory_v5 {
             description: String,
             seed: [u8; 32],
         ) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.create_project(title, description, seed);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.create_project(title, description, seed))
         }
         #[ink(message)]
         pub fn compensation_policy(&self) -> u8 {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.compensation_policy()
+            self.read_state(|data| data.compensation_policy())
         }
         #[ink(message)]
         pub fn set_compensation_policy(&mut self, percent: u8) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.set_compensation_policy(percent);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.set_compensation_policy(percent))
         }
         #[ink(message)]
         pub fn validate_qualifications(&self, qualifications: Qualifications) -> Result<()> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.validate_qualifications(qualifications)
+            self.read_state(|data| data.validate_qualifications(qualifications))
         }
         #[ink(message)]
         pub fn validate_task_assignees(&self, accounts: Vec<AccountId>) -> Result<()> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.validate_task_assignees(accounts)
+            self.read_state(|data| data.validate_task_assignees(accounts))
         }
         #[ink(message)]
         pub fn configure_money(&mut self, mock_funding: bool) -> Result<()> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.configure_money(mock_funding);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.configure_money(mock_funding))
         }
         #[ink(message)]
         pub fn money_enabled(&self) -> bool {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.money_enabled()
+            self.read_state(|data| data.money_enabled())
         }
         #[ink(message)]
         pub fn fund_account(&mut self, account: AccountId, amount: u64) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.fund_account(account, amount);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.fund_account(account, amount))
         }
         #[ink(message)]
         pub fn create_deposit(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.create_deposit(amount, seed);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.create_deposit(amount, seed))
         }
         #[ink(message)]
         pub fn confirm_deposit(&mut self, id: Id) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.confirm_deposit(id);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.confirm_deposit(id))
         }
         #[ink(message)]
         pub fn create_withdrawal(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.create_withdrawal(amount, seed);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.create_withdrawal(amount, seed))
         }
         #[ink(message)]
         pub fn cancel_withdrawal(&mut self, id: Id) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.cancel_withdrawal(id);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.cancel_withdrawal(id))
         }
         #[ink(message)]
         pub fn deposit(&self, id: Id) -> Result<Deposit> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.deposit(id)
+            self.read_state(|data| data.deposit(id))
         }
         #[ink(message)]
         pub fn withdrawal(&self, id: Id) -> Result<Withdrawal> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.withdrawal(id)
+            self.read_state(|data| data.withdrawal(id))
         }
         #[ink(message)]
         pub fn financial_projection(&self) -> Result<FinancialProjection> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.financial_projection()
+            self.read_state(|data| data.financial_projection())
         }
         #[ink(message)]
         pub fn book_debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.book_debit(account, amount);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.book_debit(account, amount))
         }
         #[ink(message)]
         pub fn book_credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.book_credit(account, amount);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.book_credit(account, amount))
         }
         #[ink(message)]
         pub fn set_project_identities(&mut self, layout: ProjectIdentities) -> Result<()> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.set_project_identities(layout);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.set_project_identities(layout))
         }
         #[ink(message)]
         pub fn set_project_submissions(&mut self, submissions: Vec<Id>) -> Result<()> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.set_project_submissions(submissions);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.set_project_submissions(submissions))
         }
         #[ink(message)]
         pub fn register_dispute(&mut self, id: Id) -> Result<()> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.register_dispute(id);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.register_dispute(id))
         }
         #[ink(message)]
         pub fn dispute_project(&self, id: Id) -> Option<Id> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.dispute_project(id)
+            self.read_state(|data| data.dispute_project(id))
         }
         #[ink(message)]
         pub fn disputes(&self) -> Vec<(Id, Id)> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.disputes()
+            self.read_state(|data| data.disputes())
         }
         #[ink(message)]
         pub fn apply_legacy_reputation(
             &mut self,
             votes: Vec<(AccountId, WorkerMode, u16, u32)>,
         ) -> Result<()> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.apply_legacy_reputation(votes);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.apply_legacy_reputation(votes))
         }
         #[ink(message)]
         pub fn next_task_key(&mut self) -> Result<u32> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.next_task_key();
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.next_task_key())
         }
         #[ink(message)]
         pub fn score_policy(&self) -> ScorePolicy {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.score_policy()
+            self.read_state(|data| data.score_policy())
         }
         #[ink(message)]
         pub fn set_score_policy(&mut self, policy: ScorePolicy) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.set_score_policy(policy);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.set_score_policy(policy))
         }
         #[ink(message)]
         pub fn apply_reputation(
@@ -1540,12 +1513,7 @@ pub mod directory_v5 {
             author: AccountId,
             votes: Vec<Contribution>,
         ) -> Result<()> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.apply_reputation(project_id, author, votes);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.apply_reputation(project_id, author, votes))
         }
         #[ink(message)]
         pub fn select_coordinator(
@@ -1554,8 +1522,7 @@ pub mod directory_v5 {
             week: Week,
             seed: [u8; 32],
         ) -> Result<(AccountId, Id)> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.select_coordinator(client, week, seed)
+            self.read_state(|data| data.select_coordinator(client, week, seed))
         }
         #[ink(message)]
         pub fn reserve_calendar(
@@ -1565,12 +1532,7 @@ pub mod directory_v5 {
             minutes: u32,
             reference: ReservationView,
         ) -> Result<()> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.reserve_calendar(worker, window, minutes, reference);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.reserve_calendar(worker, window, minutes, reference))
         }
         #[ink(message)]
         pub fn assign_team(
@@ -1581,37 +1543,65 @@ pub mod directory_v5 {
             milestones: Vec<Milestone>,
             seed: [u8; 32],
         ) -> Result<Vec<Vec<(u32, AccountId)>>> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.assign_team(project_id, client, coordinator, milestones, seed);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.assign_team(project_id, client, coordinator, milestones, seed))
         }
         #[ink(message)]
         pub fn catalog(&self) -> CatalogSeed {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.catalog()
+            self.read_state(|data| data.catalog())
         }
         #[ink(message)]
         pub fn calendar_address(&self, account: AccountId) -> Option<AccountId> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.calendar_address(account)
+            self.read_state(|data| data.calendar_address(account))
         }
         #[ink(message)]
         pub fn worker(&self, account: AccountId) -> Option<WorkerView> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.worker(account)
+            self.read_state(|data| data.worker(account))
+        }
+        /// Private provider ABI: read independent fields without allocating large names.
+        #[ink(message)]
+        pub fn worker_accounts(&self) -> Vec<AccountId> {
+            self.read_state(|data| data.accounts)
+        }
+        #[ink(message)]
+        pub fn worker_metadata(
+            &self,
+            account: AccountId,
+        ) -> Option<(
+            Qualifications,
+            WorkerMode,
+            bool,
+            AccountId,
+            ReputationView,
+            ReputationView,
+        )> {
+            self.read_state(|data| {
+                data.workers.get(account).map(|worker| {
+                    (
+                        worker.qualifications,
+                        worker.mode,
+                        worker.coordinator_eligible,
+                        worker.calendar,
+                        worker.worker_score,
+                        worker.coordinator_score,
+                    )
+                })
+            })
+        }
+        #[ink(message)]
+        pub fn worker_name_len(&self, account: AccountId) -> Option<u32> {
+            self.read_state(|data| data.display_names.encoded_len(account))
+        }
+        #[ink(message)]
+        pub fn worker_name_page(&self, account: AccountId, index: u32) -> Option<Vec<u8>> {
+            self.read_state(|data| data.display_names.page(account, index))
         }
         #[ink(message)]
         pub fn workers(&self) -> Vec<WorkerView> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.workers()
+            self.read_state(|data| data.workers())
         }
         #[ink(message)]
         pub fn skill_requests(&self) -> Vec<SkillRequestView> {
-            let data: DirectoryData = storage_v5::load(self.bytes);
-            data.skill_requests()
+            self.read_state(|data| data.skill_requests())
         }
         #[ink(message)]
         pub fn register_worker(
@@ -1619,48 +1609,23 @@ pub mod directory_v5 {
             request: RegisterWorkerRequest,
             calendar_id: Id,
         ) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.register_worker(request, calendar_id);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.register_worker(request, calendar_id))
         }
         #[ink(message)]
         pub fn update_qualifications(&mut self, qualifications: Qualifications) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.update_qualifications(qualifications);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.update_qualifications(qualifications))
         }
         #[ink(message)]
         pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.set_calendar(definition);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.set_calendar(definition))
         }
         #[ink(message)]
         pub fn set_worker_mode(&mut self, mode: WorkerMode) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.set_worker_mode(mode);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.set_worker_mode(mode))
         }
         #[ink(message)]
         pub fn promote_coordinator(&mut self, account: AccountId) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.promote_coordinator(account);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.promote_coordinator(account))
         }
         #[ink(message)]
         pub fn upsert_catalog_entry(
@@ -1669,21 +1634,11 @@ pub mod directory_v5 {
             id: u32,
             name: String,
         ) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.upsert_catalog_entry(kind, id, name);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.upsert_catalog_entry(kind, id, name))
         }
         #[ink(message)]
         pub fn delete_catalog_entry(&mut self, kind: CatalogKind, id: u32) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.delete_catalog_entry(kind, id);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.delete_catalog_entry(kind, id))
         }
         #[ink(message)]
         pub fn create_skill_request(
@@ -1692,12 +1647,7 @@ pub mod directory_v5 {
             role_ids: Vec<u32>,
             request_id: Id,
         ) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.create_skill_request(name, role_ids, request_id);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.create_skill_request(name, role_ids, request_id))
         }
         #[ink(message)]
         pub fn decide_skill_request(
@@ -1705,12 +1655,7 @@ pub mod directory_v5 {
             request_id: Id,
             decision: SkillRequestDecision,
         ) -> Result<Effect> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.decide_skill_request(request_id, decision);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.decide_skill_request(request_id, decision))
         }
         #[ink(message)]
         pub fn set_proposal_references(
@@ -1718,12 +1663,7 @@ pub mod directory_v5 {
             proposal_id: Id,
             qualifications: Option<Qualifications>,
         ) -> Result<()> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = data.set_proposal_references(proposal_id, qualifications);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| data.set_proposal_references(proposal_id, qualifications))
         }
         #[ink(message)]
         pub fn archive_len(&self) -> u32 {

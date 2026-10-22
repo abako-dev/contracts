@@ -1,0 +1,272 @@
+//! Fresh-only migration capability. Import copies retained facts without invoking
+//! business commands, notifications, old settlements or reputation calculation.
+use crate::{
+    assets,
+    bank::{Deposit, Withdrawal},
+    directory_v5::*,
+    factory,
+    reputation::ScorePolicy,
+};
+use ink::{
+    codegen::Env as _,
+    prelude::{string::String, vec::Vec},
+    primitives::{AccountId, Hash},
+};
+use scale::{Decode, Encode};
+#[derive(Debug, Clone, Encode, Decode)]
+#[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Two fixed SCALE discriminants fit u8."
+)]
+pub enum RecordedEvaluation {
+    Imported,
+    Applied(Hash),
+}
+#[derive(Debug, Clone, Encode, Decode)]
+#[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+pub struct ProjectImport {
+    pub id: Id,
+    pub state: Vec<u8>,
+    pub layout: ProjectIdentities,
+    pub proposal_references: Vec<(Id, Qualifications)>,
+    pub submissions: Vec<Id>,
+    pub cases: Vec<Id>,
+    pub escrow: u64,
+    pub evaluations: Vec<AccountId>,
+}
+#[derive(Debug, Clone, Encode, Decode)]
+#[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Ten fixed SCALE discriminants fit u8."
+)]
+pub enum MigrationRecordV1 {
+    Worker(WorkerView),
+    Project(ProjectImport),
+    Deposit(Deposit),
+    Withdrawal(Withdrawal),
+    Balance(AccountId, u64),
+    Issuance(u64),
+    SkillRequest(SkillRequestView),
+    Category(u32, String),
+    Policies(ScorePolicy, u8, u32),
+    Reason(Vec<u8>),
+}
+fn require(condition: bool) -> Result<()> {
+    if condition {
+        Ok(())
+    } else {
+        Err(String::from("invalid_archive"))
+    }
+}
+impl DirectoryData {
+    pub(crate) fn begin_import(&mut self) -> Result<()> {
+        self.root()?;
+        require(
+            self.migration_phase == 0
+                && self.accounts.is_empty()
+                && self.project_ids.is_empty()
+                && self.request_ids.is_empty()
+                && self.proposal_ids.is_empty()
+                && self.dispute_ids.is_empty()
+                && self.bank.fresh()
+                && self.reason_count == 0,
+        )?;
+        require(self.project_code.is_some() && self.references.is_some() && self.bank.enabled())?;
+        self.migration_phase = 1;
+        Ok(())
+    }
+    pub(crate) fn import_record(&mut self, record: MigrationRecordV1) -> Result<()> {
+        self.root()?;
+        require(self.migration_phase == 1)?;
+        match record {
+            MigrationRecordV1::Worker(view) => {
+                require(
+                    !self.workers.contains(view.account)
+                        && !self.calendar_ids.contains(view.calendar.calendar_id)
+                        && view.calendar.owner == view.account,
+                )?;
+                self.qualifications(&view.qualifications)?;
+                let calendar = factory::instantiate_archive(
+                    self.calendar_code,
+                    self.env().account_id(),
+                    view.calendar.calendar_id,
+                    view.calendar.encode(),
+                )?;
+                self.index_add(view.account, &view.qualifications.skill_ids)?;
+                self.display_names.insert(view.account, &view.display_name);
+                self.workers.insert(
+                    view.account,
+                    &Worker {
+                        qualifications: view.qualifications,
+                        mode: view.mode,
+                        coordinator_eligible: view.coordinator_eligible,
+                        calendar,
+                        calendar_id: view.calendar.calendar_id,
+                        worker_score: view.worker_score,
+                        coordinator_score: view.coordinator_score,
+                    },
+                );
+                self.calendar_ids.insert(view.calendar.calendar_id, &true);
+                insert_sorted(&mut self.accounts, view.account);
+            }
+            MigrationRecordV1::Project(record) => {
+                require(!self.project_addresses.contains(record.id))?;
+                let address = factory::instantiate_archive(
+                    self.project_code
+                        .ok_or_else(|| String::from("project_code_missing"))?,
+                    self.env().account_id(),
+                    record.id,
+                    record.state,
+                )?;
+                self.project_addresses.insert(record.id, &address);
+                self.registered_projects.insert(address, &record.id);
+                insert_sorted(&mut self.project_ids, record.id);
+                self.project_layouts.insert(record.id, &record.layout);
+                self.project_submissions
+                    .insert(record.id, &record.submissions);
+                for (id, qualifications) in record.proposal_references {
+                    require(!self.proposal_references.contains(id))?;
+                    self.proposal_references.insert(id, &qualifications);
+                    insert_sorted(&mut self.proposal_ids, id);
+                }
+                for id in record.cases {
+                    require(!self.dispute_owners.contains(id))?;
+                    self.dispute_owners.insert(id, &record.id);
+                    insert_sorted(&mut self.dispute_ids, id);
+                }
+                for author in record.evaluations {
+                    self.evaluations
+                        .insert((record.id, author), &RecordedEvaluation::Imported);
+                }
+                self.bank.provision(address)?;
+                assets::transfer(u128::from(record.escrow), address)?;
+            }
+            MigrationRecordV1::Deposit(record) => self.bank.import_deposit(record)?,
+            MigrationRecordV1::Withdrawal(record) => self.bank.import_withdrawal(record)?,
+            MigrationRecordV1::Balance(account, amount) => {
+                self.bank.import_balance(account, amount)?
+            }
+            MigrationRecordV1::Issuance(amount) => self.bank.import_issuance(amount)?,
+            MigrationRecordV1::SkillRequest(record) => {
+                require(!self.requests.contains(record.request_id))?;
+                insert_sorted(&mut self.request_ids, record.request_id);
+                self.requests.insert(record.request_id, &record);
+            }
+            MigrationRecordV1::Category(id, category) => {
+                require(self.skills.contains(id))?;
+                self.categories.insert(id, &category);
+            }
+            MigrationRecordV1::Policies(score, compensation, next) => {
+                require(compensation <= 100 && next > 0)?;
+                self.score_policy = score;
+                self.compensation_percent = compensation;
+                self.next_task_id = next;
+            }
+            MigrationRecordV1::Reason(bytes) => self.push_reason(bytes)?,
+        }
+        Ok(())
+    }
+    pub(crate) fn seal_import(&mut self) -> Result<()> {
+        self.root()?;
+        require(self.migration_phase == 1)?;
+        self.validate_public_ids()?;
+        require(self.skill_ids.iter().all(|id| self.categories.contains(id)))?;
+        for account in &self.accounts {
+            factory::seal_import(self.worker_record(*account)?.calendar)?;
+        }
+        for id in &self.project_ids {
+            factory::seal_import(
+                self.project_addresses
+                    .get(id)
+                    .ok_or_else(|| String::from("invalid_project_state"))?,
+            )?;
+        }
+        self.migration_phase = 2;
+        Ok(())
+    }
+    fn push_reason(&mut self, bytes: Vec<u8>) -> Result<()> {
+        let next = self
+            .reason_count
+            .checked_add(1)
+            .ok_or_else(|| String::from("invalid_archive"))?;
+        self.reason_records.insert(self.reason_count, &bytes);
+        self.reason_count = next;
+        Ok(())
+    }
+    pub(crate) fn append_reason(&mut self, project: Id, bytes: Vec<u8>) -> Result<()> {
+        require(self.registered_projects.get(self.env().caller()) == Some(project))?;
+        self.push_reason(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn fresh() -> DirectoryData {
+        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+        let mut data = DirectoryData::new(
+            Hash::from([1; 32]),
+            accounts.alice,
+            accounts.alice,
+            CatalogSeed {
+                roles: ink::prelude::vec![CatalogEntry {
+                    id: 1,
+                    name: String::from("coordinator"),
+                    fixed: true
+                }],
+                skills: Vec::new(),
+                skill_roles: Vec::new(),
+            },
+        )
+        .unwrap();
+        data.project_code = Some(Hash::from([2; 32]));
+        data.references = Some((Hash::from([3; 32]), accounts.charlie));
+        data.bank.configure(false).unwrap();
+        data
+    }
+    #[ink::test]
+    fn import_is_root_only_fresh_only_and_permanently_sealed() {
+        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+        let mut data = fresh();
+        ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+        assert_eq!(
+            data.begin_import(),
+            Err(String::from("system_origin_required"))
+        );
+        ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+        data.begin_import().unwrap();
+        assert_eq!(
+            data.ensure_live(),
+            Err(String::from("migration_in_progress"))
+        );
+        assert!(data.begin_import().is_err());
+        data.import_record(MigrationRecordV1::Policies(
+            ScorePolicy::default(),
+            30,
+            1_000_000,
+        ))
+        .unwrap();
+        data.import_record(MigrationRecordV1::Reason(ink::prelude::vec![9, 8, 7]))
+            .unwrap();
+        assert_eq!(data.next_task_id, 1_000_000);
+        assert_eq!(
+            data.reason_records.get(0),
+            Some(ink::prelude::vec![9, 8, 7])
+        );
+        data.seal_import().unwrap();
+        assert!(data.ensure_live().is_ok());
+        assert!(data.begin_import().is_err());
+        assert!(data.seal_import().is_err());
+        assert!(data.import_record(MigrationRecordV1::Issuance(1)).is_err());
+        assert_eq!(data.bank.minted(), 0);
+    }
+    #[ink::test]
+    fn retained_domain_records_prevent_import_authority_from_opening() {
+        let mut data = fresh();
+        data.request_ids.push([1; 16]);
+        assert!(data.begin_import().is_err());
+        assert_eq!(data.migration_phase, 0);
+    }
+}

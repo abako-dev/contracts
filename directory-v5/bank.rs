@@ -79,6 +79,41 @@ pub struct Bank {
     withdrawal_ids: Vec<Id>,
 }
 impl Bank {
+    pub(crate) fn fresh(&self) -> bool {
+        self.accounts.is_empty()
+            && self.minted == 0
+            && self.deposit_ids.is_empty()
+            && self.withdrawal_ids.is_empty()
+    }
+    pub(crate) fn import_balance(&mut self, account: AccountId, amount: u64) -> Result<()> {
+        self.covered()?;
+        require(!self.balances.contains(account), "duplicate_archive_record")?;
+        self.provision(account)?;
+        assets::transfer(u128::from(amount), account)?;
+        self.write_balance(account, amount);
+        Ok(())
+    }
+    pub(crate) fn import_deposit(&mut self, record: Deposit) -> Result<()> {
+        self.covered()?;
+        self.new_id(record.deposit_id)?;
+        self.deposit_ids.push(record.deposit_id);
+        self.deposit_ids.sort_unstable();
+        self.deposits.insert(record.deposit_id, &record);
+        Ok(())
+    }
+    pub(crate) fn import_withdrawal(&mut self, record: Withdrawal) -> Result<()> {
+        self.covered()?;
+        self.new_id(record.withdrawal_id)?;
+        self.withdrawal_ids.push(record.withdrawal_id);
+        self.withdrawal_ids.sort_unstable();
+        self.withdrawals.insert(record.withdrawal_id, &record);
+        Ok(())
+    }
+    pub(crate) fn import_issuance(&mut self, amount: u64) -> Result<()> {
+        self.covered()?;
+        self.minted = amount;
+        Ok(())
+    }
     pub fn enabled(&self) -> bool {
         self.enabled
     }
