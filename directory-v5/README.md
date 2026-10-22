@@ -26,7 +26,7 @@ A dense per-skill index stores entries separately to avoid a packed-index
 16 KiB limit. Matching intersects every skill index, checks mode/capacity,
 excludes client/coordinator and used slots, and prefers earlier-milestone team
 members before comparing relevant scores. Role metadata never filters matching.
-Candidate order is sorted before uniform ties; there is no search truncation.
+Candidate order is sorted before ties; there is no search truncation.
 All milestones use one captured seed and transaction. Any error reverts earlier
 reservations. Initial coordinator selection also returns the following public
 ID from that same captured stream for the future Project factory.
@@ -55,3 +55,10 @@ run on that compiler; the Unicode-17 semantic test intentionally runs with the
 backend's Rust 1.96.1 compiler. Backend tests replay frozen native traces against
 this production WASM and check the locked ABI and full trie restart. Large-state
 import capacity and benchmark acceptance remain later gates.
+
+
+M4 independent review approved implementation `192279d` with backend `0ca0cf1`.
+The locked version-1 rand single-sample path retains the native provider's minute
+documented bias (worst case 2^-96). The fixture proves exact native/WASM parity,
+not strict mathematical unbiasedness. A strict rejection-sampling change requires
+coordinated/versioned retained inputs; it must not silently alter v1 behavior.
