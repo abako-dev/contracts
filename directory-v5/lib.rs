@@ -423,9 +423,11 @@ pub mod directory_v5 {
             };
             Ok(winners[index])
         }
+        // Fixed controllers serve component fixtures only. Factory setup
+        // permanently closes that path; real Projects hold their own capability.
         fn project_controller(&self) -> Result<()> {
             require(
-                self.env().caller() == self.reservation_controller
+                (self.project_code.is_none() && self.env().caller() == self.reservation_controller)
                     || self.registered_projects.contains(self.env().caller()),
                 "reservation_controller_required",
             )
@@ -558,6 +560,8 @@ pub mod directory_v5 {
         #[ink(message)]
         pub fn configure_money(&mut self, mock_funding: bool) -> Result<()> {
             self.root()?;
+            require(self.project_code.is_some(), "project_code_missing")?;
+            require(self.references.is_some(), "incomplete_reference_coverage")?;
             require(
                 crate::assets::balance(self.env().account_id())? > 1,
                 "invalid_asset_state",
@@ -1274,7 +1278,7 @@ pub mod directory_v5 {
             qualifications: Option<Qualifications>,
         ) -> Result<()> {
             require(
-                self.env().caller() == self.reference_controller
+                (self.project_code.is_none() && self.env().caller() == self.reference_controller)
                     || self.registered_projects.contains(self.env().caller()),
                 "reference_controller_required",
             )?;
