@@ -1,12 +1,15 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+pub mod assets;
+pub mod bank;
 mod factory;
-mod matching;
+pub mod matching;
 mod names;
-mod reputation;
+pub mod reputation;
 
 #[ink::contract]
 pub mod directory_v5 {
+    use crate::bank::{Bank, Deposit, FinancialProjection, Withdrawal};
     use crate::{
         matching::{Milestone, Requirement},
         reputation::{self, Contribution, ScorePolicy, VoteKind},
@@ -209,6 +212,7 @@ pub mod directory_v5 {
         project_ids: Vec<Id>,
         registered_projects: Mapping<AccountId, Id>,
         next_task_id: u32,
+        bank: Bank,
         project_layouts: Mapping<Id, ProjectIdentities>,
         evaluations: Mapping<(Id, AccountId), Hash>,
         skill_counts: Mapping<u32, u32>,
@@ -247,6 +251,7 @@ pub mod directory_v5 {
                 project_ids: Vec::new(),
                 registered_projects: Mapping::default(),
                 next_task_id: 1,
+                bank: Bank::default(),
                 project_layouts: Mapping::default(),
                 evaluations: Mapping::default(),
                 skill_counts: Mapping::default(),
@@ -488,6 +493,9 @@ pub mod directory_v5 {
             self.registered_projects.insert(address, &id);
             insert_sorted(&mut self.project_ids, id);
             self.validate_public_ids()?;
+            if self.bank.enabled() {
+                self.bank.provision(address)?;
+            }
             Ok(Effect {
                 kind: 7,
                 entity_id: Some(id),
@@ -518,6 +526,108 @@ pub mod directory_v5 {
                 "unknown_task_assignee",
             )
         }
+        #[ink(message)]
+        pub fn configure_money(&mut self, mock_funding: bool) -> Result<()> {
+            self.root()?;
+            require(
+                crate::assets::balance(self.env().account_id())? > 1,
+                "invalid_asset_state",
+            )?;
+            self.bank.configure(mock_funding)?;
+            for (_, address) in self.projects() {
+                self.bank.provision(address)?;
+            }
+            Ok(())
+        }
+        #[ink(message)]
+        pub fn money_enabled(&self) -> bool {
+            self.bank.enabled()
+        }
+        #[ink(message)]
+        pub fn fund_account(&mut self, account: AccountId, amount: u64) -> Result<Effect> {
+            self.root()?;
+            self.bank.mint(account, amount, true)?;
+            Ok(Effect::new(6, None, account))
+        }
+        #[ink(message)]
+        pub fn create_deposit(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
+            let origin = self.env().caller();
+            let mut id = [0; 16];
+            StdRng::from_seed(seed).fill_bytes(&mut id);
+            self.bank.create_deposit(origin, id, amount, self.now())?;
+            self.validate_public_ids()?;
+            Ok(Effect::new(27, Some(id), origin))
+        }
+        #[ink(message)]
+        pub fn confirm_deposit(&mut self, id: Id) -> Result<Effect> {
+            self.root()?;
+            let destination = self.bank.confirm(id, self.now())?;
+            Ok(Effect::moderated(28, id, destination, self.env().caller()))
+        }
+        #[ink(message)]
+        pub fn create_withdrawal(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
+            let origin = self.env().caller();
+            let mut id = [0; 16];
+            StdRng::from_seed(seed).fill_bytes(&mut id);
+            self.bank
+                .create_withdrawal(origin, id, amount, self.now())?;
+            self.validate_public_ids()?;
+            Ok(Effect::new(29, Some(id), origin))
+        }
+        #[ink(message)]
+        pub fn cancel_withdrawal(&mut self, id: Id) -> Result<Effect> {
+            let owner = self
+                .bank
+                .cancel(id, self.env().caller(), self.root, self.now())?;
+            Ok(Effect::moderated(30, id, owner, self.env().caller()))
+        }
+        #[ink(message)]
+        pub fn deposit(&self, id: Id) -> Result<Deposit> {
+            let record = self.bank.deposit(id)?;
+            require(
+                self.env().caller() == record.owner || self.env().caller() == self.root,
+                "deposit_owner_or_system_required",
+            )?;
+            Ok(record)
+        }
+        #[ink(message)]
+        pub fn withdrawal(&self, id: Id) -> Result<Withdrawal> {
+            let record = self.bank.withdrawal(id)?;
+            require(
+                self.env().caller() == record.owner || self.env().caller() == self.root,
+                "withdrawal_owner_or_system_required",
+            )?;
+            Ok(record)
+        }
+        #[ink(message)]
+        pub fn financial_projection(&self) -> Result<FinancialProjection> {
+            self.root()?;
+            Ok((
+                self.bank.balances(),
+                self.bank.minted(),
+                self.bank.deposits(),
+                self.bank.withdrawals(),
+            ))
+        }
+        fn registered_project(&self) -> Result<()> {
+            require(
+                self.registered_projects.contains(self.env().caller()),
+                "registered_project_required",
+            )
+        }
+        #[ink(message)]
+        pub fn book_debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
+            self.registered_project()?;
+            self.bank.debit(account, amount)
+        }
+        #[ink(message)]
+        pub fn book_credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
+            self.registered_project()?;
+            self.bank.credit(account, amount)
+        }
+        fn now(&self) -> u64 {
+            self.env().block_timestamp() / 1000
+        }
         /// Keep the same global traversal as the reference validation boundary.
         /// Error identity depends on the later entity, not on which command generated it.
         fn validate_public_ids(&self) -> Result<()> {
@@ -541,7 +651,7 @@ pub mod directory_v5 {
                     }
                 }
             }
-            Ok(())
+            self.bank.validate_ids(&mut identities)
         }
         #[ink(message)]
         pub fn set_project_identities(&mut self, layout: ProjectIdentities) -> Result<()> {
