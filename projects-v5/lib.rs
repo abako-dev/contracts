@@ -1,4 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
+mod disputes;
+mod execution;
 mod types;
 
 #[ink::contract]
@@ -19,9 +21,10 @@ pub mod projects_v5 {
 
     #[ink(storage)]
     pub struct ProjectsV5 {
-        directory: AccountId,
-        project: ProjectView,
-        reasons: Vec<ReasonRecord>,
+        pub(crate) directory: AccountId,
+        pub(crate) project: ProjectView,
+        pub(crate) reasons: Vec<ReasonRecord>,
+        pub(crate) disputes: Vec<DisputeRecord>,
     }
     impl ProjectsV5 {
         #[ink(constructor)]
@@ -67,6 +70,7 @@ pub mod projects_v5 {
                     active_dispute_id: None,
                 },
                 reasons: Vec::new(),
+                disputes: Vec::new(),
             })
         }
         #[ink(message)]
@@ -95,26 +99,26 @@ pub mod projects_v5 {
                 .collect();
             self.registry().set_project_identities(layout)
         }
-        fn registry(&self) -> DirectoryV5Ref {
+        pub(crate) fn registry(&self) -> DirectoryV5Ref {
             DirectoryV5Ref::from_account_id(self.directory)
         }
-        fn guard(&self) -> Result<()> {
+        pub(crate) fn guard(&self) -> Result<()> {
             require(!self.project.cancelled, "project_cancelled")?;
             require(self.project.active_dispute_id.is_none(), "project_disputed")
         }
-        fn coordinator(&self) -> Result<()> {
+        pub(crate) fn coordinator(&self) -> Result<()> {
             require(
                 self.env().caller() == self.project.coordinator,
                 "coordinator_required",
             )
         }
-        fn client(&self) -> Result<()> {
+        pub(crate) fn client(&self) -> Result<()> {
             require(
                 self.env().caller() == self.project.client,
                 "client_required",
             )
         }
-        fn party(&self) -> Result<()> {
+        pub(crate) fn party(&self) -> Result<()> {
             require(
                 self.env().caller() == self.project.client
                     || self.env().caller() == self.project.coordinator,
@@ -132,10 +136,10 @@ pub mod projects_v5 {
                 "planning_not_accepted",
             )
         }
-        fn now(&self) -> u64 {
+        pub(crate) fn now(&self) -> u64 {
             self.env().block_timestamp().checked_div(1000).unwrap_or(0)
         }
-        fn effect(&self, kind: u8, id: Id) -> Effect {
+        pub(crate) fn effect(&self, kind: u8, id: Id) -> Effect {
             let mut recipients = BTreeSet::from([
                 self.env().caller(),
                 self.project.client,
@@ -158,7 +162,7 @@ pub mod projects_v5 {
                 recipients: recipients.into_iter().collect(),
             }
         }
-        fn proposal_index(&self, id: Id) -> Result<usize> {
+        pub(crate) fn proposal_index(&self, id: Id) -> Result<usize> {
             self.project
                 .proposals
                 .iter()
@@ -192,6 +196,121 @@ pub mod projects_v5 {
                 role_ids: roles.into_iter().collect(),
                 skill_ids: skills.into_iter().collect(),
             })
+        }
+        #[ink(message)]
+        pub fn open_dispute(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            evidence: EvidenceReference,
+            seed: [u8; 32],
+            event_cursor: u64,
+        ) -> Result<Effect> {
+            crate::disputes::open(
+                self,
+                milestone_id,
+                submission_id,
+                Some(evidence),
+                None,
+                seed,
+                event_cursor,
+            )
+        }
+        #[ink(message)]
+        pub fn open_dispute_comment(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            comment_id: Id,
+            seed: [u8; 32],
+            event_cursor: u64,
+        ) -> Result<Effect> {
+            crate::disputes::open(
+                self,
+                milestone_id,
+                submission_id,
+                None,
+                Some(comment_id),
+                seed,
+                event_cursor,
+            )
+        }
+        #[ink(message)]
+        pub fn respond_dispute(&mut self, id: Id, evidence: EvidenceReference) -> Result<Effect> {
+            crate::disputes::respond(self, id, evidence)
+        }
+        #[ink(message)]
+        pub fn dispute(&self, id: Id) -> Result<(DisputeRecord, MilestoneView)> {
+            crate::disputes::view(self, id)
+        }
+        #[ink(message)]
+        pub fn approve_execution(
+            &mut self,
+            proposal_id: Id,
+            expected_revision: u64,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            crate::execution::approve(self, proposal_id, expected_revision, seed)
+        }
+        #[ink(message)]
+        pub fn submit_milestone(
+            &mut self,
+            milestone_id: Id,
+            deliverable: Option<EvidenceReference>,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            crate::execution::submit(self, milestone_id, deliverable, None, seed)
+        }
+        #[ink(message)]
+        pub fn submit_legacy_milestone(
+            &mut self,
+            milestone_id: Id,
+            deliverable: Option<EvidenceReference>,
+            ratings: Vec<WorkerRating>,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            crate::execution::submit(self, milestone_id, deliverable, Some(ratings), seed)
+        }
+        #[ink(message)]
+        pub fn accept_milestone(&mut self, milestone_id: Id, submission_id: Id) -> Result<Effect> {
+            crate::execution::accept(self, milestone_id, submission_id, None)
+        }
+        #[ink(message)]
+        pub fn accept_legacy_milestone(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            coordinator_score: u8,
+            team_rating: TeamRating,
+        ) -> Result<Effect> {
+            crate::execution::accept(
+                self,
+                milestone_id,
+                submission_id,
+                Some((coordinator_score, team_rating)),
+            )
+        }
+        #[ink(message)]
+        pub fn reject_milestone(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            reason: EvidenceReference,
+        ) -> Result<Effect> {
+            crate::execution::reject(self, milestone_id, submission_id, Some(reason), None)
+        }
+        #[ink(message)]
+        pub fn reject_milestone_comment(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            comment_id: Id,
+        ) -> Result<Effect> {
+            crate::execution::reject(self, milestone_id, submission_id, None, Some(comment_id))
+        }
+        #[ink(message)]
+        pub fn evaluate_project(&mut self, ratings: Vec<AccountRating>) -> Result<Effect> {
+            crate::execution::evaluate(self, ratings)
         }
         #[ink(message)]
         pub fn create_proposal(
@@ -389,12 +508,20 @@ pub mod projects_v5 {
                     && !self.project.planning.frozen,
                 "invalid_planning_state",
             )?;
-            // M5 creates unpaid plans only. Legacy imported escrow needs M6's
-            // asset transfer; never erase funds under incomplete coverage.
-            require(
-                self.project.planning.escrow == 0,
-                "incomplete_money_coverage",
-            )?;
+            if self.registry().money_enabled() {
+                self.registry()
+                    .book_credit(self.project.coordinator, self.project.planning.escrow)?;
+                directory_v5::assets::transfer(
+                    u128::from(self.project.planning.escrow),
+                    self.project.coordinator,
+                )?;
+            } else {
+                require(
+                    self.project.planning.escrow == 0,
+                    "incomplete_money_coverage",
+                )?;
+            }
+            self.project.planning.escrow = 0;
             self.project.planning.status = PlanningStatus::Completed;
             bump(&mut self.project.planning.revision)?;
             Ok(self.effect(14, self.project.project_id))

@@ -37,3 +37,9 @@ sorted Projects, proposal order and milestone/storage order exactly as the nativ
 serialization boundary. Each Project supplies its complete ordered identity
 layout after proposal creation/update/deletion; Directory performs no callbacks.
 Failed validation reverts the layout, Project and all nested writes together.
+
+M6 uses the immutable references-v5 contract for the backend's exact HTTPS
+parser. Compiling that parser into every Project exceeded Kreivo's pinned
+192 KiB code limit (286.3 KiB before disputes). Shared validation preserves the
+same accepted inputs while keeping each contract inside the real chain limit.
+See references-v5/README.md for dependency and build details.
