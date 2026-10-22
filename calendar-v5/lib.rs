@@ -24,6 +24,12 @@ pub mod calendar_v5 {
                 .ok_or_else(|| String::from(ARITHMETIC))?;
             Ok(Self { iso_year, week })
         }
+        pub fn iso_year(self) -> i32 {
+            self.iso_year
+        }
+        pub fn week(self) -> u8 {
+            self.week
+        }
         fn next(self) -> Result<Self> {
             let day = NaiveDate::from_isoywd_opt(self.iso_year, u32::from(self.week), Weekday::Mon)
                 .and_then(|date| date.checked_add_signed(Duration::weeks(1)))
