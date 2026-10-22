@@ -44,11 +44,20 @@ The first command produces release v5 WASM with cargo-contract 5.0.3. The second
 checks every Unicode scalar and sigma context against the app's stdlib. Normal
 runtime tests need neither compiler nor node; they use pinned immutable artifacts.
 
-Reviewed 2026-10-22: ink 5.1.1, SCALE 3.7.5, scale-info 2.11.6 and the local
+Reviewed 2026-10-22: ink 5.1.1, SCALE 3.7.5, scale-info 2.11.6 and the pinned
 Calendar dependency reuse the approved v5 family. No registry package/version
 is added beyond Calendar's locked graph. No new native/cryptographic dependency
 or handwritten unsafe is added. Calendar reuses Chrono as already reviewed.
 The Unicode data uses Unicode-3.0; its notice is in `LICENSE-UNICODE`.
+
+The Calendar crate is pinned to the already reviewed public source revision
+`4687748658763a1e9fdc8e5198f6df71709fe8c4`. A local path dependency made Cargo's
+dependency identity depend on the checkout directory and changed WASM function /
+data ordering between fresh builds. The immutable Git dependency gives it a
+stable source identity without duplicating Calendar types or adding a build tool.
+Run `cargo fetch --manifest-path directory-v5/Cargo.toml --locked` once before
+an offline source rebuild. Backend runtime/CI only reads committed bundles and
+does not fetch or compile contract sources.
 
 ## Stable name normalization
 
