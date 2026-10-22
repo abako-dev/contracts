@@ -1000,6 +1000,7 @@ pub mod directory_v5 {
             .try_instantiate()
             .map_err(|_| String::from("calendar_instantiation_failed"))?
             .map_err(|_| String::from("calendar_instantiation_failed"))??;
+            let skills = request.qualifications.skill_ids.clone();
             self.workers.insert(
                 origin,
                 &Worker {
@@ -1013,7 +1014,6 @@ pub mod directory_v5 {
                     coordinator_score: reputation::empty(),
                 },
             );
-            let skills = self.worker_record(origin)?.qualifications.skill_ids;
             self.index_add(origin, &skills)?;
             insert_sorted(&mut self.accounts, origin);
             self.calendar_ids.insert(calendar_id, &true);
