@@ -204,6 +204,9 @@ impl<K, V, const PREFIX: u32> Default for FixedMapping<K, V, PREFIX> {
 impl<K: Encode, V: Encode + Decode + scale::MaxEncodedLen, const PREFIX: u32>
     FixedMapping<K, V, PREFIX>
 {
+    pub fn contains<Q: EncodeLike<K>>(&self, key: Q) -> bool {
+        ink::env::contains_contract_storage(&(PREFIX, key)).is_some()
+    }
     pub fn get<Q: EncodeLike<K>>(&self, key: Q) -> Option<V> {
         assert!(V::max_encoded_len() <= 32, "fixed index value too large");
         read(&(PREFIX, key))
@@ -431,6 +434,7 @@ mod tests {
         counts.insert(23u32, &2u32);
         members.insert(23u32, &account);
         assert_eq!(counts.get(23u32), Some(2));
+        assert!(counts.contains(23u32));
         assert_eq!(members.get(23u32), Some(account));
         assert_eq!(
             ink::env::contains_contract_storage(&(14u32, 23u32)),
@@ -443,6 +447,7 @@ mod tests {
         assert!(!paged.contains(23u32));
         counts.remove(23u32);
         assert_eq!(counts.get(23u32), None);
+        assert!(!counts.contains(23u32));
         assert_eq!(members.get(23u32), Some(account));
     }
     #[ink::test]
