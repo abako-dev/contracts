@@ -208,6 +208,7 @@ pub mod directory_v5 {
         score_policy: ScorePolicy,
         compensation_percent: u8,
         project_code: Option<Hash>,
+        references: Option<(Hash, AccountId)>,
         project_addresses: Mapping<Id, AccountId>,
         project_ids: Vec<Id>,
         registered_projects: Mapping<AccountId, Id>,
@@ -250,6 +251,7 @@ pub mod directory_v5 {
                 score_policy: ScorePolicy::default(),
                 compensation_percent: 10,
                 project_code: None,
+                references: None,
                 project_addresses: Mapping::default(),
                 project_ids: Vec::new(),
                 registered_projects: Mapping::default(),
@@ -437,6 +439,27 @@ pub mod directory_v5 {
             )?;
             self.project_code = Some(code);
             Ok(())
+        }
+        #[ink(message)]
+        pub fn configure_reference_code(&mut self, code: Hash) -> Result<()> {
+            self.root()?;
+            if let Some((installed, _)) = self.references {
+                return require(installed == code, "reference_code_fixed");
+            }
+            let address = crate::factory::instantiate_references(code)?;
+            self.references = Some((code, address));
+            Ok(())
+        }
+        #[ink(message)]
+        pub fn reference_address(&self) -> Option<AccountId> {
+            self.references.map(|(_, address)| address)
+        }
+        #[ink(message)]
+        pub fn validate_reference(&self, url: String) -> Result<()> {
+            let (_, address) = self
+                .references
+                .ok_or_else(|| String::from("incomplete_reference_coverage"))?;
+            crate::factory::validate_reference(address, url)
         }
         #[ink(message)]
         pub fn project_address(&self, id: Id) -> Option<AccountId> {
