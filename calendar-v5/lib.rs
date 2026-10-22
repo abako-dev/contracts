@@ -3,6 +3,7 @@
 #[ink::contract]
 pub mod calendar_v5 {
     use chrono::{Datelike, Duration, NaiveDate, Weekday};
+    use ink::codegen::Env as _;
     use ink::prelude::{collections::BTreeMap, string::String, vec::Vec};
     #[cfg(feature = "std")]
     use ink::storage::traits::StorageLayout;
@@ -160,14 +161,18 @@ pub mod calendar_v5 {
 
     #[ink(storage)]
     pub struct CalendarV5 {
+        bytes: u32,
+    }
+
+    #[derive(scale::Encode, scale::Decode)]
+    pub(crate) struct CalendarData {
         calendar: CalendarView,
         directory: AccountId,
         reservation_controller: AccountId,
     }
-    impl CalendarV5 {
+    impl CalendarData {
         /// Directory creates one instance per worker. The controller is a fixed
         /// internal capability; Project authorization is implemented in M5/M6.
-        #[ink(constructor)]
         pub fn new(
             owner: AccountId,
             reservation_controller: AccountId,
@@ -182,17 +187,13 @@ pub mod calendar_v5 {
                     definition,
                     reservations: Vec::new(),
                 },
-                directory: Self::env().caller(),
+                directory: <Self as ink::codegen::StaticEnv>::env().caller(),
                 reservation_controller,
             })
         }
-
-        #[ink(message)]
         pub fn view(&self) -> CalendarView {
             self.calendar.clone()
         }
-
-        #[ink(message)]
         pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<()> {
             let caller = self.env().caller();
             if caller != self.calendar.owner && caller != self.directory {
@@ -207,8 +208,6 @@ pub mod calendar_v5 {
             self.calendar.definition = definition;
             Ok(())
         }
-
-        #[ink(message)]
         pub fn available(&self, week: Week) -> Result<u32> {
             self.calendar
                 .definition
@@ -222,15 +221,12 @@ pub mod calendar_v5 {
                 )
                 .ok_or_else(|| String::from(ARITHMETIC))
         }
-
-        #[ink(message)]
         pub fn allocation(&self, window: WeekWindow, minutes: u32) -> Result<Vec<(Week, u32)>> {
             self.calendar.allocation(window, minutes)
         }
 
         /// Calculate the entire allocation before appending. Spent capacity is
         /// retained; no release operation is defined by the approved behavior.
-        #[ink(message)]
         pub fn reserve(
             &mut self,
             window: WeekWindow,
@@ -249,6 +245,84 @@ pub mod calendar_v5 {
                     ..reference.clone()
                 }));
             Ok(())
+        }
+    }
+
+    impl<'a> ink::codegen::Env for &'a CalendarData {
+        type EnvAccess = ink::EnvAccess<'a, ink::env::DefaultEnvironment>;
+        fn env(self) -> Self::EnvAccess {
+            Default::default()
+        }
+    }
+    impl ink::codegen::StaticEnv for CalendarData {
+        type EnvAccess = ink::EnvAccess<'static, ink::env::DefaultEnvironment>;
+        fn env() -> Self::EnvAccess {
+            Default::default()
+        }
+    }
+
+    impl CalendarV5 {
+        #[ink(constructor)]
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "Retain the existing constructor ABI."
+        )]
+        pub fn new(
+            owner: AccountId,
+            reservation_controller: AccountId,
+            calendar_id: [u8; 16],
+            definition: CalendarDefinition,
+        ) -> Result<Self> {
+            let data = CalendarData::new(owner, reservation_controller, calendar_id, definition)?;
+            Ok(Self {
+                bytes: storage_v5::save(0, &data),
+            })
+        }
+        #[ink(message)]
+        pub fn view(&self) -> CalendarView {
+            let data: CalendarData = storage_v5::load(self.bytes);
+            data.view()
+        }
+        #[ink(message)]
+        pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<()> {
+            let mut data: CalendarData = storage_v5::load(self.bytes);
+            let result = data.set_calendar(definition);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn available(&self, week: Week) -> Result<u32> {
+            let data: CalendarData = storage_v5::load(self.bytes);
+            data.available(week)
+        }
+        #[ink(message)]
+        pub fn allocation(&self, window: WeekWindow, minutes: u32) -> Result<Vec<(Week, u32)>> {
+            let data: CalendarData = storage_v5::load(self.bytes);
+            data.allocation(window, minutes)
+        }
+        #[ink(message)]
+        pub fn reserve(
+            &mut self,
+            window: WeekWindow,
+            minutes: u32,
+            reference: ReservationView,
+        ) -> Result<()> {
+            let mut data: CalendarData = storage_v5::load(self.bytes);
+            let result = data.reserve(window, minutes, reference);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn archive_len(&self) -> u32 {
+            self.bytes
+        }
+        #[ink(message)]
+        pub fn archive_page(&self, index: u32) -> Option<ink::prelude::vec::Vec<u8>> {
+            storage_v5::page(self.bytes, index)
         }
     }
 }

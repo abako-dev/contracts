@@ -4,8 +4,8 @@ use crate::assets;
 use ink::{
     prelude::{collections::BTreeSet, string::String, vec::Vec},
     primitives::AccountId,
-    storage::Mapping,
 };
+use storage_v5::PagedMapping as Mapping;
 type Id = [u8; 16];
 pub type FinancialProjection = (Vec<(AccountId, u64)>, u64, Vec<Deposit>, Vec<Withdrawal>);
 type Result<T> = core::result::Result<T, String>;
@@ -65,18 +65,17 @@ pub struct Withdrawal {
     pub created_at: u64,
     pub cancelled_at: Option<u64>,
 }
-#[ink::storage_item]
-#[derive(Default, Debug)]
+#[derive(Default, Debug, scale::Encode, scale::Decode)]
 pub struct Bank {
     enabled: bool,
     mock_funding: bool,
-    balances: Mapping<AccountId, u64>,
+    balances: Mapping<AccountId, u64, 100>,
     accounts: Vec<AccountId>,
     minted: u64,
-    technical: Mapping<AccountId, bool>,
-    deposits: Mapping<Id, Deposit>,
+    technical: Mapping<AccountId, bool, 101>,
+    deposits: Mapping<Id, Deposit, 102>,
     deposit_ids: Vec<Id>,
-    withdrawals: Mapping<Id, Withdrawal>,
+    withdrawals: Mapping<Id, Withdrawal, 103>,
     withdrawal_ids: Vec<Id>,
 }
 impl Bank {

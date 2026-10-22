@@ -9,6 +9,7 @@ pub mod projects_v5 {
     use calendar_v5::calendar_v5::Week;
     use chrono::{Datelike, Duration, NaiveDate, Weekday};
     use directory_v5::directory_v5::{DirectoryV5Ref, Effect, Qualifications};
+    use ink::codegen::Env as _;
     use ink::{
         env::call::FromAccountId,
         prelude::{
@@ -21,13 +22,17 @@ pub mod projects_v5 {
 
     #[ink(storage)]
     pub struct ProjectsV5 {
+        bytes: u32,
+    }
+
+    #[derive(scale::Encode, scale::Decode)]
+    pub(crate) struct ProjectData {
         pub(crate) directory: AccountId,
         pub(crate) project: ProjectView,
         pub(crate) reasons: Vec<ReasonRecord>,
         pub(crate) disputes: Vec<DisputeRecord>,
     }
-    impl ProjectsV5 {
-        #[ink(constructor)]
+    impl ProjectData {
         #[allow(
             clippy::too_many_arguments,
             reason = "Explicit constructor ABI shared with the Directory factory."
@@ -42,7 +47,8 @@ pub mod projects_v5 {
             now: u64,
         ) -> Result<Self> {
             require(
-                Self::env().caller() == directory && Self::env().is_contract(&directory),
+                <Self as ink::codegen::StaticEnv>::env().caller() == directory
+                    && <Self as ink::codegen::StaticEnv>::env().is_contract(&directory),
                 "directory_required",
             )?;
             nonempty(&title)?;
@@ -73,11 +79,9 @@ pub mod projects_v5 {
                 disputes: Vec::new(),
             })
         }
-        #[ink(message)]
         pub fn view(&self) -> ProjectView {
             self.project.clone()
         }
-        #[ink(message)]
         pub fn reasons(&self) -> Vec<ReasonRecord> {
             self.reasons.clone()
         }
@@ -197,7 +201,6 @@ pub mod projects_v5 {
                 skill_ids: skills.into_iter().collect(),
             })
         }
-        #[ink(message)]
         pub fn open_dispute(
             &mut self,
             milestone_id: Id,
@@ -216,7 +219,6 @@ pub mod projects_v5 {
                 event_cursor,
             )
         }
-        #[ink(message)]
         pub fn open_dispute_comment(
             &mut self,
             milestone_id: Id,
@@ -235,15 +237,12 @@ pub mod projects_v5 {
                 event_cursor,
             )
         }
-        #[ink(message)]
         pub fn respond_dispute(&mut self, id: Id, evidence: EvidenceReference) -> Result<Effect> {
             crate::disputes::respond(self, id, evidence)
         }
-        #[ink(message)]
         pub fn dispute(&self, id: Id) -> Result<(DisputeRecord, MilestoneView)> {
             crate::disputes::view(self, id)
         }
-        #[ink(message)]
         pub fn approve_execution(
             &mut self,
             proposal_id: Id,
@@ -252,7 +251,6 @@ pub mod projects_v5 {
         ) -> Result<Effect> {
             crate::execution::approve(self, proposal_id, expected_revision, seed)
         }
-        #[ink(message)]
         pub fn submit_milestone(
             &mut self,
             milestone_id: Id,
@@ -261,7 +259,6 @@ pub mod projects_v5 {
         ) -> Result<Effect> {
             crate::execution::submit(self, milestone_id, deliverable, None, seed)
         }
-        #[ink(message)]
         pub fn submit_legacy_milestone(
             &mut self,
             milestone_id: Id,
@@ -271,11 +268,9 @@ pub mod projects_v5 {
         ) -> Result<Effect> {
             crate::execution::submit(self, milestone_id, deliverable, Some(ratings), seed)
         }
-        #[ink(message)]
         pub fn accept_milestone(&mut self, milestone_id: Id, submission_id: Id) -> Result<Effect> {
             crate::execution::accept(self, milestone_id, submission_id, None)
         }
-        #[ink(message)]
         pub fn accept_legacy_milestone(
             &mut self,
             milestone_id: Id,
@@ -290,7 +285,6 @@ pub mod projects_v5 {
                 Some((coordinator_score, team_rating)),
             )
         }
-        #[ink(message)]
         pub fn reject_milestone(
             &mut self,
             milestone_id: Id,
@@ -299,7 +293,6 @@ pub mod projects_v5 {
         ) -> Result<Effect> {
             crate::execution::reject(self, milestone_id, submission_id, Some(reason), None)
         }
-        #[ink(message)]
         pub fn reject_milestone_comment(
             &mut self,
             milestone_id: Id,
@@ -308,11 +301,9 @@ pub mod projects_v5 {
         ) -> Result<Effect> {
             crate::execution::reject(self, milestone_id, submission_id, None, Some(comment_id))
         }
-        #[ink(message)]
         pub fn evaluate_project(&mut self, ratings: Vec<AccountRating>) -> Result<Effect> {
             crate::execution::evaluate(self, ratings)
         }
-        #[ink(message)]
         pub fn create_proposal(
             &mut self,
             mut definition: ProposalDefinition,
@@ -348,7 +339,6 @@ pub mod projects_v5 {
                 .set_proposal_references(proposal_id, Some(qualifications))?;
             Ok(self.effect(10, proposal_id))
         }
-        #[ink(message)]
         pub fn update_proposal(
             &mut self,
             proposal_id: Id,
@@ -385,7 +375,6 @@ pub mod projects_v5 {
                 .set_proposal_references(proposal_id, Some(qualifications))?;
             Ok(self.effect(11, proposal_id))
         }
-        #[ink(message)]
         pub fn delete_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
             self.guard()?;
             self.coordinator()?;
@@ -400,7 +389,6 @@ pub mod projects_v5 {
             self.registry().set_proposal_references(proposal_id, None)?;
             Ok(self.effect(12, proposal_id))
         }
-        #[ink(message)]
         pub fn set_proposal_delivery(
             &mut self,
             proposal_id: Id,
@@ -422,7 +410,6 @@ pub mod projects_v5 {
             bump(&mut proposal.revision)?;
             Ok(self.effect(11, proposal_id))
         }
-        #[ink(message)]
         pub fn submit_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
             self.guard()?;
             self.coordinator()?;
@@ -442,7 +429,6 @@ pub mod projects_v5 {
             bump(&mut self.project.planning.revision)?;
             Ok(self.effect(13, proposal_id))
         }
-        #[ink(message)]
         pub fn request_proposal_changes(
             &mut self,
             proposal_id: Id,
@@ -466,7 +452,6 @@ pub mod projects_v5 {
             bump(&mut self.project.planning.revision)?;
             Ok(self.effect(16, proposal_id))
         }
-        #[ink(message)]
         pub fn withdraw_proposal(
             &mut self,
             proposal_id: Id,
@@ -498,7 +483,6 @@ pub mod projects_v5 {
             bump(&mut self.project.planning.revision)?;
             Ok(self.effect(35, proposal_id))
         }
-        #[ink(message)]
         pub fn accept_planning_delivery(&mut self, expected_revision: u64) -> Result<Effect> {
             self.guard()?;
             self.client()?;
@@ -526,12 +510,10 @@ pub mod projects_v5 {
             bump(&mut self.project.planning.revision)?;
             Ok(self.effect(14, self.project.project_id))
         }
-        #[ink(message)]
         pub fn removed_planning_price(&self) -> Result<Effect> {
             self.guard()?;
             Err("separate_planning_price_removed".into())
         }
-        #[ink(message)]
         pub fn create_task(&mut self, storage_id: Id, task: TaskDefinition) -> Result<Effect> {
             task.validate()?;
             self.guard()?;
@@ -554,7 +536,6 @@ pub mod projects_v5 {
                 });
             Ok(self.effect(20, storage_id))
         }
-        #[ink(message)]
         pub fn edit_task(
             &mut self,
             storage_id: Id,
@@ -578,7 +559,6 @@ pub mod projects_v5 {
             current.updated_at = now;
             Ok(self.effect(21, storage_id))
         }
-        #[ink(message)]
         pub fn update_task_progress(
             &mut self,
             storage_id: Id,
@@ -607,7 +587,6 @@ pub mod projects_v5 {
             current.updated_at = now;
             Ok(self.effect(21, storage_id))
         }
-        #[ink(message)]
         pub fn delete_task(
             &mut self,
             storage_id: Id,
@@ -631,7 +610,6 @@ pub mod projects_v5 {
             storage.tasks.retain(|t| t.task_id != task_id);
             Ok(self.effect(34, storage_id))
         }
-        #[ink(message)]
         pub fn cancel_project(&mut self, reason: String) -> Result<Effect> {
             nonempty(&reason)?;
             self.guard()?;
@@ -650,7 +628,6 @@ pub mod projects_v5 {
             }
             Ok(self.effect(17, self.project.project_id))
         }
-        #[ink(message)]
         pub fn dispute_planning(&mut self, reason: String) -> Result<Effect> {
             nonempty(&reason)?;
             self.guard()?;
@@ -766,5 +743,397 @@ pub mod projects_v5 {
         let estimated = NaiveDate::parse_from_str(date, "%Y-%m-%d")
             .map_err(|_| String::from("invalid_delivery_date"))?;
         require(estimated >= minimum, "delivery_date_before_milestones")
+    }
+
+    impl<'a> ink::codegen::Env for &'a ProjectData {
+        type EnvAccess = ink::EnvAccess<'a, ink::env::DefaultEnvironment>;
+        fn env(self) -> Self::EnvAccess {
+            Default::default()
+        }
+    }
+    impl ink::codegen::StaticEnv for ProjectData {
+        type EnvAccess = ink::EnvAccess<'static, ink::env::DefaultEnvironment>;
+        fn env() -> Self::EnvAccess {
+            Default::default()
+        }
+    }
+
+    impl ProjectsV5 {
+        #[ink(constructor)]
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "Retain the existing constructor ABI."
+        )]
+        pub fn new(
+            directory: AccountId,
+            project_id: Id,
+            client: AccountId,
+            coordinator: AccountId,
+            title: String,
+            description: String,
+            now: u64,
+        ) -> Result<Self> {
+            let data = ProjectData::new(
+                directory,
+                project_id,
+                client,
+                coordinator,
+                title,
+                description,
+                now,
+            )?;
+            Ok(Self {
+                bytes: storage_v5::save(0, &data),
+            })
+        }
+        #[ink(message)]
+        pub fn view(&self) -> ProjectView {
+            let data: ProjectData = storage_v5::load(self.bytes);
+            data.view()
+        }
+        #[ink(message)]
+        pub fn reasons(&self) -> Vec<ReasonRecord> {
+            let data: ProjectData = storage_v5::load(self.bytes);
+            data.reasons()
+        }
+        #[ink(message)]
+        pub fn open_dispute(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            evidence: EvidenceReference,
+            seed: [u8; 32],
+            event_cursor: u64,
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result =
+                data.open_dispute(milestone_id, submission_id, evidence, seed, event_cursor);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn open_dispute_comment(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            comment_id: Id,
+            seed: [u8; 32],
+            event_cursor: u64,
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.open_dispute_comment(
+                milestone_id,
+                submission_id,
+                comment_id,
+                seed,
+                event_cursor,
+            );
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn respond_dispute(&mut self, id: Id, evidence: EvidenceReference) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.respond_dispute(id, evidence);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn dispute(&self, id: Id) -> Result<(DisputeRecord, MilestoneView)> {
+            let data: ProjectData = storage_v5::load(self.bytes);
+            data.dispute(id)
+        }
+        #[ink(message)]
+        pub fn approve_execution(
+            &mut self,
+            proposal_id: Id,
+            expected_revision: u64,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.approve_execution(proposal_id, expected_revision, seed);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn submit_milestone(
+            &mut self,
+            milestone_id: Id,
+            deliverable: Option<EvidenceReference>,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.submit_milestone(milestone_id, deliverable, seed);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn submit_legacy_milestone(
+            &mut self,
+            milestone_id: Id,
+            deliverable: Option<EvidenceReference>,
+            ratings: Vec<WorkerRating>,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.submit_legacy_milestone(milestone_id, deliverable, ratings, seed);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn accept_milestone(&mut self, milestone_id: Id, submission_id: Id) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.accept_milestone(milestone_id, submission_id);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn accept_legacy_milestone(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            coordinator_score: u8,
+            team_rating: TeamRating,
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.accept_legacy_milestone(
+                milestone_id,
+                submission_id,
+                coordinator_score,
+                team_rating,
+            );
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn reject_milestone(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            reason: EvidenceReference,
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.reject_milestone(milestone_id, submission_id, reason);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn reject_milestone_comment(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            comment_id: Id,
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.reject_milestone_comment(milestone_id, submission_id, comment_id);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn evaluate_project(&mut self, ratings: Vec<AccountRating>) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.evaluate_project(ratings);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn create_proposal(
+            &mut self,
+            definition: ProposalDefinition,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.create_proposal(definition, seed);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn update_proposal(
+            &mut self,
+            proposal_id: Id,
+            definition: ProposalDefinition,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.update_proposal(proposal_id, definition, seed);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn delete_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.delete_proposal(proposal_id);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn set_proposal_delivery(
+            &mut self,
+            proposal_id: Id,
+            expected_revision: u64,
+            delivery: DeliveryPreference,
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.set_proposal_delivery(proposal_id, expected_revision, delivery);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn submit_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.submit_proposal(proposal_id);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn request_proposal_changes(
+            &mut self,
+            proposal_id: Id,
+            reference: String,
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.request_proposal_changes(proposal_id, reference);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn withdraw_proposal(
+            &mut self,
+            proposal_id: Id,
+            expected_revision: u64,
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.withdraw_proposal(proposal_id, expected_revision);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn accept_planning_delivery(&mut self, expected_revision: u64) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.accept_planning_delivery(expected_revision);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn removed_planning_price(&self) -> Result<Effect> {
+            let data: ProjectData = storage_v5::load(self.bytes);
+            data.removed_planning_price()
+        }
+        #[ink(message)]
+        pub fn create_task(&mut self, storage_id: Id, task: TaskDefinition) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.create_task(storage_id, task);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn edit_task(
+            &mut self,
+            storage_id: Id,
+            task_id: u32,
+            task: TaskDefinition,
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.edit_task(storage_id, task_id, task);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn update_task_progress(
+            &mut self,
+            storage_id: Id,
+            task_id: u32,
+            status: TaskStatus,
+            logged_minutes: u32,
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.update_task_progress(storage_id, task_id, status, logged_minutes);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn delete_task(
+            &mut self,
+            storage_id: Id,
+            task_id: u32,
+            expected_revision: u64,
+        ) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.delete_task(storage_id, task_id, expected_revision);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn cancel_project(&mut self, reason: String) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.cancel_project(reason);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn dispute_planning(&mut self, reason: String) -> Result<Effect> {
+            let mut data: ProjectData = storage_v5::load(self.bytes);
+            let result = data.dispute_planning(reason);
+            if result.is_ok() {
+                self.bytes = storage_v5::save(self.bytes, &data);
+            }
+            result
+        }
+        #[ink(message)]
+        pub fn archive_len(&self) -> u32 {
+            self.bytes
+        }
+        #[ink(message)]
+        pub fn archive_page(&self, index: u32) -> Option<ink::prelude::vec::Vec<u8>> {
+            storage_v5::page(self.bytes, index)
+        }
     }
 }

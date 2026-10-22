@@ -1,5 +1,5 @@
 //! Project-owned execution rules. Every external effect shares the parent transaction.
-use crate::{projects_v5::ProjectsV5, types::*};
+use crate::{projects_v5::ProjectData as ProjectsV5, types::*};
 use directory_v5::{
     assets,
     directory_v5::{Effect, WorkerMode},

@@ -1,7 +1,7 @@
 //! Formal cases freeze Project effects; no resolution or payout authority exists.
 use crate::{
     execution::{milestone, milestone_mut},
-    projects_v5::ProjectsV5,
+    projects_v5::ProjectData as ProjectsV5,
     types::*,
 };
 use directory_v5::directory_v5::Effect;
