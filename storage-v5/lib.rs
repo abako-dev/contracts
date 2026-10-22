@@ -158,6 +158,17 @@ impl<K: Encode, V: Encode + Decode, const PREFIX: u32> PagedMapping<K, V, PREFIX
         let length = read(&(PREFIX, &key, 0u32))?;
         Some(decode(length, |index| read(&(PREFIX, &key, index + 1))))
     }
+    /// Encoded lengths and pages allow complete reads without aggregate allocation.
+    pub fn encoded_len<Q: EncodeLike<K>>(&self, key: Q) -> Option<u32> {
+        read(&(PREFIX, key, 0u32))
+    }
+    pub fn page<Q: EncodeLike<K>>(&self, key: Q, index: u32) -> Option<Vec<u8>> {
+        let length: u32 = read(&(PREFIX, &key, 0u32))?;
+        if index as usize >= count(length as usize) {
+            return None;
+        }
+        read(&(PREFIX, key, index + 1))
+    }
     pub fn contains<Q: EncodeLike<K>>(&self, key: Q) -> bool {
         ink::env::contains_contract_storage(&(PREFIX, key, 0u32)).is_some()
     }
@@ -205,7 +216,14 @@ mod tests {
         let large = ink::prelude::vec![9u8;40_000];
         left.insert(key, &large);
         right.insert(key, &ink::prelude::vec![4u8]);
-        assert_eq!(left.get(key), Some(large));
+        assert_eq!(left.get(key), Some(large.clone()));
+        let length = left.encoded_len(key).unwrap();
+        let mut bytes = Vec::new();
+        for index in 0..count(length as usize) {
+            bytes.extend(left.page(key, index as u32).unwrap());
+        }
+        assert_eq!(bytes, Encode::encode(&large));
+        assert!(left.page(key, count(length as usize) as u32).is_none());
         assert_eq!(right.get(key), Some(ink::prelude::vec![4u8]));
         assert!(ink::env::contains_contract_storage(&(1u32, key, 1u32)).unwrap() < 16 * 1024);
         left.insert(key, &ink::prelude::vec![2u8]);
