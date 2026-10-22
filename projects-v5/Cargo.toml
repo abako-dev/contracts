@@ -7,12 +7,12 @@ publish = false
 license = "Apache-2.0 AND Unicode-3.0"
 
 [dependencies]
-storage-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "570fb4dde3be0b8ffc0624a56ab17339b23b0fcc", default-features = false }
+storage-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "5a25c149aa0fdf2105098dc1b4be95e2283abb38", default-features = false }
 ink = { version = "=5.1.1", default-features = false }
 scale = { package = "parity-scale-codec", version = "=3.7.5", default-features = false, features = ["derive"] }
 scale-info = { version = "=2.11.6", default-features = false, features = ["derive"], optional = true }
 calendar-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "b21f84fd44ae657b653dcad0de980d2517723fa2", default-features = false, features = ["ink-as-dependency"] }
-directory-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "1524737b8be2240ffe969f2e1136f3ed69f83892", default-features = false, features = ["ink-as-dependency"] }
+directory-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "15ae2cac7d751f4c227fe44a85925bcd794b79fb", default-features = false, features = ["ink-as-dependency"] }
 rand = { version = "=0.10.2", default-features = false, features = ["std_rng"] }
 chrono = { version = "=0.4.45", default-features = false }
 

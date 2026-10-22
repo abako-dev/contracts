@@ -270,14 +270,16 @@ pub fn accept(
     )?;
     pending(&current, submission_id)?;
     if let Some((coordinator, team)) = legacy {
-        let mut votes = ink::prelude::vec![(
-            state.project.coordinator,
-            WorkerMode::Coordinator,
-            u16::from(coordinator)
-                .checked_mul(100)
-                .ok_or_else(arithmetic)?,
-            current.definition.coordinator_minutes
-        )];
+        state
+            .registry()
+            .apply_legacy_reputation(ink::prelude::vec![(
+                state.project.coordinator,
+                WorkerMode::Coordinator,
+                u16::from(coordinator)
+                    .checked_mul(100)
+                    .ok_or_else(arithmetic)?,
+                current.definition.coordinator_minutes
+            )])?;
         let policy = state.registry().score_policy();
         for requirement in &current.definition.requirements {
             let assigned = current
@@ -296,14 +298,15 @@ pub fn accept(
                     .checked_mul(100)
                     .ok_or_else(arithmetic)?,
             };
-            votes.push((
-                assigned.worker,
-                WorkerMode::Worker,
-                hundredths,
-                requirement.minutes,
-            ));
+            state
+                .registry()
+                .apply_legacy_reputation(ink::prelude::vec![(
+                    assigned.worker,
+                    WorkerMode::Worker,
+                    hundredths,
+                    requirement.minutes,
+                )])?;
         }
-        state.registry().apply_legacy_reputation(votes)?;
     }
     let total = current.definition.total()?;
     state.registry().book_credit(
