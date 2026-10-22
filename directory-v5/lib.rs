@@ -29,6 +29,7 @@ pub mod directory_v5 {
 
     pub type Result<T> = core::result::Result<T, String>;
     pub type Id = [u8; 16];
+    pub type ProjectIdentities = Vec<(Id, Vec<(Id, Id)>)>;
 
     #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
@@ -208,7 +209,7 @@ pub mod directory_v5 {
         project_ids: Vec<Id>,
         registered_projects: Mapping<AccountId, Id>,
         next_task_id: u32,
-        project_child_ids: Mapping<Id, AccountId>,
+        project_layouts: Mapping<Id, ProjectIdentities>,
         evaluations: Mapping<(Id, AccountId), Hash>,
         skill_counts: Mapping<u32, u32>,
         skill_members: Mapping<(u32, u32), AccountId>,
@@ -246,7 +247,7 @@ pub mod directory_v5 {
                 project_ids: Vec::new(),
                 registered_projects: Mapping::default(),
                 next_task_id: 1,
-                project_child_ids: Mapping::default(),
+                project_layouts: Mapping::default(),
                 evaluations: Mapping::default(),
                 skill_counts: Mapping::default(),
                 skill_members: Mapping::default(),
@@ -467,9 +468,7 @@ pub mod directory_v5 {
             let client = self.env().caller();
             let (coordinator, id) = self.coordinator_selection(client, week, seed)?;
             require(
-                !self.project_addresses.contains(id)
-                    && !self.calendar_ids.contains(id)
-                    && !self.project_child_ids.contains(id),
+                !self.project_addresses.contains(id),
                 "invalid_project_state",
             )?;
             let code = self
@@ -488,6 +487,7 @@ pub mod directory_v5 {
             self.project_addresses.insert(id, &address);
             self.registered_projects.insert(address, &id);
             insert_sorted(&mut self.project_ids, id);
+            self.validate_public_ids()?;
             Ok(Effect {
                 kind: 7,
                 entity_id: Some(id),
@@ -518,41 +518,39 @@ pub mod directory_v5 {
                 "unknown_task_assignee",
             )
         }
-        #[ink(message)]
-        pub fn claim_project_ids(&mut self, ids: Vec<Id>) -> Result<()> {
-            let caller = self.env().caller();
-            require(
-                self.registered_projects.contains(caller),
-                "registered_project_required",
-            )?;
-            let unique: BTreeSet<_> = ids.iter().collect();
-            require(unique.len() == ids.len(), "duplicate_entity")?;
-            for id in ids {
+        /// Keep the same global traversal as the reference validation boundary.
+        /// Error identity depends on the later entity, not on which command generated it.
+        fn validate_public_ids(&self) -> Result<()> {
+            let mut identities = BTreeSet::new();
+            for account in &self.accounts {
+                let worker = self.worker_record(*account)?;
                 require(
-                    !self.calendar_ids.contains(id)
-                        && !self.project_addresses.contains(id)
-                        && !self.project_child_ids.contains(id),
-                    "duplicate_entity",
+                    identities.insert(worker.calendar_id),
+                    "invalid_worker_state",
                 )?;
-                self.project_child_ids.insert(id, &caller);
+            }
+            for id in &self.project_ids {
+                require(identities.insert(*id), "invalid_project_state")?;
+                for (proposal, milestones) in self.project_layouts.get(id).unwrap_or_default() {
+                    require(identities.insert(proposal), "duplicate_entity")?;
+                    for (milestone, storage) in milestones {
+                        require(
+                            identities.insert(milestone) && identities.insert(storage),
+                            "invalid_storage_state",
+                        )?;
+                    }
+                }
             }
             Ok(())
         }
         #[ink(message)]
-        pub fn release_project_ids(&mut self, ids: Vec<Id>) -> Result<()> {
-            let caller = self.env().caller();
-            require(
-                self.registered_projects.contains(caller),
-                "registered_project_required",
-            )?;
-            for id in ids {
-                require(
-                    self.project_child_ids.get(id) == Some(caller),
-                    "invalid_project_state",
-                )?;
-                self.project_child_ids.remove(id);
-            }
-            Ok(())
+        pub fn set_project_identities(&mut self, layout: ProjectIdentities) -> Result<()> {
+            let id = self
+                .registered_projects
+                .get(self.env().caller())
+                .ok_or_else(|| String::from("registered_project_required"))?;
+            self.project_layouts.insert(id, &layout);
+            self.validate_public_ids()
         }
         #[ink(message)]
         pub fn next_task_key(&mut self) -> Result<u32> {
@@ -825,11 +823,6 @@ pub mod directory_v5 {
                 !self.calendar_ids.contains(calendar_id),
                 "invalid_worker_state",
             )?;
-            require(
-                !self.project_addresses.contains(calendar_id)
-                    && !self.project_child_ids.contains(calendar_id),
-                "invalid_project_state",
-            )?;
             // Creation and Directory registration share the parent transaction.
             // Native storage deposits use the runtime's technical funding, never assets.
             let calendar = CalendarV5Ref::new(
@@ -861,6 +854,7 @@ pub mod directory_v5 {
             self.index_add(origin, &skills)?;
             insert_sorted(&mut self.accounts, origin);
             self.calendar_ids.insert(calendar_id, &true);
+            self.validate_public_ids()?;
             Ok(Effect::new(0, Some(calendar_id), origin))
         }
         #[ink(message)]
