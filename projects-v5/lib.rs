@@ -23,6 +23,7 @@ pub mod projects_v5 {
     #[ink(storage)]
     pub struct ProjectsV5 {
         bytes: u32,
+        import: storage_v5::Import,
     }
 
     #[derive(scale::Encode, scale::Decode)]
@@ -785,43 +786,48 @@ pub mod projects_v5 {
             result
         }
         fn change<T>(&mut self, change: impl FnOnce(&mut ProjectData) -> Result<T>) -> Result<T> {
+            if self.import.is_some() {
+                return Err(String::from("migration_in_progress"));
+            }
             self.transact(|data| {
                 data.ensure_live()?;
                 change(data)
             })
         }
 
-        /// Fresh, dormant instance. Only the creating Directory can make it live.
+        /// Fresh dormant storage accepts bounded pages only from its Directory.
         #[ink(constructor)]
-        pub fn from_archive(directory: AccountId, id: [u8; 16], bytes: Vec<u8>) -> Result<Self> {
-            if <Self as ink::codegen::StaticEnv>::env().caller() != directory
-                || !<Self as ink::codegen::StaticEnv>::env().is_contract(&directory)
-            {
-                return Err(String::from("directory_required"));
-            }
-            let archive: (ProjectView, Vec<ReasonRecord>, Vec<DisputeRecord>) =
-                scale::DecodeAll::decode_all(&mut &bytes[..])
-                    .map_err(|_| String::from("invalid_archive"))?;
-            let (project, reasons, disputes) = archive;
-            require(
-                project.project_id == id
-                    && reasons.iter().all(|r| r.project_id == id)
-                    && disputes.iter().all(|d| d.project_id == id),
-                "invalid_project_state",
-            )?;
-            let data = ProjectData {
-                directory,
-                project,
-                reasons,
-                disputes,
-                live: false,
-            };
+        pub fn from_archive(directory: AccountId, id: [u8; 16]) -> Result<Self> {
             Ok(Self {
-                bytes: storage_v5::save(0, &data),
+                bytes: 0,
+                import: storage_v5::import_from(directory, id)?,
             })
         }
         #[ink(message)]
+        pub fn import_page(&mut self, index: u32, bytes: Vec<u8>) -> Result<()> {
+            storage_v5::append_import(&mut self.import, index, &bytes)
+        }
+        #[ink(message)]
+        pub fn finish_import(&mut self) -> Result<()> {
+            let (data, length, parent, id): (ProjectData, u32, AccountId, [u8; 16]) =
+                storage_v5::decode_import(&self.import)?;
+            require(
+                data.directory == parent
+                    && data.project.project_id == id
+                    && !data.live
+                    && data.reasons.iter().all(|r| r.project_id == id)
+                    && data.disputes.iter().all(|d| d.project_id == id),
+                "invalid_project_state",
+            )?;
+            self.bytes = length;
+            self.import = None;
+            Ok(())
+        }
+        #[ink(message)]
         pub fn seal_import(&mut self) -> Result<()> {
+            if self.import.is_some() {
+                return Err(String::from("import_incomplete"));
+            }
             self.transact(|data| {
                 if data.live
                     || <ProjectData as ink::codegen::StaticEnv>::env().caller() != data.directory
@@ -857,6 +863,7 @@ pub mod projects_v5 {
             )?;
             Ok(Self {
                 bytes: storage_v5::save(0, &data),
+                import: None,
             })
         }
         #[ink(message)]
