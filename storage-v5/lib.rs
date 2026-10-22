@@ -192,6 +192,34 @@ impl<K: Encode, V: Encode + Decode, const PREFIX: u32> PagedMapping<K, V, PREFIX
     }
 }
 
+/// Primitive index cells need neither a length header nor separate data pages.
+/// MaxEncodedLen excludes unbounded values from this storage path.
+#[derive(Debug, Encode, Decode)]
+pub struct FixedMapping<K, V, const PREFIX: u32>(PhantomData<(K, V)>);
+impl<K, V, const PREFIX: u32> Default for FixedMapping<K, V, PREFIX> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+impl<K: Encode, V: Encode + Decode + scale::MaxEncodedLen, const PREFIX: u32>
+    FixedMapping<K, V, PREFIX>
+{
+    pub fn get<Q: EncodeLike<K>>(&self, key: Q) -> Option<V> {
+        assert!(V::max_encoded_len() <= 32, "fixed index value too large");
+        read(&(PREFIX, key))
+    }
+    pub fn insert<Q: EncodeLike<K>>(&mut self, key: Q, value: &V) {
+        assert!(
+            value.encoded_size() <= V::max_encoded_len() && V::max_encoded_len() <= 32,
+            "fixed index value too large"
+        );
+        write(&(PREFIX, key), value);
+    }
+    pub fn remove<Q: EncodeLike<K>>(&mut self, key: Q) {
+        clear(&(PREFIX, key));
+    }
+}
+
 /// Dormant child import header. Completed contracts retain None permanently.
 pub type Import = Option<(ink::primitives::AccountId, [u8; 16], u32)>;
 pub fn import_from(
@@ -393,6 +421,29 @@ mod tests {
         import = None;
         assert!(append_import(&mut import, 0, &[0]).is_err());
         assert!(decode_import::<Vec<u8>>(&import).is_err());
+    }
+    #[ink::test]
+    fn fixed_index_cells_are_small_isolated_and_removable() {
+        let mut counts = FixedMapping::<u32, u32, 14>::default();
+        let mut members = FixedMapping::<u32, ink::primitives::AccountId, 15>::default();
+        let paged = PagedMapping::<u32, u32, 14>::default();
+        let account = ink::primitives::AccountId::from([7; 32]);
+        counts.insert(23u32, &2u32);
+        members.insert(23u32, &account);
+        assert_eq!(counts.get(23u32), Some(2));
+        assert_eq!(members.get(23u32), Some(account));
+        assert_eq!(
+            ink::env::contains_contract_storage(&(14u32, 23u32)),
+            Some(4)
+        );
+        assert_eq!(
+            ink::env::contains_contract_storage(&(15u32, 23u32)),
+            Some(32)
+        );
+        assert!(!paged.contains(23u32));
+        counts.remove(23u32);
+        assert_eq!(counts.get(23u32), None);
+        assert_eq!(members.get(23u32), Some(account));
     }
     #[ink::test]
     fn registry_staging_preserves_root_pages_and_clears_temporary_cells() {
