@@ -245,7 +245,7 @@ pub mod directory_v5 {
                 project_addresses: Mapping::default(),
                 project_ids: Vec::new(),
                 registered_projects: Mapping::default(),
-                next_task_id: 0,
+                next_task_id: 1,
                 project_child_ids: Mapping::default(),
                 evaluations: Mapping::default(),
                 skill_counts: Mapping::default(),
@@ -429,6 +429,12 @@ pub mod directory_v5 {
         #[ink(message)]
         pub fn project_address(&self, id: Id) -> Option<AccountId> {
             self.project_addresses.get(id)
+        }
+        #[ink(message)]
+        pub fn resolve_project(&self, id: Id) -> Result<AccountId> {
+            self.project_addresses
+                .get(id)
+                .ok_or_else(|| String::from("project_not_found"))
         }
         #[ink(message)]
         pub fn projects(&self) -> Vec<(Id, AccountId)> {
