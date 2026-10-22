@@ -27,6 +27,7 @@ pub enum RecordedEvaluation {
 #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
 pub struct WorkerImport {
     pub account: AccountId,
+    #[codec(encoded_as = "storage_v5::Text")]
     pub display_name: String,
     pub qualifications: Qualifications,
     pub mode: WorkerMode,
@@ -72,7 +73,12 @@ pub enum MigrationRecordV1 {
     SkillRequest(SkillRequestView),
     Policies(ScorePolicy, u8, u32),
     Reason(Vec<u8>),
-    Catalog(CatalogKind, CatalogEntry, Vec<u32>, String),
+    Catalog(
+        CatalogKind,
+        CatalogEntry,
+        Vec<u32>,
+        #[codec(encoded_as = "storage_v5::Text")] String,
+    ),
 }
 fn require(condition: bool) -> Result<()> {
     if condition {

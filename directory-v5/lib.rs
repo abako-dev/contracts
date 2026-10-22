@@ -77,6 +77,7 @@ pub mod directory_v5 {
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub struct CatalogEntry {
         pub id: u32,
+        #[codec(encoded_as = "storage_v5::Text")]
         pub name: String,
         pub fixed: bool,
     }
@@ -105,6 +106,7 @@ pub mod directory_v5 {
     pub struct SkillRequestView {
         pub request_id: Id,
         pub requester: AccountId,
+        #[codec(encoded_as = "storage_v5::Text")]
         pub name: String,
         pub role_ids: Vec<u32>,
         pub status: SkillRequestStatus,
@@ -191,6 +193,7 @@ pub mod directory_v5 {
     #[ink(storage)]
     pub struct DirectoryV5 {
         bytes: u32,
+        record: storage_v5::Import,
     }
 
     #[derive(scale::Encode, scale::Decode)]
@@ -1321,9 +1324,33 @@ pub mod directory_v5 {
         pub fn begin_import(&mut self) -> Result<()> {
             self.transact(|data| data.begin_import())
         }
+        fn require_import(&self) -> Result<()> {
+            self.read_state(|data| {
+                data.root()?;
+                require(data.migration_phase == 1, "import_closed")
+            })
+        }
         #[ink(message)]
-        pub fn import_record(&mut self, record: crate::migration::MigrationRecordV1) -> Result<()> {
-            self.transact(|data| data.import_record(record))
+        pub fn begin_import_record(&mut self) -> Result<()> {
+            self.require_import()?;
+            require(self.record.is_none(), "record_in_progress")?;
+            self.record = Some((self.env().caller(), [0; 16], 0));
+            Ok(())
+        }
+        #[ink(message)]
+        pub fn import_record_page(&mut self, index: u32, bytes: Vec<u8>) -> Result<()> {
+            self.require_import()?;
+            storage_v5::append_import_in(&mut self.record, u32::MAX - 1, index, &bytes)
+        }
+        #[ink(message)]
+        pub fn finish_import_record(&mut self) -> Result<()> {
+            self.require_import()?;
+            let (record, _, _, _) = storage_v5::decode_import_in::<
+                crate::migration::MigrationRecordV1,
+            >(&self.record, u32::MAX - 1)?;
+            self.transact(|data| data.import_record(record))?;
+            storage_v5::clear_import(&mut self.record, u32::MAX - 1);
+            Ok(())
         }
         #[ink(message)]
         pub fn import_child_page(
@@ -1343,19 +1370,12 @@ pub mod directory_v5 {
         }
         #[ink(message)]
         pub fn seal_import(&mut self) -> Result<()> {
+            require(self.record.is_none(), "record_in_progress")?;
             self.transact(|data| data.seal_import())
         }
         #[ink(message)]
         pub fn migration_info(&self) -> (u8, u32, u64) {
             self.read_state(|data| (data.migration_phase, data.next_task_id, data.reason_count))
-        }
-        #[ink(message)]
-        pub fn skill_category(&self, id: u32) -> Option<String> {
-            self.read_state(|data| data.categories.get(id))
-        }
-        #[ink(message)]
-        pub fn reason_at(&self, index: u64) -> Option<Vec<u8>> {
-            self.read_state(|data| data.reason_records.get(index))
         }
         #[ink(message)]
         pub fn append_reason(&mut self, project_id: Id, bytes: Vec<u8>) -> Result<()> {
@@ -1380,6 +1400,7 @@ pub mod directory_v5 {
             )?;
             Ok(Self {
                 bytes: storage_v5::save(0, &data),
+                record: None,
             })
         }
         #[ink(message)]
@@ -1642,14 +1663,6 @@ pub mod directory_v5 {
             qualifications: Option<Qualifications>,
         ) -> Result<()> {
             self.change(|data| data.set_proposal_references(proposal_id, qualifications))
-        }
-        #[ink(message)]
-        pub fn archive_len(&self) -> u32 {
-            self.bytes
-        }
-        #[ink(message)]
-        pub fn archive_page(&self, index: u32) -> Option<ink::prelude::vec::Vec<u8>> {
-            storage_v5::page(self.bytes, index)
         }
     }
 }
