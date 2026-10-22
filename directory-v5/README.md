@@ -8,19 +8,19 @@ M4 adds mode-specific exact reputation, the validated four-byte score policy,
 skill-index matching, prior-team preference and atomic Calendar reservations.
 Scores retain hundredths-of-stars times committed weighted minutes. Unrated is
 exactly 2.5; continued fractions compare without overflowing cross-products.
-Vote-policy changes affect future contributions only. The internal Project
-controller must verify evaluation participants and committed minutes (M6);
+Vote-policy changes affect future contributions only. Registered Projects verify
+evaluation participants and committed minutes;
 `apply_reputation` records its `(project_id, author)` content hash to avoid
-repeated accumulation. It accepts only the fixed controller and rejects a
-conflicting repeat. No user can directly submit reputation contributions.
+repeated accumulation. It accepts only the scoped Project capability and rejects
+a conflicting repeat. No user can directly submit reputation contributions.
 
 Directory creates each child Calendar with Directory as its reservation
-controller. Only the fixed Project controller may ask Directory to reserve or
-match; the existing direct worker capacity-update permission is unchanged.
-The existing constructor's reservation-controller argument identifies this
-Project capability, not an additional public worker permission. The explicit
-fixtures use a disposable controller account; M5/M6 must wire actual Projects.
-Old candidate checkpoints are incompatible; ordinary backend data is untouched.
+controller. Registered Projects ask Directory to reserve or match; the direct
+worker capacity-update permission is unchanged. Fixed constructor controllers
+serve component fixtures only and are permanently disabled when the Project
+factory is configured. Whole-provider imports create dormant children, restore
+complete retained state and permanently seal migration authority. Incompatible
+artifact cohorts reject old candidate checkpoints; native backend data is untouched.
 
 A dense per-skill index stores entries separately to avoid a packed-index
 16 KiB limit. Matching intersects every skill index, checks mode/capacity,
@@ -52,9 +52,16 @@ https://crates.io/api/v1/crates/cpufeatures/0.3.1.
 
 Build production WASM with Rust 1.88.0 and cargo-contract 5.0.3. Arithmetic tests
 run on that compiler; the Unicode-17 semantic test intentionally runs with the
-backend's Rust 1.96.1 compiler. Backend tests replay frozen native traces against
-this production WASM and check the locked ABI and full trie restart. Large-state
-import capacity and benchmark acceptance remain later gates.
+backend's Rust 1.96.1 compiler.
+
+```sh
+bash build-v5.sh directory-v5 --offline
+```
+
+The helper supplies the required `INK_STATIC_BUFFER_SIZE=294912`. Backend tests
+replay frozen native traces against this production WASM and check the locked ABI and full trie restart. Large-state
+import capacity is covered by the backend's retained-state tests; formal
+benchmark acceptance and promotion remain open.
 
 
 M4 independent review approved implementation `192279d` with backend `0ca0cf1`.

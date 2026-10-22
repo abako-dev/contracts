@@ -1,6 +1,6 @@
 # Project v5 candidate
 
-SPEC-0013 M5 implements unpaid planning, proposals, revisions, optional tracking
+SPEC-0013 implements unpaid planning, proposals, revisions, optional tracking
 tasks, estimates and cancellation. Directory creates and registers each Project;
 verified users call their Project directly. Only the creating Directory may run
 the constructor. Ordered global ID validation and the task counter share the
@@ -10,11 +10,19 @@ Public DTOs retain the backend SCALE layouts, integer u64 money and captured
 version-1 rand 0.10.2 stream. Proposal edits retain milestones and task storage by
 declared key. Largest-remainder allocation preserves each captured budget exactly.
 A Project stores its own read model and reason history; Directory owns catalog,
-workers, registry, references and global IDs. Execution, escrow, evaluations and
-Bramp are incomplete until M6. This candidate is not deployed or authoritative.
-Large-state import capacity and performance remain later promotion gates.
+workers, registry, references and global IDs. Execution, escrow, settlement,
+disputes and evaluations are implemented; Directory owns Bramp. Complete retained
+Project state can be imported fresh and permanently sealed without replaying
+payments or reputation. The default backend remains Rust; deployment, formal
+performance acceptance and release observation remain separate gates.
 
-Build with Rust 1.88.0 and cargo-contract 5.0.3. Calendar and Directory source
+Build from the repository root with Rust 1.88.0 and cargo-contract 5.0.3:
+
+```sh
+bash build-v5.sh projects-v5 --offline
+```
+
+The helper supplies `INK_STATIC_BUFFER_SIZE=294912`. Calendar and Directory source
 references are immutable Git revisions. The typed Directory reference avoids
 copying its business rules. Directory's factory uses a minimal typed constructor
 handle to avoid a circular source dependency; that handle performs no domain work.
@@ -29,8 +37,9 @@ chrono use derives the current coordinator-selection week from captured time.
 The backend pins production WASM and replays the same signed native trace against
 it, comparing complete Project/worker/catalog/reason projections, shell state,
 receipts and events after each call and across restart. Arithmetic unit tests
-cover rounding order, maximum money and zero-effort rejection. Migration, money
-coverage and authority promotion remain separate acceptance gates.
+cover rounding order, maximum money and zero-effort rejection. Whole-provider
+migration and money parity also have signed differential coverage in the backend;
+that evidence does not authorize authority promotion.
 
 M5 review corrected generated-ID error parity. Directory validates calendars,
 sorted Projects, proposal order and milestone/storage order exactly as the native

@@ -1,15 +1,15 @@
 # Candidate v5 Calendar
 
-SPEC-0013 M3 Calendar slice. This contract implements the current application's
+SPEC-0013 Calendar candidate. This contract implements the current application's
 integer-minute calendar rules; the old `calendar/` remains the deployed legacy
 compatibility fixture. Neither this source nor its backend artifact is deployed.
 
 Directory creates one instance per worker with a public calendar ID, owner,
 definition and immutable reservation controller. Only the owner or creating
 Directory can change the definition. Only the controller can append reservations.
-The controller is an explicit fixture account at this stage. Project permissions,
-atomic team reservation and factory wiring remain M5/M6 work; do not expose that
-fixture capability through a browser endpoint.
+The complete provider sets Directory as controller; registered Projects request
+atomic team reservations through Directory. Component tests also use explicit
+fixture controllers. Those test capabilities are not browser permissions.
 
 Defaults apply indefinitely. Overrides replace a week's capacity. Allocations
 fill the earliest free minutes within an inclusive ISO-week window, or fail
@@ -21,13 +21,15 @@ layouts. There is no user asset transfer or contract funding policy here.
 Build with cargo-contract 5.0.3 and Rust 1.88.0:
 
 ```sh
-cargo +1.88.0 contract build --release --offline --manifest-path calendar-v5/Cargo.toml
+bash build-v5.sh calendar-v5 --offline
 ```
 
 The backend pins the WASM/ABI/build lock, runs it in pallet-contracts and replays
-the same committed cases against its independent Rust engine. The application
-continues using Rust. This slice does not establish Directory or Project parity,
-large-state import capacity, performance acceptance or authority promotion.
+the same committed cases against its independent Rust engine. The default
+application continues using Rust. Full Directory/Project parity and fresh sealed imports are implemented in the paired backend candidate; formal
+performance acceptance, promotion and release observation remain separate gates.
+The build helper sets the required `INK_STATIC_BUFFER_SIZE=294912` without
+relaxing the contract value or memory limits.
 
 ## Dependency review
 
