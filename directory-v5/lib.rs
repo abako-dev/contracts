@@ -687,7 +687,7 @@ pub mod directory_v5 {
                 }
             }
             for id in &self.dispute_ids {
-                require(identities.insert(*id), "invalid_dispute_state")?;
+                require(identities.insert(*id), "invalid_dispute_id")?;
             }
             Ok(())
         }
