@@ -3,7 +3,7 @@
 SPEC-0013 M5 implements unpaid planning, proposals, revisions, optional tracking
 tasks, estimates and cancellation. Directory creates and registers each Project;
 verified users call their Project directly. Only the creating Directory may run
-the constructor. Cross-contract ID claims and the global task counter share the
+the constructor. Ordered global ID validation and the task counter share the
 outer runtime transaction, so failed commands cannot consume IDs or task keys.
 
 Public DTOs retain the backend SCALE layouts, integer u64 money and captured
@@ -31,3 +31,9 @@ it, comparing complete Project/worker/catalog/reason projections, shell state,
 receipts and events after each call and across restart. Arithmetic unit tests
 cover rounding order, maximum money and zero-effort rejection. Migration, money
 coverage and authority promotion remain separate acceptance gates.
+
+M5 review corrected generated-ID error parity. Directory validates calendars,
+sorted Projects, proposal order and milestone/storage order exactly as the native
+serialization boundary. Each Project supplies its complete ordered identity
+layout after proposal creation/update/deletion; Directory performs no callbacks.
+Failed validation reverts the layout, Project and all nested writes together.

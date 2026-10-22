@@ -11,7 +11,7 @@ ink = { version = "=5.1.1", default-features = false }
 scale = { package = "parity-scale-codec", version = "=3.7.5", default-features = false, features = ["derive"] }
 scale-info = { version = "=2.11.6", default-features = false, features = ["derive"], optional = true }
 calendar-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "b21f84fd44ae657b653dcad0de980d2517723fa2", default-features = false, features = ["ink-as-dependency"] }
-directory-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "10d600268fe26562fb6350368294625795f094eb", default-features = false, features = ["ink-as-dependency"] }
+directory-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "fd096c3754cc7c46d5480df2968bcf4de473a7fd", default-features = false, features = ["ink-as-dependency"] }
 rand = { version = "=0.10.2", default-features = false, features = ["std_rng"] }
 chrono = { version = "=0.4.45", default-features = false }
 

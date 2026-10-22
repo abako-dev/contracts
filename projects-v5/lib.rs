@@ -77,6 +77,24 @@ pub mod projects_v5 {
         pub fn reasons(&self) -> Vec<ReasonRecord> {
             self.reasons.clone()
         }
+        fn sync_identities(&mut self) -> Result<()> {
+            let layout = self
+                .project
+                .proposals
+                .iter()
+                .map(|proposal| {
+                    (
+                        proposal.proposal_id,
+                        proposal
+                            .milestones
+                            .iter()
+                            .map(|m| (m.milestone_id, m.task_storage.task_storage_id))
+                            .collect(),
+                    )
+                })
+                .collect();
+            self.registry().set_project_identities(layout)
+        }
         fn registry(&self) -> DirectoryV5Ref {
             DirectoryV5Ref::from_account_id(self.directory)
         }
@@ -192,11 +210,7 @@ pub mod projects_v5 {
             }
             let mut rng = StdRng::from_seed(seed);
             let proposal_id = random_id(&mut rng);
-            let (milestones, mut ids) = make_milestones(&definition, &[], &mut rng);
-            ids.insert(0, proposal_id);
-            self.registry().claim_project_ids(ids)?;
-            self.registry()
-                .set_proposal_references(proposal_id, Some(qualifications))?;
+            let milestones = make_milestones(&definition, &[], &mut rng);
             self.project.proposals.push(ProposalView {
                 proposal_id,
                 revision: 0,
@@ -210,6 +224,9 @@ pub mod projects_v5 {
                     coordinator_percent: percent,
                 }),
             });
+            self.sync_identities()?;
+            self.registry()
+                .set_proposal_references(proposal_id, Some(qualifications))?;
             Ok(self.effect(10, proposal_id))
         }
         #[ink(message)]
@@ -234,22 +251,8 @@ pub mod projects_v5 {
                 "proposal_not_draft",
             )?;
             let previous = &self.project.proposals[index].milestones;
-            let removed = previous
-                .iter()
-                .filter(|m| {
-                    !definition
-                        .milestones
-                        .iter()
-                        .any(|d| d.key == m.definition.key)
-                })
-                .flat_map(|m| [m.milestone_id, m.task_storage.task_storage_id])
-                .collect();
             let mut rng = StdRng::from_seed(seed);
-            let (milestones, ids) = make_milestones(&definition, previous, &mut rng);
-            self.registry().release_project_ids(removed)?;
-            self.registry().claim_project_ids(ids)?;
-            self.registry()
-                .set_proposal_references(proposal_id, Some(qualifications))?;
+            let milestones = make_milestones(&definition, previous, &mut rng);
             let current = &mut self.project.proposals[index];
             current.milestones = milestones;
             current.compensation_policy = Some(CompensationPolicy {
@@ -258,6 +261,9 @@ pub mod projects_v5 {
             current.title = definition.title;
             current.description = definition.description;
             bump(&mut current.revision)?;
+            self.sync_identities()?;
+            self.registry()
+                .set_proposal_references(proposal_id, Some(qualifications))?;
             Ok(self.effect(11, proposal_id))
         }
         #[ink(message)]
@@ -270,16 +276,9 @@ pub mod projects_v5 {
                 current.status == ProposalStatus::Draft,
                 "proposal_not_draft",
             )?;
-            let mut ids = ink::prelude::vec![proposal_id];
-            ids.extend(
-                current
-                    .milestones
-                    .iter()
-                    .flat_map(|m| [m.milestone_id, m.task_storage.task_storage_id]),
-            );
-            self.registry().release_project_ids(ids)?;
-            self.registry().set_proposal_references(proposal_id, None)?;
             self.project.proposals.remove(index);
+            self.sync_identities()?;
+            self.registry().set_proposal_references(proposal_id, None)?;
             Ok(self.effect(12, proposal_id))
         }
         #[ink(message)]
@@ -571,8 +570,7 @@ pub mod projects_v5 {
         definition: &ProposalDefinition,
         previous: &[MilestoneView],
         rng: &mut StdRng,
-    ) -> (Vec<MilestoneView>, Vec<Id>) {
-        let mut ids = Vec::new();
+    ) -> Vec<MilestoneView> {
         let mut milestones = Vec::new();
         for definition in &definition.milestones {
             if let Some(existing) = previous.iter().find(|m| m.definition.key == definition.key) {
@@ -582,7 +580,6 @@ pub mod projects_v5 {
             } else {
                 let milestone_id = random_id(rng);
                 let storage_id = random_id(rng);
-                ids.extend([milestone_id, storage_id]);
                 milestones.push(MilestoneView {
                     milestone_id,
                     definition: definition.clone(),
@@ -599,7 +596,7 @@ pub mod projects_v5 {
                 });
             }
         }
-        (milestones, ids)
+        milestones
     }
     fn validate_delivery(delivery: &DeliveryPreference) -> Result<()> {
         if let DeliveryPreference::SpecificDate { date } = delivery {
