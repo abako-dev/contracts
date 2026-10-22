@@ -30,7 +30,7 @@ pub mod directory_v5 {
     };
     use rand::{rngs::StdRng, Rng, RngExt, SeedableRng};
     use scale::Encode;
-    use storage_v5::PagedMapping as Mapping;
+    use storage_v5::{FixedMapping, PagedMapping as Mapping};
 
     pub type Result<T> = core::result::Result<T, String>;
     pub type Id = [u8; 16];
@@ -236,9 +236,9 @@ pub mod directory_v5 {
         pub(crate) dispute_ids: Vec<Id>,
         pub(crate) dispute_owners: Mapping<Id, Id, 12>,
         pub(crate) evaluations: Mapping<(Id, AccountId), crate::migration::RecordedEvaluation, 13>,
-        pub(crate) skill_counts: Mapping<u32, u32, 14>,
-        pub(crate) skill_members: Mapping<(u32, u32), AccountId, 15>,
-        pub(crate) skill_positions: Mapping<(u32, AccountId), u32, 16>,
+        pub(crate) skill_counts: FixedMapping<u32, u32, 14>,
+        pub(crate) skill_members: FixedMapping<(u32, u32), AccountId, 15>,
+        pub(crate) skill_positions: FixedMapping<(u32, AccountId), u32, 16>,
         pub(crate) migration_phase: u8,
         pub(crate) categories: Mapping<u32, String, 18>,
         pub(crate) reason_records: Mapping<u64, Vec<u8>, 19>,
@@ -295,9 +295,9 @@ pub mod directory_v5 {
                 dispute_ids: Vec::new(),
                 dispute_owners: Mapping::default(),
                 evaluations: Mapping::default(),
-                skill_counts: Mapping::default(),
-                skill_members: Mapping::default(),
-                skill_positions: Mapping::default(),
+                skill_counts: FixedMapping::default(),
+                skill_members: FixedMapping::default(),
+                skill_positions: FixedMapping::default(),
             };
             for role in seed.roles {
                 require(
@@ -1064,8 +1064,21 @@ pub mod directory_v5 {
             self.qualifications(&qualifications)?;
             let origin = self.env().caller();
             let mut worker = self.worker_record(origin)?;
-            self.index_remove(origin, &worker.qualifications.skill_ids)?;
-            self.index_add(origin, &qualifications.skill_ids)?;
+            let removed: Vec<_> = worker
+                .qualifications
+                .skill_ids
+                .iter()
+                .copied()
+                .filter(|id| !qualifications.skill_ids.contains(id))
+                .collect();
+            let added: Vec<_> = qualifications
+                .skill_ids
+                .iter()
+                .copied()
+                .filter(|id| !worker.qualifications.skill_ids.contains(id))
+                .collect();
+            self.index_remove(origin, &removed)?;
+            self.index_add(origin, &added)?;
             worker.qualifications = qualifications;
             self.workers.insert(origin, &worker);
             Ok(Effect::new(1, None, origin))
