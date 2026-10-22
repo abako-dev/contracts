@@ -7,7 +7,7 @@ publish = false
 license = "Apache-2.0"
 
 [dependencies]
-storage-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "d8a24d7855d6b040684e046b483245370a405e02", default-features = false }
+storage-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "afe1b38322a2653b50b655e8de8c8501bd18012d", default-features = false }
 ink = { version = "=5.1.1", default-features = false }
 scale = { package = "parity-scale-codec", version = "=3.7.5", default-features = false, features = ["derive"] }
 scale-info = { version = "=2.11.6", default-features = false, features = ["derive"], optional = true }
