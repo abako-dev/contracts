@@ -20,8 +20,7 @@ bash build-v5.sh directory-v5 --offline
 bash build-v5.sh projects-v5 --offline
 ```
 
-See the References guide for its build command. Backend tests pin immutable
-WASM, ABI and build-lock hashes and compare complete state against the existing
+Backend tests pin immutable WASM, ABI and build-lock hashes and compare complete state against the existing
 native engine. Imports restore current state into fresh, permanently sealed
 contracts; they never replay historical payments.
 

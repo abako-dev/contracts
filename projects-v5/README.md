@@ -6,8 +6,10 @@ verified users call their Project directly. Only the creating Directory may run
 the constructor. Ordered global ID validation and the task counter share the
 outer runtime transaction, so failed commands cannot consume IDs or task keys.
 
-Public DTOs retain the backend SCALE layouts, integer u64 money and captured
-version-1 rand 0.10.2 stream. Proposal edits retain milestones and task storage by
+Contract DTOs retain backend SCALE layouts except for hash-only evidence fields;
+the private SDK codec restores the unchanged public/native representations.
+Money remains integer u64 and entropy uses the captured version-1 rand 0.10.2
+stream. Proposal edits retain milestones and task storage by
 declared key. Largest-remainder allocation preserves each captured budget exactly.
 A Project stores its own read model and reason history; Directory owns catalog,
 workers, registry and global IDs. Execution, escrow, settlement,
