@@ -61,7 +61,7 @@ pub struct ProjectImport {
 #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "Ten fixed SCALE discriminants fit u8."
+    reason = "Eleven fixed SCALE discriminants fit u8."
 )]
 pub enum MigrationRecordV1 {
     Worker(WorkerImport),
@@ -79,6 +79,7 @@ pub enum MigrationRecordV1 {
         Vec<u32>,
         #[codec(encoded_as = "storage_v5::Text")] String,
     ),
+    WorkerIndex(AccountId),
 }
 fn require(condition: bool) -> Result<()> {
     if condition {
@@ -119,7 +120,6 @@ impl DirectoryData {
                     self.env().account_id(),
                     view.calendar_id,
                 )?;
-                self.index_add(view.account, &view.qualifications.skill_ids)?;
                 self.display_names.insert(view.account, &view.display_name);
                 self.workers.insert(
                     view.account,
@@ -135,6 +135,21 @@ impl DirectoryData {
                 );
                 self.calendar_ids.insert(view.calendar_id, &true);
                 insert_sorted(&mut self.accounts, view.account);
+            }
+            MigrationRecordV1::WorkerIndex(account) => {
+                let worker = self.worker_record(account)?;
+                // Skill zero is invalid; its position cell tracks import progress only.
+                let start = self.skill_positions.get((0, account)).unwrap_or(0) as usize;
+                let end = core::cmp::min(
+                    start.saturating_add(32),
+                    worker.qualifications.skill_ids.len(),
+                );
+                require(start < end)?;
+                self.index_add(account, &worker.qualifications.skill_ids[start..end])?;
+                self.skill_positions.insert(
+                    (0, account),
+                    &u32::try_from(end).map_err(|_| String::from("invalid_archive"))?,
+                );
             }
             MigrationRecordV1::Project(record) => {
                 require(!self.project_addresses.contains(record.id))?;
@@ -237,7 +252,12 @@ impl DirectoryData {
         self.validate_public_ids()?;
         require(self.skill_ids.iter().all(|id| self.categories.contains(id)))?;
         for account in &self.accounts {
-            factory::seal_import(self.worker_record(*account)?.calendar)?;
+            let worker = self.worker_record(*account)?;
+            require(
+                self.skill_positions.get((0, *account)).unwrap_or(0) as usize
+                    == worker.qualifications.skill_ids.len(),
+            )?;
+            factory::seal_import(worker.calendar)?;
         }
         for id in &self.project_ids {
             factory::seal_import(

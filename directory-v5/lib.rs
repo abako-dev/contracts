@@ -182,7 +182,14 @@ pub mod directory_v5 {
         )
     }
     fn normalized(name: &str) -> String {
-        crate::names::lowercase(&name.split_whitespace().collect::<Vec<_>>().join(" "))
+        let mut joined = String::with_capacity(name.len());
+        for word in name.split_whitespace() {
+            if !joined.is_empty() {
+                joined.push(' ');
+            }
+            joined.push_str(word);
+        }
+        crate::names::lowercase(&joined)
     }
     pub(crate) fn insert_sorted<T: Ord>(items: &mut Vec<T>, item: T) {
         if let Err(index) = items.binary_search(&item) {
@@ -1322,34 +1329,28 @@ pub mod directory_v5 {
         /// Migration is available only on a fresh root-owned instance, then seals forever.
         #[ink(message)]
         pub fn begin_import(&mut self) -> Result<()> {
-            self.transact(|data| data.begin_import())
-        }
-        fn require_import(&self) -> Result<()> {
-            self.read_state(|data| {
-                data.root()?;
-                require(data.migration_phase == 1, "import_closed")
-            })
-        }
-        #[ink(message)]
-        pub fn begin_import_record(&mut self) -> Result<()> {
-            self.require_import()?;
-            require(self.record.is_none(), "record_in_progress")?;
+            self.transact(|data| data.begin_import())?;
             self.record = Some((self.env().caller(), [0; 16], 0));
             Ok(())
         }
         #[ink(message)]
-        pub fn import_record_page(&mut self, index: u32, bytes: Vec<u8>) -> Result<()> {
-            self.require_import()?;
-            storage_v5::append_import_in(&mut self.record, u32::MAX - 1, index, &bytes)
-        }
-        #[ink(message)]
-        pub fn finish_import_record(&mut self) -> Result<()> {
-            self.require_import()?;
-            let (record, _, _, _) = storage_v5::decode_import_in::<
-                crate::migration::MigrationRecordV1,
-            >(&self.record, u32::MAX - 1)?;
-            self.transact(|data| data.import_record(record))?;
-            storage_v5::clear_import(&mut self.record, u32::MAX - 1);
+        pub fn import_record_page(
+            &mut self,
+            index: u32,
+            bytes: Vec<u8>,
+            finish: bool,
+        ) -> Result<()> {
+            let mut record = self.record;
+            storage_v5::append_import_in(&mut record, u32::MAX - 1, index, &bytes)?;
+            if finish {
+                let (value, _, owner, id) = storage_v5::decode_import_in::<
+                    crate::migration::MigrationRecordV1,
+                >(&record, u32::MAX - 1)?;
+                self.transact(|data| data.import_record(value))?;
+                storage_v5::clear_import(&mut record, u32::MAX - 1);
+                record = Some((owner, id, 0));
+            }
+            self.record = record;
             Ok(())
         }
         #[ink(message)]
@@ -1370,12 +1371,13 @@ pub mod directory_v5 {
         }
         #[ink(message)]
         pub fn seal_import(&mut self) -> Result<()> {
-            require(self.record.is_none(), "record_in_progress")?;
-            self.transact(|data| data.seal_import())
-        }
-        #[ink(message)]
-        pub fn migration_info(&self) -> (u8, u32, u64) {
-            self.read_state(|data| (data.migration_phase, data.next_task_id, data.reason_count))
+            require(
+                self.record.is_some_and(|(_, _, length)| length == 0),
+                "record_in_progress",
+            )?;
+            self.transact(|data| data.seal_import())?;
+            self.record = None;
+            Ok(())
         }
         #[ink(message)]
         pub fn append_reason(&mut self, project_id: Id, bytes: Vec<u8>) -> Result<()> {
@@ -1663,6 +1665,18 @@ pub mod directory_v5 {
             qualifications: Option<Qualifications>,
         ) -> Result<()> {
             self.change(|data| data.set_proposal_references(proposal_id, qualifications))
+        }
+    }
+    #[cfg(test)]
+    mod normalization_tests {
+        #[test]
+        fn unicode_names_collapse_whitespace_before_lowercasing() {
+            assert_eq!(
+                super::normalized("\u{2003}İ\tStraße\u{a0}ΟΣ  "),
+                "i\u{307} straße ος"
+            );
+            assert_eq!(super::normalized(" \n\t"), "");
+            assert_eq!(super::normalized("coordinator"), "coordinator");
         }
     }
 }
