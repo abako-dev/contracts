@@ -20,7 +20,7 @@ bash build-v5.sh directory-v5 --offline
 bash build-v5.sh projects-v5 --offline
 ```
 
-This private SPEC-0015 R2a branch replaces worker directory names and Project root
+The SPEC-0015 R2a source checkpoint replaces worker directory names and Project root
 title/description with fixed-size creation or migration references. Ordinary
 creation accepts only a creation commitment; migration references enter through
 fresh sealed imports. The backend still runs the reviewed predecessor artifacts.
