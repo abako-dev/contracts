@@ -20,22 +20,23 @@ bash build-v5.sh directory-v5 --offline
 bash build-v5.sh projects-v5 --offline
 ```
 
-SPEC-0015 R2a/R2b1 replaces worker directory names, Project root and proposal
-text, milestone titles and change explanations with fixed references. Project
-retains numeric terms, captured compensation policy, revision, permissions,
-assignments, tasks and lifecycle. Proposal definition and change request have
-independent refs; edits retain the last explanation. Ordinary execution accepts
-signed commitments; migration refs enter through fresh sealed imports. Directory
-and Calendar are unchanged by R2b1. Production Project WASM is 162,865 bytes.
+SPEC-0015 R2a/R2b1/R2b2 replaces descriptive creation/proposal fields, catalog
+labels/categories, request narrative and lifecycle reason text with fixed refs.
+Core retains numeric terms, compensation policy, revision, permissions,
+assignments, moderated request lifecycle and actual IDs. Current catalog label
+and skill origin are separate: rename preserves origin/category and role
+associations. Cancellation/planning reasons retain target, actor, execution time,
+effect kind and order. Production Directory/Project WASM is167305/163514 bytes,
+within unchanged limits; Calendar is unchanged by this slice.
 
-The paired backend uses these exact source-built artifacts and API-owned immutable
-documents. Its owner tools explicitly migrate V2↔V3 using current state, preserving
-R2a creation refs, signed calls and receipts. See the
-[backend R2b1 procedure](https://github.com/abako-project/backend-v2/blob/review/ink-v5-runtime/specs/0015-adapter-core-boundary/r2b-proposals.md)
+The paired backend's current V4 cohort uses these source-built artifacts and
+API-owned immutable documents, with normalized skill-name admission in its
+existing operation queue. Owner tools explicitly migrate V3↔V4 current state,
+preserving R2a/R2b1 refs, signed calls, receipts and funds. See the
+[backend R2b2 procedure](https://github.com/abako-project/backend-v2/blob/review/ink-v5-runtime/specs/0015-adapter-core-boundary/r2b-catalog-reasons.md)
 and [verification record](https://github.com/abako-project/backend-v2/blob/review/ink-v5-runtime/progress/handoffs/SPEC-0015.md).
-Catalog names/moderation and cancellation/planning-dispute reasons remain R2b2;
-tasks remain R3, and removal of the paging helper R4/R5. Existing installations
-require the explicit paired migration; startup never silently converts storage.
+Tasks remain R3 and paging removal R4/R5. Existing installations require the
+explicit paired migration; startup never silently converts storage.
 
 Backend tests pin immutable WASM, ABI and build-lock hashes and compare complete state against the existing
 native engine. Imports restore current state into fresh, permanently sealed
