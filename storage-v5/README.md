@@ -1,8 +1,9 @@
 # v5 storage pages
 
-Kreivo keeps pallet-contracts' 16 KiB per-value limit. The provider accepts signed
-commands up to 256 KiB, and retained collections can grow across commands. Keep
-that runtime limit and store encoded values in 8 KiB cells instead.
+This helper from the earlier sandbox milestones stores encoded values in 8 KiB
+cells while preserving Kreivo's 16 KiB per-value limit. The provider accepts signed
+commands up to 256 KiB, and retained collections can grow across commands. It is
+transitional under SPEC-0015; ordinary ink! storage is the intended replacement.
 
 Each contract's ink storage header contains its root record byte length. Root
 pages use namespace u32::MAX. Explicit mapping namespaces are unique within the
@@ -36,7 +37,12 @@ ink's bump allocator retains temporary allocations for the duration of a call.
 The helper is pinned to an immutable Git revision by each consumer: a separate
 checkout reproduced different Calendar WASM with a local helper path dependency.
 
-Worker display names live in their own paged mapping. Business checks, matching
-and global ID validation read the small worker record and do not load descriptive
-strings. The public worker view joins the two records. This preserves its ABI
-while keeping a valid maximum-size profile within the unchanged WASM memory cap.
+Older bundles kept worker display names in a separate paged mapping. SPEC-0015
+R2a moved those names and Project root text to API-owned documents; R2b1 also
+removes proposal text, milestone titles and change explanations from current
+contract state. Core keeps fixed references and actual enforceable facts.
+
+The helper still backs remaining catalog/task content and aggregate collections.
+Catalog/reason ownership moves in R2b2 and tasks in R3. R4/R5 then replaces the
+helper with ordinary ink! storage after retained-state size checks and current-state
+migration/rollback. R2b1 adds no custom storage layer and changes no runtime limit.
