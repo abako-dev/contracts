@@ -27,8 +27,7 @@ pub enum RecordedEvaluation {
 #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
 pub struct WorkerImport {
     pub account: AccountId,
-    #[codec(encoded_as = "storage_v5::Text")]
-    pub display_name: String,
+    pub content: MetadataReferenceV1,
     pub qualifications: Qualifications,
     pub mode: WorkerMode,
     pub coordinator_eligible: bool,
@@ -120,10 +119,10 @@ impl DirectoryData {
                     self.env().account_id(),
                     view.calendar_id,
                 )?;
-                self.display_names.insert(view.account, &view.display_name);
                 self.workers.insert(
                     view.account,
                     &Worker {
+                        content: view.content,
                         qualifications: view.qualifications,
                         mode: view.mode,
                         coordinator_eligible: view.coordinator_eligible,

@@ -1,4 +1,5 @@
 //! Explicit constructor ABIs avoid source cycles between Directory and Project.
+use crate::directory_v5::MetadataCommitmentV1;
 use ink::{
     env::{
         call::{build_create, ExecutionInput, FromAccountId, Selector},
@@ -26,8 +27,7 @@ pub(crate) fn instantiate(
     project_id: [u8; 16],
     client: AccountId,
     coordinator: AccountId,
-    title: String,
-    description: String,
+    content: MetadataCommitmentV1,
     now: u64,
 ) -> Result<AccountId, String> {
     let result = build_create::<ContractHandle>()
@@ -39,8 +39,7 @@ pub(crate) fn instantiate(
                 .push_arg(project_id)
                 .push_arg(client)
                 .push_arg(coordinator)
-                .push_arg(title)
-                .push_arg(description)
+                .push_arg(content)
                 .push_arg(now),
         )
         .salt_bytes(project_id)

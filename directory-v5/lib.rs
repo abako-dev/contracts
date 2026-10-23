@@ -36,6 +36,23 @@ pub mod directory_v5 {
     pub type Id = [u8; 16];
     pub type ProjectIdentities = Vec<(Id, Vec<(Id, Id)>)>;
 
+    /// Fixed-size reference to one immutable adapter-owned creation record.
+    #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
+    pub struct MetadataCommitmentV1 {
+        pub operation_id: Id,
+        pub hash: [u8; 32],
+    }
+    /// Historical imports must not fabricate an old signed creation operation.
+    #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
+    pub enum MetadataReferenceV1 {
+        #[codec(index = 0)]
+        Creation(MetadataCommitmentV1),
+        #[codec(index = 1)]
+        Migration([u8; 32]),
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub struct Qualifications {
@@ -96,8 +113,8 @@ pub mod directory_v5 {
     }
     #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
-    pub struct RegisterWorkerRequest {
-        pub display_name: String,
+    pub struct RegisterWorkerCoreRequest {
+        pub content: MetadataCommitmentV1,
         pub qualifications: Qualifications,
         pub calendar: CalendarDefinition,
     }
@@ -120,9 +137,9 @@ pub mod directory_v5 {
     }
     #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
-    pub struct WorkerView {
+    pub struct WorkerCore {
         pub account: AccountId,
-        pub display_name: String,
+        pub content: MetadataReferenceV1,
         pub qualifications: Qualifications,
         pub mode: WorkerMode,
         pub coordinator_eligible: bool,
@@ -133,6 +150,7 @@ pub mod directory_v5 {
     #[derive(Debug, Clone, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub(crate) struct Worker {
+        pub(crate) content: MetadataReferenceV1,
         pub(crate) qualifications: Qualifications,
         pub(crate) mode: WorkerMode,
         pub(crate) coordinator_eligible: bool,
@@ -215,7 +233,6 @@ pub mod directory_v5 {
         pub(crate) skill_ids: Vec<u32>,
         pub(crate) skill_roles: Mapping<u32, Vec<u32>, 3>,
         pub(crate) workers: Mapping<AccountId, Worker, 4>,
-        pub(crate) display_names: Mapping<AccountId, String, 17>,
         pub(crate) calendar_ids: Mapping<Id, bool, 5>,
         pub(crate) accounts: Vec<AccountId>,
         pub(crate) requests: Mapping<Id, SkillRequestView, 6>,
@@ -273,7 +290,6 @@ pub mod directory_v5 {
                 skill_ids: Vec::new(),
                 skill_roles: Mapping::default(),
                 workers: Mapping::default(),
-                display_names: Mapping::default(),
                 calendar_ids: Mapping::default(),
                 accounts: Vec::new(),
                 requests: Mapping::default(),
@@ -487,13 +503,11 @@ pub mod directory_v5 {
                 .filter_map(|id| self.project_addresses.get(id).map(|address| (*id, address)))
                 .collect()
         }
-        pub fn create_project(
+        pub fn create_project_core(
             &mut self,
-            title: String,
-            description: String,
+            content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
-            require(!title.trim().is_empty(), "invalid_contract")?;
             let now = self
                 .env()
                 .block_timestamp()
@@ -522,8 +536,7 @@ pub mod directory_v5 {
                 id,
                 client,
                 coordinator,
-                title,
-                description,
+                content,
                 now,
             )?;
             self.project_addresses.insert(id, &address);
@@ -962,13 +975,10 @@ pub mod directory_v5 {
         pub fn calendar_address(&self, account: AccountId) -> Option<AccountId> {
             self.workers.get(account).map(|worker| worker.calendar)
         }
-        pub fn worker(&self, account: AccountId) -> Option<WorkerView> {
-            self.workers.get(account).map(|worker| WorkerView {
+        pub fn worker(&self, account: AccountId) -> Option<WorkerCore> {
+            self.workers.get(account).map(|worker| WorkerCore {
                 account,
-                display_name: self
-                    .display_names
-                    .get(account)
-                    .unwrap_or_else(|| panic!("missing worker name")),
+                content: worker.content,
                 qualifications: worker.qualifications,
                 mode: worker.mode,
                 coordinator_eligible: worker.coordinator_eligible,
@@ -977,7 +987,7 @@ pub mod directory_v5 {
                 coordinator_score: worker.coordinator_score,
             })
         }
-        pub fn workers(&self) -> Vec<WorkerView> {
+        pub fn workers(&self) -> Vec<WorkerCore> {
             self.accounts
                 .iter()
                 .filter_map(|account| self.worker(*account))
@@ -991,12 +1001,11 @@ pub mod directory_v5 {
                 .filter(|request| caller == self.root || caller == request.requester)
                 .collect()
         }
-        pub fn register_worker(
+        pub fn register_worker_core(
             &mut self,
-            request: RegisterWorkerRequest,
+            request: RegisterWorkerCoreRequest,
             calendar_id: Id,
         ) -> Result<Effect> {
-            require(!request.display_name.trim().is_empty(), "invalid_contract")?;
             request.qualifications.validate()?;
             let origin = self.env().caller();
             require(!self.workers.contains(origin), "worker_exists")?;
@@ -1020,10 +1029,10 @@ pub mod directory_v5 {
             .map_err(|_| String::from("calendar_instantiation_failed"))?
             .map_err(|_| String::from("calendar_instantiation_failed"))??;
             let skills = request.qualifications.skill_ids.clone();
-            self.display_names.insert(origin, &request.display_name);
             self.workers.insert(
                 origin,
                 &Worker {
+                    content: MetadataReferenceV1::Creation(request.content),
                     qualifications: request.qualifications,
                     mode: WorkerMode::Worker,
                     coordinator_eligible: false,
@@ -1414,13 +1423,12 @@ pub mod directory_v5 {
             self.read_state(|data| data.projects())
         }
         #[ink(message)]
-        pub fn create_project(
+        pub fn create_project_core(
             &mut self,
-            title: String,
-            description: String,
+            content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
-            self.change(|data| data.create_project(title, description, seed))
+            self.change(|data| data.create_project_core(content, seed))
         }
         #[ink(message)]
         pub fn compensation_policy(&self) -> u8 {
@@ -1573,11 +1581,11 @@ pub mod directory_v5 {
             self.read_state(|data| data.calendar_address(account))
         }
         #[ink(message)]
-        pub fn worker(&self, account: AccountId) -> Option<WorkerView> {
+        pub fn worker(&self, account: AccountId) -> Option<WorkerCore> {
             self.read_state(|data| data.worker(account))
         }
         #[ink(message)]
-        pub fn workers(&self) -> Vec<WorkerView> {
+        pub fn workers(&self) -> Vec<WorkerCore> {
             self.read_state(|data| data.workers())
         }
         #[ink(message)]
@@ -1585,12 +1593,12 @@ pub mod directory_v5 {
             self.read_state(|data| data.skill_requests())
         }
         #[ink(message)]
-        pub fn register_worker(
+        pub fn register_worker_core(
             &mut self,
-            request: RegisterWorkerRequest,
+            request: RegisterWorkerCoreRequest,
             calendar_id: Id,
         ) -> Result<Effect> {
-            self.change(|data| data.register_worker(request, calendar_id))
+            self.change(|data| data.register_worker_core(request, calendar_id))
         }
         #[ink(message)]
         pub fn update_qualifications(&mut self, qualifications: Qualifications) -> Result<Effect> {
