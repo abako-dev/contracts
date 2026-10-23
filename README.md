@@ -20,18 +20,22 @@ bash build-v5.sh directory-v5 --offline
 bash build-v5.sh projects-v5 --offline
 ```
 
-SPEC-0015 R2a replaces worker directory names and Project root
-title/description with fixed-size creation or migration references. Ordinary
-creation accepts only a creation commitment; migration references enter through
-fresh sealed imports. The paired backend implementation now uses these exact
-source-built artifacts, compact native/WASM core state and API-owned creation
-content. Its owner tools migrate from the supported predecessor and rehydrate
-current state for rollback, preserving signed calls and receipts. See the
-[backend R2a procedure](https://github.com/abako-project/backend-v2/blob/review/ink-v5-runtime/specs/0015-adapter-core-boundary/r2a-creation.md)
+SPEC-0015 R2a/R2b1 replaces worker directory names, Project root and proposal
+text, milestone titles and change explanations with fixed references. Project
+retains numeric terms, captured compensation policy, revision, permissions,
+assignments, tasks and lifecycle. Proposal definition and change request have
+independent refs; edits retain the last explanation. Ordinary execution accepts
+signed commitments; migration refs enter through fresh sealed imports. Directory
+and Calendar are unchanged by R2b1. Production Project WASM is 162,865 bytes.
+
+The paired backend uses these exact source-built artifacts and API-owned immutable
+documents. Its owner tools explicitly migrate V2↔V3 using current state, preserving
+R2a creation refs, signed calls and receipts. See the
+[backend R2b1 procedure](https://github.com/abako-project/backend-v2/blob/review/ink-v5-runtime/specs/0015-adapter-core-boundary/r2b-proposals.md)
 and [verification record](https://github.com/abako-project/backend-v2/blob/review/ink-v5-runtime/progress/handoffs/SPEC-0015.md).
-Proposal/catalog/task ownership and removal of the paging helper remain later
-SPEC-0015 stages. Existing installations require that explicit paired migration;
-startup does not silently convert their storage.
+Catalog names/moderation and cancellation/planning-dispute reasons remain R2b2;
+tasks remain R3, and removal of the paging helper R4/R5. Existing installations
+require the explicit paired migration; startup never silently converts storage.
 
 Backend tests pin immutable WASM, ABI and build-lock hashes and compare complete state against the existing
 native engine. Imports restore current state into fresh, permanently sealed
