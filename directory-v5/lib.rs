@@ -46,6 +46,10 @@ pub mod directory_v5 {
     /// Historical imports must not fabricate an old signed creation operation.
     #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "SCALE indexes two fixed reference variants."
+    )]
     pub enum MetadataReferenceV1 {
         #[codec(index = 0)]
         Creation(MetadataCommitmentV1),
