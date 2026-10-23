@@ -20,6 +20,14 @@ bash build-v5.sh directory-v5 --offline
 bash build-v5.sh projects-v5 --offline
 ```
 
+This private SPEC-0015 R2a branch replaces worker directory names and Project root
+title/description with fixed-size creation or migration references. Ordinary
+creation accepts only a creation commitment; migration references enter through
+fresh sealed imports. The backend still runs the reviewed predecessor artifacts.
+The matching core archive, API composition and current-state rollback are required
+before a paired runtime cutover. Proposal/catalog/task ownership and removal of
+the paging helper remain later SPEC-0015 stages.
+
 Backend tests pin immutable WASM, ABI and build-lock hashes and compare complete state against the existing
 native engine. Imports restore current state into fresh, permanently sealed
 contracts; they never replay historical payments.
