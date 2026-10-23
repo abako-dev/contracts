@@ -72,12 +72,7 @@ pub enum MigrationRecordV1 {
     SkillRequest(SkillRequestView),
     Policies(ScorePolicy, u8, u32),
     Reason(Vec<u8>),
-    Catalog(
-        CatalogKind,
-        CatalogEntry,
-        Vec<u32>,
-        #[codec(encoded_as = "storage_v5::Text")] String,
-    ),
+    Catalog(CatalogKind, CatalogEntry, Vec<u32>, CatalogReferenceV1),
     WorkerIndex(AccountId),
 }
 fn require(condition: bool) -> Result<()> {
@@ -199,15 +194,12 @@ impl DirectoryData {
                 self.next_task_id = next;
             }
             MigrationRecordV1::Reason(bytes) => self.push_reason(bytes)?,
-            MigrationRecordV1::Catalog(kind, entry, roles, category) => {
+            MigrationRecordV1::Catalog(kind, entry, roles, origin) => {
                 require(
-                    entry.id > 0
-                        && !entry.name.trim().is_empty()
-                        && entry.fixed == (kind == CatalogKind::Role && entry.id == 1),
+                    entry.id > 0 && entry.fixed == (kind == CatalogKind::Role && entry.id == 1),
                 )?;
                 match kind {
                     CatalogKind::Role => {
-                        require(entry.id != 1 || entry.name == "coordinator")?;
                         insert_sorted(&mut self.role_ids, entry.id);
                         self.roles.insert(entry.id, &entry);
                     }
@@ -215,7 +207,7 @@ impl DirectoryData {
                         require(!self.skills.contains(entry.id))?;
                         insert_sorted(&mut self.skill_ids, entry.id);
                         self.skill_roles.insert(entry.id, &roles);
-                        self.categories.insert(entry.id, &category);
+                        self.origins.insert(entry.id, &origin);
                         self.skills.insert(entry.id, &entry);
                     }
                 }
@@ -249,7 +241,7 @@ impl DirectoryData {
         self.root()?;
         require(self.migration_phase == 1)?;
         self.validate_public_ids()?;
-        require(self.skill_ids.iter().all(|id| self.categories.contains(id)))?;
+        require(self.skill_ids.iter().all(|id| self.origins.contains(id)))?;
         for account in &self.accounts {
             let worker = self.worker_record(*account)?;
             require(
@@ -295,8 +287,8 @@ mod tests {
             CatalogSeed {
                 roles: ink::prelude::vec![CatalogEntry {
                     id: 1,
-                    name: String::from("coordinator"),
-                    fixed: true
+                    fixed: true,
+                    content: CatalogReferenceV1::Migration([0; 32])
                 }],
                 skills: Vec::new(),
                 skill_roles: Vec::new(),
@@ -306,6 +298,38 @@ mod tests {
         data.project_code = Some(Hash::from([2; 32]));
         data.bank.configure(false).unwrap();
         data
+    }
+    #[ink::test]
+    fn catalog_rename_retains_origin_and_recreation_selects_new_origin() {
+        let mut data = fresh();
+        let first = MetadataCommitmentV1 {
+            operation_id: [3; 16],
+            hash: [4; 32],
+        };
+        let renamed = MetadataCommitmentV1 {
+            operation_id: [5; 16],
+            hash: [6; 32],
+        };
+        data.upsert_catalog_entry_core(CatalogKind::Skill, 42, first.clone())
+            .unwrap();
+        data.upsert_catalog_entry_core(CatalogKind::Skill, 42, renamed.clone())
+            .unwrap();
+        assert_eq!(
+            data.skills.get(42).unwrap().content,
+            CatalogReferenceV1::Write(renamed.clone())
+        );
+        assert_eq!(data.origins.get(42), Some(CatalogReferenceV1::Write(first)));
+        assert_eq!(
+            data.upsert_catalog_entry_core(CatalogKind::Role, 1, renamed.clone()),
+            Err(String::from("fixed_coordinator_role"))
+        );
+        data.delete_catalog_entry(CatalogKind::Skill, 42).unwrap();
+        data.upsert_catalog_entry_core(CatalogKind::Skill, 42, renamed.clone())
+            .unwrap();
+        assert_eq!(
+            data.origins.get(42),
+            Some(CatalogReferenceV1::Write(renamed))
+        );
     }
     #[ink::test]
     fn import_is_root_only_fresh_only_and_permanently_sealed() {

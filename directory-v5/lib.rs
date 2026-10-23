@@ -5,7 +5,6 @@ pub mod bank;
 mod factory;
 pub mod matching;
 pub mod migration;
-mod names;
 pub mod reputation;
 
 #[ink::contract]
@@ -57,6 +56,22 @@ pub mod directory_v5 {
         Migration([u8; 32]),
     }
 
+    /// Names/categories are API-owned; only these fixed references are stored.
+    #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Three fixed SCALE variants."
+    )]
+    pub enum CatalogReferenceV1 {
+        #[codec(index = 0)]
+        Write(MetadataCommitmentV1),
+        #[codec(index = 1)]
+        Migration([u8; 32]),
+        #[codec(index = 2)]
+        Seed([u8; 32]),
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub struct Qualifications {
@@ -98,15 +113,15 @@ pub mod directory_v5 {
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub struct CatalogEntry {
         pub id: u32,
-        #[codec(encoded_as = "storage_v5::Text")]
-        pub name: String,
         pub fixed: bool,
+        pub content: CatalogReferenceV1,
     }
     #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub struct SkillRoleAssociation {
         pub skill_id: u32,
         pub role_ids: Vec<u32>,
+        pub origin: CatalogReferenceV1,
     }
     #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
@@ -127,8 +142,7 @@ pub mod directory_v5 {
     pub struct SkillRequestView {
         pub request_id: Id,
         pub requester: AccountId,
-        #[codec(encoded_as = "storage_v5::Text")]
-        pub name: String,
+        pub content: CatalogReferenceV1,
         pub role_ids: Vec<u32>,
         pub status: SkillRequestStatus,
         pub skill_id: Option<u32>,
@@ -203,16 +217,6 @@ pub mod directory_v5 {
             "invalid_contract",
         )
     }
-    fn normalized(name: &str) -> String {
-        let mut joined = String::with_capacity(name.len());
-        for word in name.split_whitespace() {
-            if !joined.is_empty() {
-                joined.push(' ');
-            }
-            joined.push_str(word);
-        }
-        crate::names::lowercase(&joined)
-    }
     pub(crate) fn insert_sorted<T: Ord>(items: &mut Vec<T>, item: T) {
         if let Err(index) = items.binary_search(&item) {
             items.insert(index, item);
@@ -260,7 +264,7 @@ pub mod directory_v5 {
         pub(crate) skill_members: FixedMapping<(u32, u32), AccountId, 15>,
         pub(crate) skill_positions: FixedMapping<(u32, AccountId), u32, 16>,
         pub(crate) migration_phase: u8,
-        pub(crate) categories: Mapping<u32, String, 18>,
+        pub(crate) origins: Mapping<u32, CatalogReferenceV1, 18>,
         pub(crate) reason_records: Mapping<u64, Vec<u8>, 19>,
         pub(crate) reason_count: u64,
     }
@@ -282,7 +286,7 @@ pub mod directory_v5 {
             let mut result = Self {
                 root: <Self as ink::codegen::StaticEnv>::env().caller(),
                 migration_phase: 0,
-                categories: Mapping::default(),
+                origins: Mapping::default(),
                 reason_records: Mapping::default(),
                 reason_count: 0,
                 calendar_code,
@@ -319,27 +323,19 @@ pub mod directory_v5 {
             };
             for role in seed.roles {
                 require(
-                    role.id != 0 && !role.name.trim().is_empty() && !result.roles.contains(role.id),
+                    role.id != 0 && !result.roles.contains(role.id),
                     "invalid_catalog_state",
                 )?;
                 require(role.fixed == (role.id == 1), "invalid_catalog_state")?;
-                if role.id == 1 {
-                    require(role.name == "coordinator", "invalid_catalog_state")?;
-                }
                 insert_sorted(&mut result.role_ids, role.id);
                 result.roles.insert(role.id, &role);
             }
             require(result.roles.contains(1), "invalid_catalog_state")?;
-            let mut names = BTreeSet::new();
             for skill in seed.skills {
                 require(
-                    skill.id != 0
-                        && !skill.name.trim().is_empty()
-                        && !skill.fixed
-                        && !result.skills.contains(skill.id),
+                    skill.id != 0 && !skill.fixed && !result.skills.contains(skill.id),
                     "invalid_catalog_state",
                 )?;
-                require(names.insert(normalized(&skill.name)), "skill_name_exists")?;
                 insert_sorted(&mut result.skill_ids, skill.id);
                 result.skills.insert(skill.id, &skill);
             }
@@ -356,6 +352,9 @@ pub mod directory_v5 {
                 result
                     .skill_roles
                     .insert(association.skill_id, &association.role_ids);
+                result
+                    .origins
+                    .insert(association.skill_id, &association.origin);
             }
             require(
                 result
@@ -387,20 +386,6 @@ pub mod directory_v5 {
             self.workers
                 .get(account)
                 .ok_or_else(|| String::from("worker_not_found"))
-        }
-        fn unique_skill(&self, name: &str, except: Option<u32>) -> Result<()> {
-            let name = normalized(name);
-            require(
-                !self.skill_ids.iter().any(|id| {
-                    Some(*id) != except
-                        && self
-                            .skills
-                            .get(id)
-                            .map(|skill| normalized(&skill.name) == name)
-                            .unwrap_or(false)
-                }),
-                "skill_name_exists",
-            )
         }
         // Dense per-skill entries avoid packing a whole index into ink's 16 KiB
         // storage buffer. Candidate iteration has no fixed search/truncation limit.
@@ -972,6 +957,7 @@ pub mod directory_v5 {
                     .map(|id| SkillRoleAssociation {
                         skill_id: *id,
                         role_ids: self.skill_roles.get(id).unwrap_or_default(),
+                        origin: self.origins.get(id).expect("skill origin missing"),
                     })
                     .collect(),
             }
@@ -1099,13 +1085,13 @@ pub mod directory_v5 {
             self.workers.insert(account, &worker);
             Ok(Effect::new(4, None, account))
         }
-        pub fn upsert_catalog_entry(
+        pub fn upsert_catalog_entry_core(
             &mut self,
             kind: CatalogKind,
             id: u32,
-            name: String,
+            content: MetadataCommitmentV1,
         ) -> Result<Effect> {
-            require(id != 0 && !name.trim().is_empty(), "invalid_contract")?;
+            require(id != 0, "invalid_contract")?;
             self.root()?;
             require(
                 !(kind == CatalogKind::Role && id == 1),
@@ -1113,8 +1099,8 @@ pub mod directory_v5 {
             )?;
             let entry = CatalogEntry {
                 id,
-                name,
                 fixed: false,
+                content: CatalogReferenceV1::Write(content),
             };
             match kind {
                 CatalogKind::Role => {
@@ -1122,12 +1108,11 @@ pub mod directory_v5 {
                     insert_sorted(&mut self.role_ids, id);
                 }
                 CatalogKind::Skill => {
-                    self.unique_skill(&entry.name, Some(id))?;
                     self.skills.insert(id, &entry);
                     insert_sorted(&mut self.skill_ids, id);
                     if !self.skill_roles.contains(id) {
                         self.skill_roles.insert(id, &Vec::<u32>::new());
-                        self.categories.insert(id, &String::from("requested"));
+                        self.origins.insert(id, &entry.content);
                     }
                 }
             }
@@ -1177,26 +1162,22 @@ pub mod directory_v5 {
                     require(self.skills.contains(id), "catalog_entry_not_found")?;
                     self.skills.remove(id);
                     self.skill_roles.remove(id);
-                    self.categories.remove(id);
+                    self.origins.remove(id);
                     self.skill_ids.retain(|item| *item != id);
                 }
             }
             Ok(Effect::new(3, None, self.env().caller()))
         }
-        pub fn create_skill_request(
+        pub fn create_skill_request_core(
             &mut self,
-            name: String,
             role_ids: Vec<u32>,
+            content: MetadataCommitmentV1,
             request_id: Id,
         ) -> Result<Effect> {
-            require(
-                !name.trim().is_empty() && name.trim().len() <= 100 && !role_ids.is_empty(),
-                "invalid_contract",
-            )?;
+            require(!role_ids.is_empty(), "invalid_contract")?;
             valid_ids(&role_ids)?;
             let origin = self.env().caller();
             self.worker_record(origin)?;
-            self.unique_skill(&name, None)?;
             require(
                 role_ids.iter().all(|id| self.roles.contains(id)),
                 "unknown_role",
@@ -1207,7 +1188,7 @@ pub mod directory_v5 {
                 &SkillRequestView {
                     request_id,
                     requester: origin,
-                    name: name.trim().into(),
+                    content: CatalogReferenceV1::Write(content),
                     role_ids,
                     status: SkillRequestStatus::Pending,
                     skill_id: None,
@@ -1232,7 +1213,6 @@ pub mod directory_v5 {
             )?;
             let kind = match decision {
                 SkillRequestDecision::Approve => {
-                    self.unique_skill(&request.name, None)?;
                     require(
                         request.role_ids.iter().all(|id| self.roles.contains(id)),
                         "unknown_role",
@@ -1246,13 +1226,13 @@ pub mod directory_v5 {
                         id,
                         &CatalogEntry {
                             id,
-                            name: request.name.clone(),
                             fixed: false,
+                            content: request.content.clone(),
                         },
                     );
                     insert_sorted(&mut self.skill_ids, id);
                     self.skill_roles.insert(id, &request.role_ids);
-                    self.categories.insert(id, &String::from("requested"));
+                    self.origins.insert(id, &request.content);
                     request.status = SkillRequestStatus::Approved;
                     request.skill_id = Some(id);
                     32
@@ -1621,26 +1601,26 @@ pub mod directory_v5 {
             self.change(|data| data.promote_coordinator(account))
         }
         #[ink(message)]
-        pub fn upsert_catalog_entry(
+        pub fn upsert_catalog_entry_core(
             &mut self,
             kind: CatalogKind,
             id: u32,
-            name: String,
+            content: MetadataCommitmentV1,
         ) -> Result<Effect> {
-            self.change(|data| data.upsert_catalog_entry(kind, id, name))
+            self.change(|data| data.upsert_catalog_entry_core(kind, id, content))
         }
         #[ink(message)]
         pub fn delete_catalog_entry(&mut self, kind: CatalogKind, id: u32) -> Result<Effect> {
             self.change(|data| data.delete_catalog_entry(kind, id))
         }
         #[ink(message)]
-        pub fn create_skill_request(
+        pub fn create_skill_request_core(
             &mut self,
-            name: String,
             role_ids: Vec<u32>,
+            content: MetadataCommitmentV1,
             request_id: Id,
         ) -> Result<Effect> {
-            self.change(|data| data.create_skill_request(name, role_ids, request_id))
+            self.change(|data| data.create_skill_request_core(role_ids, content, request_id))
         }
         #[ink(message)]
         pub fn decide_skill_request(
@@ -1657,18 +1637,6 @@ pub mod directory_v5 {
             qualifications: Option<Qualifications>,
         ) -> Result<()> {
             self.change(|data| data.set_proposal_references(proposal_id, qualifications))
-        }
-    }
-    #[cfg(test)]
-    mod normalization_tests {
-        #[test]
-        fn unicode_names_collapse_whitespace_before_lowercasing() {
-            assert_eq!(
-                super::normalized("\u{2003}İ\tStraße\u{a0}ΟΣ  "),
-                "i\u{307} straße ος"
-            );
-            assert_eq!(super::normalized(" \n\t"), "");
-            assert_eq!(super::normalized("coordinator"), "coordinator");
         }
     }
 }

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Abako contributors"]
 publish = false
-license = "Apache-2.0 AND Unicode-3.0"
+license = "Apache-2.0"
 
 [dependencies]
 storage-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "48efe9074871d1b8f34461b647083eb8f76e6aac", default-features = false }

@@ -51,8 +51,7 @@ https://crates.io/api/v1/crates/chacha20/0.10.2,
 https://crates.io/api/v1/crates/cpufeatures/0.3.1.
 
 Build production WASM with Rust 1.88.0 and cargo-contract 5.0.3. Arithmetic tests
-run on that compiler; the Unicode-17 semantic test intentionally runs with the
-backend's Rust 1.96.1 compiler.
+run on that compiler. Catalog names and normalization now belong to the adapter.
 
 ```sh
 bash build-v5.sh directory-v5 --offline
@@ -69,3 +68,14 @@ The locked version-1 rand single-sample path retains the native provider's minut
 documented bias (worst case 2^-96). The fixture proves exact native/WASM parity,
 not strict mathematical unbiasedness. A strict rejection-sampling change requires
 coordinated/versioned retained inputs; it must not silently alter v1 behavior.
+
+SPEC-0015 R2b2 retains numeric catalog IDs, fixed coordinator role1, skill→role
+references and compact moderated request lifecycle markers. The adapter owns
+labels, categories, request narrative and normalized-name uniqueness. Current
+label and creation-selected origin are separate fixed references: rename preserves
+the origin, deletion removes it and actual recreation chooses a new one.
+`upsert_catalog_entry_core` and `create_skill_request_core` accept fixed commitments;
+existing numeric decisions and deletion retain permissions, role guards and actual
+max-ID+1 allocation. Name parsing and its Unicode compatibility tables are removed
+from the contract. Sealed import/export uses the new compact layout; no in-place
+upgrade or release is implied. Tasks and paging removal remain later slices.

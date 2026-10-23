@@ -63,4 +63,7 @@ milestone titles and change explanations. `create_proposal_core`,
 commitments; definition and change request are independent refs. Updates preserve
 the last change explanation and retain milestone/storage IDs by key. Migration
 refs enter through sealed import only. Root creation refs from R2a are unchanged.
-Catalog/reason content and tasks move in later slices before paging removal.
+R2b2 now replaces cancellation/planning reason text with fixed commitments while
+retaining target, actor, actual execution time, effect kind and order. The API owns
+reason content; `cancel_project_core` and `dispute_planning_core` keep existing
+permissions and lifecycle effects. Tasks and paging removal remain later slices.

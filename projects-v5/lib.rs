@@ -619,12 +619,11 @@ pub mod projects_v5 {
             storage.tasks.retain(|t| t.task_id != task_id);
             Ok(self.effect(34, storage_id))
         }
-        pub fn cancel_project(&mut self, reason: String) -> Result<Effect> {
-            nonempty(&reason)?;
+        pub fn cancel_project_core(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
             self.guard()?;
             self.party()?;
             require(!self.project.completed, "project_completed")?;
-            self.record_reason(reason, 17)?;
+            self.record_reason(content, 17)?;
             self.project.cancelled = true;
             self.project.planning.frozen = self.project.planning.escrow != 0;
             bump(&mut self.project.planning.revision)?;
@@ -637,8 +636,7 @@ pub mod projects_v5 {
             }
             Ok(self.effect(17, self.project.project_id))
         }
-        pub fn dispute_planning(&mut self, reason: String) -> Result<Effect> {
-            nonempty(&reason)?;
+        pub fn dispute_planning_core(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
             self.guard()?;
             self.party()?;
             require(
@@ -650,16 +648,16 @@ pub mod projects_v5 {
             )?;
             self.project.planning.status = PlanningStatus::Disputed;
             self.project.planning.frozen = true;
-            self.record_reason(reason, 18)?;
+            self.record_reason(content, 18)?;
             bump(&mut self.project.planning.revision)?;
             Ok(self.effect(18, self.project.project_id))
         }
-        fn record_reason(&mut self, reason: String, kind: u8) -> Result<()> {
+        fn record_reason(&mut self, content: MetadataCommitmentV1, kind: u8) -> Result<()> {
             let record = ReasonRecord {
                 project_id: self.project.project_id,
                 milestone_id: None,
                 origin: self.env().caller(),
-                reason,
+                content: ReasonReferenceV1::Write(content),
                 occurred_at: self.now(),
                 kind,
             };
@@ -1077,12 +1075,12 @@ pub mod projects_v5 {
             self.change(|data| data.delete_task(storage_id, task_id, expected_revision))
         }
         #[ink(message)]
-        pub fn cancel_project(&mut self, reason: String) -> Result<Effect> {
-            self.change(|data| data.cancel_project(reason))
+        pub fn cancel_project_core(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
+            self.change(|data| data.cancel_project_core(content))
         }
         #[ink(message)]
-        pub fn dispute_planning(&mut self, reason: String) -> Result<Effect> {
-            self.change(|data| data.dispute_planning(reason))
+        pub fn dispute_planning_core(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
+            self.change(|data| data.dispute_planning_core(content))
         }
         #[ink(message)]
         pub fn archive_len(&self) -> u32 {

@@ -181,7 +181,19 @@ dto!(AccountRating {
 });
 dto!(ProjectEvaluation {author:AccountId,submitted_at:u64,ratings:Vec<AccountRating>});
 dto!(ProjectCore {project_id:Id,created_at:Option<u64>,client:AccountId,coordinator:AccountId,content:MetadataReferenceV1,planning:PlanningView,proposals:Vec<ProposalCore>,execution_escrow:u64,cancelled:bool,completed:bool,evaluations:Vec<ProjectEvaluation>,active_dispute_id:Option<Id>});
-dto!(ReasonRecord {project_id:Id,milestone_id:Option<Id>,origin:AccountId,#[codec(encoded_as="storage_v5::Text")] reason:String,occurred_at:u64,kind:u8});
+#[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
+#[cfg_attr(
+    feature = "std",
+    derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+)]
+#[allow(clippy::cast_possible_truncation, reason = "Two fixed SCALE variants.")]
+pub enum ReasonReferenceV1 {
+    #[codec(index = 0)]
+    Write(MetadataCommitmentV1),
+    #[codec(index = 1)]
+    Migration([u8; 32]),
+}
+dto!(ReasonRecord {project_id:Id,milestone_id:Option<Id>,origin:AccountId,content:ReasonReferenceV1,occurred_at:u64,kind:u8});
 pub(crate) fn require(condition: bool, code: &str) -> Result<()> {
     if condition {
         Ok(())
