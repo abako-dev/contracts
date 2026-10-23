@@ -25,7 +25,7 @@ fn bump(revision: &mut u64) -> Result<()> {
         .ok_or_else(|| String::from("revision_exhausted"))?;
     Ok(())
 }
-pub(crate) fn milestone(project: &ProjectView, id: Id) -> Result<&MilestoneView> {
+pub(crate) fn milestone(project: &ProjectCore, id: Id) -> Result<&MilestoneView> {
     project
         .proposals
         .iter()
@@ -33,7 +33,7 @@ pub(crate) fn milestone(project: &ProjectView, id: Id) -> Result<&MilestoneView>
         .find(|m| m.milestone_id == id)
         .ok_or_else(|| String::from("milestone_not_found"))
 }
-pub(crate) fn milestone_mut(project: &mut ProjectView, id: Id) -> Result<&mut MilestoneView> {
+pub(crate) fn milestone_mut(project: &mut ProjectCore, id: Id) -> Result<&mut MilestoneView> {
     project
         .proposals
         .iter_mut()

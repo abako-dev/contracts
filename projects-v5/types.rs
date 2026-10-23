@@ -1,5 +1,6 @@
 //! Project-owned layouts match the backend v1 SCALE DTOs. No service rows are shared.
 use calendar_v5::calendar_v5::WeekWindow;
+use directory_v5::directory_v5::MetadataReferenceV1;
 use ink::{
     prelude::{collections::BTreeSet, string::String, vec::Vec},
     primitives::AccountId,
@@ -166,7 +167,7 @@ dto!(AccountRating {
     score: u8
 });
 dto!(ProjectEvaluation {author:AccountId,submitted_at:u64,ratings:Vec<AccountRating>});
-dto!(ProjectView {project_id:Id,created_at:Option<u64>,client:AccountId,coordinator:AccountId,#[codec(encoded_as="storage_v5::Text")] title:String,#[codec(encoded_as="storage_v5::Text")] description:String,planning:PlanningView,proposals:Vec<ProposalView>,execution_escrow:u64,cancelled:bool,completed:bool,evaluations:Vec<ProjectEvaluation>,active_dispute_id:Option<Id>});
+dto!(ProjectCore {project_id:Id,created_at:Option<u64>,client:AccountId,coordinator:AccountId,content:MetadataReferenceV1,planning:PlanningView,proposals:Vec<ProposalView>,execution_escrow:u64,cancelled:bool,completed:bool,evaluations:Vec<ProjectEvaluation>,active_dispute_id:Option<Id>});
 dto!(ReasonRecord {project_id:Id,milestone_id:Option<Id>,origin:AccountId,#[codec(encoded_as="storage_v5::Text")] reason:String,occurred_at:u64,kind:u8});
 pub(crate) fn require(condition: bool, code: &str) -> Result<()> {
     if condition {

@@ -8,7 +8,9 @@ pub mod projects_v5 {
     use crate::types::*;
     use calendar_v5::calendar_v5::Week;
     use chrono::{Datelike, Duration, NaiveDate, Weekday};
-    use directory_v5::directory_v5::{DirectoryV5Ref, Effect, Qualifications};
+    use directory_v5::directory_v5::{
+        DirectoryV5Ref, Effect, MetadataCommitmentV1, MetadataReferenceV1, Qualifications,
+    };
     use ink::codegen::Env as _;
     use ink::{
         env::call::FromAccountId,
@@ -29,7 +31,7 @@ pub mod projects_v5 {
     #[derive(scale::Encode, scale::Decode)]
     pub(crate) struct ProjectData {
         pub(crate) directory: AccountId,
-        pub(crate) project: ProjectView,
+        pub(crate) project: ProjectCore,
         pub(crate) reasons: Vec<ReasonRecord>,
         pub(crate) disputes: Vec<DisputeRecord>,
         pub(crate) live: bool,
@@ -52,8 +54,7 @@ pub mod projects_v5 {
             project_id: Id,
             client: AccountId,
             coordinator: AccountId,
-            title: String,
-            description: String,
+            content: MetadataCommitmentV1,
             now: u64,
         ) -> Result<Self> {
             require(
@@ -61,17 +62,15 @@ pub mod projects_v5 {
                     && <Self as ink::codegen::StaticEnv>::env().is_contract(&directory),
                 "directory_required",
             )?;
-            nonempty(&title)?;
             Ok(Self {
                 live: true,
                 directory,
-                project: ProjectView {
+                project: ProjectCore {
                     project_id,
                     created_at: Some(now),
                     client,
                     coordinator,
-                    title,
-                    description,
+                    content: MetadataReferenceV1::Creation(content),
                     planning: PlanningView {
                         revision: 0,
                         status: PlanningStatus::Accepted,
@@ -90,7 +89,7 @@ pub mod projects_v5 {
                 disputes: Vec::new(),
             })
         }
-        pub fn view(&self) -> ProjectView {
+        pub fn view(&self) -> ProjectCore {
             self.project.clone()
         }
         pub fn reasons(&self) -> Vec<ReasonRecord> {
@@ -841,33 +840,24 @@ pub mod projects_v5 {
         #[ink(constructor)]
         #[allow(
             clippy::too_many_arguments,
-            reason = "Retain the existing constructor ABI."
+            reason = "Explicit compact constructor ABI shared with the Directory factory."
         )]
         pub fn new(
             directory: AccountId,
             project_id: Id,
             client: AccountId,
             coordinator: AccountId,
-            title: String,
-            description: String,
+            content: MetadataCommitmentV1,
             now: u64,
         ) -> Result<Self> {
-            let data = ProjectData::new(
-                directory,
-                project_id,
-                client,
-                coordinator,
-                title,
-                description,
-                now,
-            )?;
+            let data = ProjectData::new(directory, project_id, client, coordinator, content, now)?;
             Ok(Self {
                 bytes: storage_v5::save(0, &data),
                 import: None,
             })
         }
         #[ink(message)]
-        pub fn view(&self) -> ProjectView {
+        pub fn view(&self) -> ProjectCore {
             self.read_state(|data| data.view())
         }
         #[ink(message)]
