@@ -6,8 +6,9 @@ verified users call their Project directly. Only the creating Directory may run
 the constructor. Ordered global ID validation and the task counter share the
 outer runtime transaction, so failed commands cannot consume IDs or task keys.
 
-Contract DTOs retain backend SCALE layouts except for hash-only evidence fields;
-the private SDK codec restores the unchanged public/native representations.
+Contract DTOs match the backend private core SCALE layouts, with hash-only
+evidence fields. The SDK restores evidence representations; the adapter composes
+unchanged public views from verified API documents and current core facts.
 Money remains integer u64 and entropy uses the captured version-1 rand 0.10.2
 stream. Proposal edits retain milestones and task storage by
 declared key. Largest-remainder allocation preserves each captured budget exactly.
@@ -53,3 +54,13 @@ Evidence is stored as fixed-size hashes, with a record ID for new commitments.
 The adapter validates URLs and retains complete evidence. Contracts enforce
 permissions and business state without parsing or fetching references. The SDK
 preserves old URL preimages offchain for old signatures, export and rollback.
+
+
+SPEC-0015 R2b1 keeps proposal numeric terms, actual revision, captured compensation
+policy and lifecycle in Project. The API owns proposal titles/descriptions,
+milestone titles and change explanations. `create_proposal_core`,
+`update_proposal_core` and `request_proposal_changes_core` accept fixed signed
+commitments; definition and change request are independent refs. Updates preserve
+the last change explanation and retain milestone/storage IDs by key. Migration
+refs enter through sealed import only. Root creation refs from R2a are unchanged.
+Catalog/reason content and tasks move in later slices before paging removal.
