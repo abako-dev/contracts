@@ -195,7 +195,7 @@ pub mod projects_v5 {
             }
             Err("task_storage_not_found".into())
         }
-        fn qualifications(&self, definition: &ProposalDefinition) -> Result<Qualifications> {
+        fn qualifications(&self, definition: &ProposalTerms) -> Result<Qualifications> {
             let mut roles = BTreeSet::new();
             let mut skills = BTreeSet::new();
             for requirement in definition.milestones.iter().flat_map(|m| &m.requirements) {
@@ -250,7 +250,7 @@ pub mod projects_v5 {
         pub fn respond_dispute(&mut self, id: Id, evidence: EvidenceReference) -> Result<Effect> {
             crate::disputes::respond(self, id, evidence)
         }
-        pub fn dispute(&self, id: Id) -> Result<(DisputeRecord, MilestoneView)> {
+        pub fn dispute(&self, id: Id) -> Result<(DisputeRecord, MilestoneCore)> {
             crate::disputes::view(self, id)
         }
         pub fn approve_execution(
@@ -314,9 +314,10 @@ pub mod projects_v5 {
         pub fn evaluate_project(&mut self, ratings: Vec<AccountRating>) -> Result<Effect> {
             crate::execution::evaluate(self, ratings)
         }
-        pub fn create_proposal(
+        pub fn create_proposal_core(
             &mut self,
-            mut definition: ProposalDefinition,
+            mut definition: ProposalTerms,
+            content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
             definition.validate()?;
@@ -331,11 +332,10 @@ pub mod projects_v5 {
             let mut rng = StdRng::from_seed(seed);
             let proposal_id = random_id(&mut rng);
             let milestones = make_milestones(&definition, &[], &mut rng);
-            self.project.proposals.push(ProposalView {
+            self.project.proposals.push(ProposalCore {
                 proposal_id,
                 revision: 0,
-                title: definition.title,
-                description: definition.description,
+                content: ProposalContentReferenceV1::Signed(content),
                 status: ProposalStatus::Draft,
                 milestones,
                 change_request: None,
@@ -349,10 +349,11 @@ pub mod projects_v5 {
                 .set_proposal_references(proposal_id, Some(qualifications))?;
             Ok(self.effect(10, proposal_id))
         }
-        pub fn update_proposal(
+        pub fn update_proposal_core(
             &mut self,
             proposal_id: Id,
-            mut definition: ProposalDefinition,
+            mut definition: ProposalTerms,
+            content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
             definition.validate()?;
@@ -377,8 +378,7 @@ pub mod projects_v5 {
             current.compensation_policy = Some(CompensationPolicy {
                 coordinator_percent: percent,
             });
-            current.title = definition.title;
-            current.description = definition.description;
+            current.content = ProposalContentReferenceV1::Signed(content);
             bump(&mut current.revision)?;
             self.sync_identities()?;
             self.registry()
@@ -439,12 +439,11 @@ pub mod projects_v5 {
             bump(&mut self.project.planning.revision)?;
             Ok(self.effect(13, proposal_id))
         }
-        pub fn request_proposal_changes(
+        pub fn request_proposal_changes_core(
             &mut self,
             proposal_id: Id,
-            reference: String,
+            content: MetadataCommitmentV1,
         ) -> Result<Effect> {
-            nonempty(&reference)?;
             self.guard()?;
             self.client()?;
             let index = self.proposal_index(proposal_id)?;
@@ -454,7 +453,7 @@ pub mod projects_v5 {
                 "proposal_not_pending",
             )?;
             proposal.status = ProposalStatus::Draft;
-            proposal.change_request = Some(reference);
+            proposal.change_request = Some(ProposalContentReferenceV1::Signed(content));
             bump(&mut proposal.revision)?;
             if self.project.planning.status == PlanningStatus::Delivered {
                 self.project.planning.status = PlanningStatus::Accepted;
@@ -685,10 +684,10 @@ pub mod projects_v5 {
         id
     }
     fn make_milestones(
-        definition: &ProposalDefinition,
-        previous: &[MilestoneView],
+        definition: &ProposalTerms,
+        previous: &[MilestoneCore],
         rng: &mut StdRng,
-    ) -> Vec<MilestoneView> {
+    ) -> Vec<MilestoneCore> {
         let mut milestones = Vec::new();
         for definition in &definition.milestones {
             if let Some(existing) = previous.iter().find(|m| m.definition.key == definition.key) {
@@ -698,7 +697,7 @@ pub mod projects_v5 {
             } else {
                 let milestone_id = random_id(rng);
                 let storage_id = random_id(rng);
-                milestones.push(MilestoneView {
+                milestones.push(MilestoneCore {
                     milestone_id,
                     definition: definition.clone(),
                     status: None,
@@ -733,7 +732,7 @@ pub mod projects_v5 {
         NaiveDate::from_isoywd_opt(week.iso_year(), u32::from(week.week()), Weekday::Mon)
             .ok_or_else(|| String::from("invalid_delivery_schedule"))
     }
-    fn validate_estimate(proposal: &ProposalView) -> Result<()> {
+    fn validate_estimate(proposal: &ProposalCore) -> Result<()> {
         let Some(DeliveryPreference::SpecificDate { date }) = &proposal.delivery else {
             return Ok(());
         };
@@ -905,7 +904,7 @@ pub mod projects_v5 {
             self.change(|data| data.respond_dispute(id, evidence))
         }
         #[ink(message)]
-        pub fn dispute(&self, id: Id) -> Result<(DisputeRecord, MilestoneView)> {
+        pub fn dispute(&self, id: Id) -> Result<(DisputeRecord, MilestoneCore)> {
             self.read_state(|data| data.dispute(id))
         }
         #[ink(message)]
@@ -984,21 +983,23 @@ pub mod projects_v5 {
             self.change(|data| data.evaluate_project(ratings))
         }
         #[ink(message)]
-        pub fn create_proposal(
+        pub fn create_proposal_core(
             &mut self,
-            definition: ProposalDefinition,
+            definition: ProposalTerms,
+            content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
-            self.change(|data| data.create_proposal(definition, seed))
+            self.change(|data| data.create_proposal_core(definition, content, seed))
         }
         #[ink(message)]
-        pub fn update_proposal(
+        pub fn update_proposal_core(
             &mut self,
             proposal_id: Id,
-            definition: ProposalDefinition,
+            definition: ProposalTerms,
+            content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
-            self.change(|data| data.update_proposal(proposal_id, definition, seed))
+            self.change(|data| data.update_proposal_core(proposal_id, definition, content, seed))
         }
         #[ink(message)]
         pub fn delete_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
@@ -1018,12 +1019,12 @@ pub mod projects_v5 {
             self.change(|data| data.submit_proposal(proposal_id))
         }
         #[ink(message)]
-        pub fn request_proposal_changes(
+        pub fn request_proposal_changes_core(
             &mut self,
             proposal_id: Id,
-            reference: String,
+            content: MetadataCommitmentV1,
         ) -> Result<Effect> {
-            self.change(|data| data.request_proposal_changes(proposal_id, reference))
+            self.change(|data| data.request_proposal_changes_core(proposal_id, content))
         }
         #[ink(message)]
         pub fn withdraw_proposal(

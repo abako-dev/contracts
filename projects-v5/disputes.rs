@@ -106,7 +106,7 @@ pub fn respond(state: &mut ProjectsV5, id: Id, evidence: EvidenceReference) -> R
     require(now >= case.opened_at, "invalid_dispute_response")?;
     Ok(state.effect(26, id))
 }
-pub fn view(state: &ProjectsV5, id: Id) -> Result<(DisputeRecord, MilestoneView)> {
+pub fn view(state: &ProjectsV5, id: Id) -> Result<(DisputeRecord, MilestoneCore)> {
     let case = state
         .disputes
         .iter()

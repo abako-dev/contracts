@@ -1,6 +1,6 @@
 //! Project-owned layouts match the backend v1 SCALE DTOs. No service rows are shared.
 use calendar_v5::calendar_v5::WeekWindow;
-use directory_v5::directory_v5::MetadataReferenceV1;
+use directory_v5::directory_v5::{MetadataCommitmentV1, MetadataReferenceV1};
 use ink::{
     prelude::{collections::BTreeSet, string::String, vec::Vec},
     primitives::AccountId,
@@ -66,9 +66,22 @@ enumeration!(TaskStatus {
     Done,
     Closed
 });
+/// Fixed proposal-specific references; descriptive preimages stay in the API.
+#[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
+#[cfg_attr(
+    feature = "std",
+    derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+)]
+#[allow(clippy::cast_possible_truncation, reason = "Two fixed SCALE variants.")]
+pub enum ProposalContentReferenceV1 {
+    #[codec(index = 0)]
+    Signed(MetadataCommitmentV1),
+    #[codec(index = 1)]
+    Migration([u8; 32]),
+}
 dto!(RequirementDefinition {key:u32,role_id:u32,skill_ids:Vec<u32>,minutes:u32,budget:u64});
-dto!(MilestoneDefinition {key:u32,#[codec(encoded_as="storage_v5::Text")] title:String,window:WeekWindow,coordinator_fee:u64,coordinator_minutes:u32,requirements:Vec<RequirementDefinition>});
-dto!(ProposalDefinition {#[codec(encoded_as="storage_v5::Text")] title:String,#[codec(encoded_as="storage_v5::Text")] description:String,milestones:Vec<MilestoneDefinition>});
+dto!(MilestoneTerms {key:u32,window:WeekWindow,coordinator_fee:u64,coordinator_minutes:u32,requirements:Vec<RequirementDefinition>});
+dto!(ProposalTerms {milestones:Vec<MilestoneTerms>});
 dto!(CompensationPolicy {
     coordinator_percent: u8
 });
@@ -154,8 +167,8 @@ pub enum SubmissionReview {
     },
 }
 dto!(CompletionSubmission {submission_id:Id,version:u64,deliverable:Option<EvidenceReference>,submitted_by:AccountId,submitted_at:u64,worker_ratings:Vec<WorkerRating>,review:SubmissionReview});
-dto!(MilestoneView {milestone_id:Id,definition:MilestoneDefinition,status:Option<MilestoneStatus>,assignments:Vec<AssignmentView>,worker_ratings:Vec<WorkerRating>,task_storage:TaskStorageView,frozen:bool,submissions:Vec<CompletionSubmission>});
-dto!(ProposalView {proposal_id:Id,revision:u64,#[codec(encoded_as="storage_v5::Text")] title:String,#[codec(encoded_as="storage_v5::Text")] description:String,status:ProposalStatus,milestones:Vec<MilestoneView>,#[codec(encoded_as="storage_v5::OptionalText")] change_request:Option<String>,delivery:Option<DeliveryPreference>,compensation_policy:Option<CompensationPolicy>});
+dto!(MilestoneCore {milestone_id:Id,definition:MilestoneTerms,status:Option<MilestoneStatus>,assignments:Vec<AssignmentView>,worker_ratings:Vec<WorkerRating>,task_storage:TaskStorageView,frozen:bool,submissions:Vec<CompletionSubmission>});
+dto!(ProposalCore {proposal_id:Id,revision:u64,content:ProposalContentReferenceV1,status:ProposalStatus,milestones:Vec<MilestoneCore>,change_request:Option<ProposalContentReferenceV1>,delivery:Option<DeliveryPreference>,compensation_policy:Option<CompensationPolicy>});
 dto!(PlanningQuote {
     fee: u64,
     minutes: u32,
@@ -167,7 +180,7 @@ dto!(AccountRating {
     score: u8
 });
 dto!(ProjectEvaluation {author:AccountId,submitted_at:u64,ratings:Vec<AccountRating>});
-dto!(ProjectCore {project_id:Id,created_at:Option<u64>,client:AccountId,coordinator:AccountId,content:MetadataReferenceV1,planning:PlanningView,proposals:Vec<ProposalView>,execution_escrow:u64,cancelled:bool,completed:bool,evaluations:Vec<ProjectEvaluation>,active_dispute_id:Option<Id>});
+dto!(ProjectCore {project_id:Id,created_at:Option<u64>,client:AccountId,coordinator:AccountId,content:MetadataReferenceV1,planning:PlanningView,proposals:Vec<ProposalCore>,execution_escrow:u64,cancelled:bool,completed:bool,evaluations:Vec<ProjectEvaluation>,active_dispute_id:Option<Id>});
 dto!(ReasonRecord {project_id:Id,milestone_id:Option<Id>,origin:AccountId,#[codec(encoded_as="storage_v5::Text")] reason:String,occurred_at:u64,kind:u8});
 pub(crate) fn require(condition: bool, code: &str) -> Result<()> {
     if condition {
@@ -188,9 +201,8 @@ impl TaskDefinition {
         require(unique(&self.assignees), "invalid_contract")
     }
 }
-impl ProposalDefinition {
+impl ProposalTerms {
     pub fn validate(&self) -> Result<()> {
-        nonempty(&self.title)?;
         require(!self.milestones.is_empty(), "invalid_contract")?;
         require(
             unique(&self.milestones.iter().map(|m| m.key).collect::<Vec<_>>()),
@@ -198,7 +210,6 @@ impl ProposalDefinition {
         )?;
         let mut total = 0u64;
         for milestone in &self.milestones {
-            nonempty(&milestone.title)?;
             require(
                 unique(
                     &milestone
@@ -225,7 +236,7 @@ impl ProposalDefinition {
         Ok(())
     }
 }
-impl MilestoneDefinition {
+impl MilestoneTerms {
     pub fn total(&self) -> Result<u64> {
         self.requirements
             .iter()
@@ -313,12 +324,11 @@ impl MilestoneDefinition {
 mod tests {
     use super::*;
     use scale::{Decode, Encode};
-    fn milestone(total: u64, effort: &[u32]) -> MilestoneDefinition {
+    fn milestone(total: u64, effort: &[u32]) -> MilestoneTerms {
         let week = calendar_v5::calendar_v5::Week::new(2026, 1).unwrap();
         let window = WeekWindow::decode(&mut &(week, week).encode()[..]).unwrap();
-        MilestoneDefinition {
+        MilestoneTerms {
             key: 0,
-            title: String::from("Work"),
             window,
             coordinator_fee: total,
             coordinator_minutes: 0,

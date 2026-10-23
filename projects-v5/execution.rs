@@ -25,7 +25,7 @@ fn bump(revision: &mut u64) -> Result<()> {
         .ok_or_else(|| String::from("revision_exhausted"))?;
     Ok(())
 }
-pub(crate) fn milestone(project: &ProjectCore, id: Id) -> Result<&MilestoneView> {
+pub(crate) fn milestone(project: &ProjectCore, id: Id) -> Result<&MilestoneCore> {
     project
         .proposals
         .iter()
@@ -33,7 +33,7 @@ pub(crate) fn milestone(project: &ProjectCore, id: Id) -> Result<&MilestoneView>
         .find(|m| m.milestone_id == id)
         .ok_or_else(|| String::from("milestone_not_found"))
 }
-pub(crate) fn milestone_mut(project: &mut ProjectCore, id: Id) -> Result<&mut MilestoneView> {
+pub(crate) fn milestone_mut(project: &mut ProjectCore, id: Id) -> Result<&mut MilestoneCore> {
     project
         .proposals
         .iter_mut()
@@ -41,7 +41,7 @@ pub(crate) fn milestone_mut(project: &mut ProjectCore, id: Id) -> Result<&mut Mi
         .find(|m| m.milestone_id == id)
         .ok_or_else(|| String::from("milestone_not_found"))
 }
-fn pending(milestone: &MilestoneView, id: Id) -> Result<()> {
+fn pending(milestone: &MilestoneCore, id: Id) -> Result<()> {
     let current = milestone
         .submissions
         .last()
@@ -52,7 +52,7 @@ fn pending(milestone: &MilestoneView, id: Id) -> Result<()> {
         "submission_not_pending",
     )
 }
-fn current_mut(milestone: &mut MilestoneView) -> Result<&mut CompletionSubmission> {
+fn current_mut(milestone: &mut MilestoneCore) -> Result<&mut CompletionSubmission> {
     milestone
         .submissions
         .last_mut()
