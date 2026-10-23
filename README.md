@@ -20,13 +20,18 @@ bash build-v5.sh directory-v5 --offline
 bash build-v5.sh projects-v5 --offline
 ```
 
-The SPEC-0015 R2a source checkpoint replaces worker directory names and Project root
+SPEC-0015 R2a replaces worker directory names and Project root
 title/description with fixed-size creation or migration references. Ordinary
 creation accepts only a creation commitment; migration references enter through
-fresh sealed imports. The backend still runs the reviewed predecessor artifacts.
-The matching core archive, API composition and current-state rollback are required
-before a paired runtime cutover. Proposal/catalog/task ownership and removal of
-the paging helper remain later SPEC-0015 stages.
+fresh sealed imports. The paired backend implementation now uses these exact
+source-built artifacts, compact native/WASM core state and API-owned creation
+content. Its owner tools migrate from the supported predecessor and rehydrate
+current state for rollback, preserving signed calls and receipts. See the
+[backend R2a procedure](https://github.com/abako-project/backend-v2/blob/review/ink-v5-runtime/specs/0015-adapter-core-boundary/r2a-creation.md)
+and [verification record](https://github.com/abako-project/backend-v2/blob/review/ink-v5-runtime/progress/handoffs/SPEC-0015.md).
+Proposal/catalog/task ownership and removal of the paging helper remain later
+SPEC-0015 stages. Existing installations require that explicit paired migration;
+startup does not silently convert their storage.
 
 Backend tests pin immutable WASM, ABI and build-lock hashes and compare complete state against the existing
 native engine. Imports restore current state into fresh, permanently sealed
