@@ -21,7 +21,8 @@ owns keys and signing. All monetary calculations use checked integer units.
 
 Use Rust **1.88.0**, its `wasm32-unknown-unknown` target and
 **cargo-contract 5.0.3**. Each contract has a committed lockfile. Shared contract
-interfaces use local paths, so one checkout contains the complete implementation.
+interfaces use immutable commits from this repository to preserve reproducible
+WASM builds. Directory pins Calendar; Project pins that same Calendar and Directory.
 
 ```sh
 bash build.sh calendar --offline
