@@ -400,13 +400,13 @@ impl DirectoryData {
                 .ok_or_else(|| String::from("project_not_found")),
         }
     }
-    pub(crate) fn import_child_page(
-        &mut self,
-        target: ImportTarget,
-        index: u32,
-        bytes: Vec<u8>,
-    ) -> Result<()> {
-        factory::import_page(self.import_child(target)?, index, bytes)
+    pub(crate) fn import_project_records(&self, id: Id, bytes: Vec<u8>) -> Result<()> {
+        self.root()?;
+        require(self.migration_phase == 1 && !bytes.is_empty() && bytes.len() <= 8192)?;
+        let address = self
+            .project_address(id)
+            .ok_or_else(|| String::from("project_not_found"))?;
+        factory::import_records(address, bytes)
     }
     pub(crate) fn finish_child_import(&mut self, target: ImportTarget) -> Result<()> {
         factory::finish_import(self.import_child(target)?)

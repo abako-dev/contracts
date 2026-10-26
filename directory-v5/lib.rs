@@ -1355,13 +1355,8 @@ pub mod directory_v5 {
             })
         }
         #[ink(message)]
-        pub fn import_child_page(
-            &mut self,
-            target: crate::migration::ImportTarget,
-            index: u32,
-            bytes: Vec<u8>,
-        ) -> Result<()> {
-            self.transact(|data| data.import_child_page(target, index, bytes))
+        pub fn import_project_records(&mut self, id: Id, bytes: Vec<u8>) -> Result<()> {
+            self.transact(|data| data.import_project_records(id, bytes))
         }
         #[ink(message)]
         pub fn finish_child_import(

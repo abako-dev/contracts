@@ -83,16 +83,16 @@ pub(crate) fn seal_import(address: AccountId) -> Result<(), String> {
         .map_err(|_| String::from("archive_call_failed"))?
 }
 
-pub(crate) fn import_page(
+/// The child owns the concrete record enum. Forward one bounded encoded batch
+/// immediately; no byte staging or shared storage protocol is introduced.
+pub(crate) fn import_records(
     address: AccountId,
-    index: u32,
     bytes: ink::prelude::vec::Vec<u8>,
 ) -> Result<(), String> {
     ink::env::call::build_call::<DefaultEnvironment>()
         .call(address)
         .exec_input(
-            ExecutionInput::new(Selector::new(ink::selector_bytes!("import_page")))
-                .push_arg(index)
+            ExecutionInput::new(Selector::new(ink::selector_bytes!("import_records")))
                 .push_arg(bytes),
         )
         .returns::<Result<(), String>>()
@@ -100,6 +100,7 @@ pub(crate) fn import_page(
         .map_err(|_| String::from("archive_call_failed"))?
         .map_err(|_| String::from("archive_call_failed"))?
 }
+
 pub(crate) fn finish_import(address: AccountId) -> Result<(), String> {
     ink::env::call::build_call::<DefaultEnvironment>()
         .call(address)
