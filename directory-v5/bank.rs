@@ -1,11 +1,12 @@
 //! Visible local KVN accounting, independent from prefunded inventory/minima.
 //! Directory authorizes callers; Project capabilities record real asset movement.
 use crate::assets;
+use crate::indices;
+use ink::storage::{traits::ManualKey, Mapping, StorageVec};
 use ink::{
     prelude::{collections::BTreeSet, string::String, vec::Vec},
     primitives::AccountId,
 };
-use storage_v5::PagedMapping as Mapping;
 type Id = [u8; 16];
 pub type FinancialProjection = (Vec<(AccountId, u64)>, u64, Vec<Deposit>, Vec<Withdrawal>);
 type Result<T> = core::result::Result<T, String>;
@@ -65,18 +66,19 @@ pub struct Withdrawal {
     pub created_at: u64,
     pub cancelled_at: Option<u64>,
 }
-#[derive(Default, Debug, scale::Encode, scale::Decode)]
+#[ink::storage_item]
+#[derive(Default, Debug)]
 pub struct Bank {
     enabled: bool,
     mock_funding: bool,
-    balances: Mapping<AccountId, u64, 100>,
-    accounts: Vec<AccountId>,
+    balances: Mapping<AccountId, u64, ManualKey<100>>,
+    accounts: StorageVec<AccountId, ManualKey<150>>,
     minted: u64,
-    technical: Mapping<AccountId, bool, 101>,
-    deposits: Mapping<Id, Deposit, 102>,
-    deposit_ids: Vec<Id>,
-    withdrawals: Mapping<Id, Withdrawal, 103>,
-    withdrawal_ids: Vec<Id>,
+    technical: Mapping<AccountId, bool, ManualKey<101>>,
+    deposits: Mapping<Id, Deposit, ManualKey<102>>,
+    deposit_ids: StorageVec<Id, ManualKey<151>>,
+    withdrawals: Mapping<Id, Withdrawal, ManualKey<103>>,
+    withdrawal_ids: StorageVec<Id, ManualKey<152>>,
 }
 impl Bank {
     pub(crate) fn fresh(&self) -> bool {
@@ -96,16 +98,14 @@ impl Bank {
     pub(crate) fn import_deposit(&mut self, record: Deposit) -> Result<()> {
         self.covered()?;
         self.new_id(record.deposit_id)?;
-        self.deposit_ids.push(record.deposit_id);
-        self.deposit_ids.sort_unstable();
+        indices::insert(&mut self.deposit_ids, record.deposit_id);
         self.deposits.insert(record.deposit_id, &record);
         Ok(())
     }
     pub(crate) fn import_withdrawal(&mut self, record: Withdrawal) -> Result<()> {
         self.covered()?;
         self.new_id(record.withdrawal_id)?;
-        self.withdrawal_ids.push(record.withdrawal_id);
-        self.withdrawal_ids.sort_unstable();
+        indices::insert(&mut self.withdrawal_ids, record.withdrawal_id);
         self.withdrawals.insert(record.withdrawal_id, &record);
         Ok(())
     }
@@ -142,7 +142,7 @@ impl Bank {
         self.balances.get(account).unwrap_or_default()
     }
     pub fn balances(&self) -> Vec<(AccountId, u64)> {
-        self.accounts
+        indices::values(&self.accounts)
             .iter()
             .map(|a| (*a, self.balance(*a)))
             .collect()
@@ -151,9 +151,7 @@ impl Bank {
         self.minted
     }
     fn write_balance(&mut self, account: AccountId, amount: u64) {
-        if let Err(position) = self.accounts.binary_search(&account) {
-            self.accounts.insert(position, account);
-        }
+        indices::insert(&mut self.accounts, account);
         self.balances.insert(account, &amount);
     }
     pub fn credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
@@ -213,11 +211,7 @@ impl Bank {
                 confirmed_at: None,
             },
         );
-        let position = self
-            .deposit_ids
-            .binary_search(&id)
-            .unwrap_or_else(|index| index);
-        self.deposit_ids.insert(position, id);
+        indices::insert(&mut self.deposit_ids, id);
         Ok(())
     }
     pub fn deposit(&self, id: Id) -> Result<Deposit> {
@@ -262,11 +256,7 @@ impl Bank {
                 cancelled_at: None,
             },
         );
-        let position = self
-            .withdrawal_ids
-            .binary_search(&id)
-            .unwrap_or_else(|index| index);
-        self.withdrawal_ids.insert(position, id);
+        indices::insert(&mut self.withdrawal_ids, id);
         Ok(())
     }
     pub fn withdrawal(&self, id: Id) -> Result<Withdrawal> {
@@ -300,22 +290,22 @@ impl Bank {
         Ok(record.owner)
     }
     pub fn deposits(&self) -> Vec<Deposit> {
-        self.deposit_ids
+        indices::values(&self.deposit_ids)
             .iter()
             .filter_map(|id| self.deposits.get(id))
             .collect()
     }
     pub fn withdrawals(&self) -> Vec<Withdrawal> {
-        self.withdrawal_ids
+        indices::values(&self.withdrawal_ids)
             .iter()
             .filter_map(|id| self.withdrawals.get(id))
             .collect()
     }
     pub fn validate_ids(&self, identities: &mut BTreeSet<Id>) -> Result<()> {
-        for id in &self.deposit_ids {
+        for id in &indices::values(&self.deposit_ids) {
             require(identities.insert(*id), "invalid_deposit_state")?;
         }
-        for id in &self.withdrawal_ids {
+        for id in &indices::values(&self.withdrawal_ids) {
             require(identities.insert(*id), "invalid_withdrawal_state")?;
         }
         Ok(())

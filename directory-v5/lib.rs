@@ -3,13 +3,22 @@
 pub mod assets;
 pub mod bank;
 mod factory;
+mod indices;
 pub mod matching;
 pub mod migration;
+pub mod records;
 pub mod reputation;
 
 #[ink::contract]
 pub mod directory_v5 {
     use crate::bank::{Bank, Deposit, FinancialProjection, Withdrawal};
+    pub(crate) use crate::indices::insert as insert_sorted;
+    use crate::{
+        indices,
+        records::{
+            ProjectProposalRecord, QualificationCounts, ReasonRecord, RequestRecord, WorkerRecord,
+        },
+    };
     use crate::{
         matching::{Milestone, Requirement},
         reputation::{self, Contribution, ScorePolicy, VoteKind},
@@ -22,6 +31,7 @@ pub mod directory_v5 {
     use ink::codegen::Env as _;
     #[cfg(feature = "std")]
     use ink::storage::traits::StorageLayout;
+    use ink::storage::{traits::ManualKey, Mapping, StorageVec};
     use ink::{
         env::call::FromAccountId,
         prelude::{collections::BTreeSet, string::String, vec::Vec},
@@ -29,11 +39,12 @@ pub mod directory_v5 {
     };
     use rand::{rngs::StdRng, Rng, RngExt, SeedableRng};
     use scale::Encode;
-    use storage_v5::{FixedMapping, PagedMapping as Mapping};
 
     pub type Result<T> = core::result::Result<T, String>;
     pub type Id = [u8; 16];
-    pub type ProjectIdentities = Vec<(Id, Vec<(Id, Id)>)>;
+    pub type MilestoneIdentity = (Id, Id);
+    type MilestonePosition = (Id, u32, u32);
+    pub type ProjectIdentities = Vec<(Id, Vec<MilestoneIdentity>)>;
 
     /// Fixed-size reference to one immutable adapter-owned creation record.
     #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
@@ -214,62 +225,68 @@ pub mod directory_v5 {
             Err(code.into())
         }
     }
-    fn valid_ids(ids: &[u32]) -> Result<()> {
+    pub(crate) fn valid_ids(ids: &[u32]) -> Result<()> {
         let unique: BTreeSet<_> = ids.iter().collect();
         require(
             !ids.contains(&0) && unique.len() == ids.len(),
             "invalid_contract",
         )
     }
-    pub(crate) fn insert_sorted<T: Ord>(items: &mut Vec<T>, item: T) {
-        if let Err(index) = items.binary_search(&item) {
-            items.insert(index, item);
-        }
-    }
-
     #[ink(storage)]
     pub struct DirectoryV5 {
-        bytes: u32,
-        record: storage_v5::Import,
+        data: DirectoryData,
     }
 
-    #[derive(scale::Encode, scale::Decode)]
+    #[ink::storage_item]
+    #[derive(Debug)]
     pub(crate) struct DirectoryData {
         pub(crate) root: AccountId,
         pub(crate) calendar_code: Hash,
         pub(crate) reservation_controller: AccountId,
         pub(crate) reference_controller: AccountId,
-        pub(crate) roles: Mapping<u32, CatalogEntry, 1>,
-        pub(crate) role_ids: Vec<u32>,
-        pub(crate) skills: Mapping<u32, CatalogEntry, 2>,
-        pub(crate) skill_ids: Vec<u32>,
-        pub(crate) skill_roles: Mapping<u32, Vec<u32>, 3>,
-        pub(crate) workers: Mapping<AccountId, Worker, 4>,
-        pub(crate) calendar_ids: Mapping<Id, bool, 5>,
-        pub(crate) accounts: Vec<AccountId>,
-        pub(crate) requests: Mapping<Id, SkillRequestView, 6>,
-        pub(crate) request_ids: Vec<Id>,
-        pub(crate) proposal_references: Mapping<Id, Qualifications, 7>,
-        pub(crate) proposal_ids: Vec<Id>,
+        pub(crate) roles: Mapping<u32, CatalogEntry, ManualKey<1>>,
+        pub(crate) role_ids: StorageVec<u32, ManualKey<50>>,
+        pub(crate) skills: Mapping<u32, CatalogEntry, ManualKey<2>>,
+        pub(crate) skill_ids: StorageVec<u32, ManualKey<51>>,
+        pub(crate) skill_roles: Mapping<u32, u32, ManualKey<3>>,
+        pub(crate) workers: Mapping<AccountId, WorkerRecord, ManualKey<4>>,
+        pub(crate) calendar_ids: Mapping<Id, bool, ManualKey<5>>,
+        pub(crate) accounts: StorageVec<AccountId, ManualKey<52>>,
+        pub(crate) requests: Mapping<Id, RequestRecord, ManualKey<6>>,
+        pub(crate) request_ids: StorageVec<Id, ManualKey<53>>,
+        pub(crate) proposal_references: Mapping<Id, QualificationCounts, ManualKey<7>>,
+        pub(crate) proposal_ids: StorageVec<Id, ManualKey<54>>,
         pub(crate) score_policy: ScorePolicy,
         pub(crate) compensation_percent: u8,
         pub(crate) project_code: Option<Hash>,
-        pub(crate) project_addresses: Mapping<Id, AccountId, 8>,
-        pub(crate) project_ids: Vec<Id>,
-        pub(crate) registered_projects: Mapping<AccountId, Id, 9>,
+        pub(crate) project_addresses: Mapping<Id, AccountId, ManualKey<8>>,
+        pub(crate) project_ids: StorageVec<Id, ManualKey<55>>,
+        pub(crate) registered_projects: Mapping<AccountId, Id, ManualKey<9>>,
         pub(crate) next_task_id: u32,
         pub(crate) bank: Bank,
-        pub(crate) project_layouts: Mapping<Id, ProjectIdentities, 10>,
-        pub(crate) project_submissions: Mapping<Id, Vec<Id>, 11>,
-        pub(crate) dispute_ids: Vec<Id>,
-        pub(crate) dispute_owners: Mapping<Id, Id, 12>,
-        pub(crate) evaluations: Mapping<(Id, AccountId), crate::migration::RecordedEvaluation, 13>,
-        pub(crate) skill_counts: FixedMapping<u32, u32, 14>,
-        pub(crate) skill_members: FixedMapping<(u32, u32), AccountId, 15>,
-        pub(crate) skill_positions: FixedMapping<(u32, AccountId), u32, 16>,
+        pub(crate) project_layouts: Mapping<Id, u32, ManualKey<10>>,
+        pub(crate) project_submissions: Mapping<Id, u32, ManualKey<11>>,
+        pub(crate) dispute_ids: StorageVec<Id, ManualKey<56>>,
+        pub(crate) dispute_owners: Mapping<Id, Id, ManualKey<12>>,
+        pub(crate) evaluations:
+            Mapping<(Id, AccountId), crate::migration::RecordedEvaluation, ManualKey<13>>,
+        pub(crate) skill_counts: Mapping<u32, u32, ManualKey<14>>,
+        pub(crate) skill_members: Mapping<(u32, u32), AccountId, ManualKey<15>>,
+        pub(crate) skill_positions: Mapping<(u32, AccountId), u32, ManualKey<16>>,
         pub(crate) migration_phase: u8,
-        pub(crate) origins: Mapping<u32, CatalogReferenceV1, 18>,
-        pub(crate) reason_records: Mapping<u64, Vec<u8>, 19>,
+        pub(crate) origins: Mapping<u32, CatalogReferenceV1, ManualKey<18>>,
+        pub(crate) reason_records: Mapping<u64, ReasonRecord, ManualKey<19>>,
+        pub(crate) skill_role_values: Mapping<(u32, u32), u32, ManualKey<20>>,
+        pub(crate) worker_roles: Mapping<(AccountId, u32), u32, ManualKey<21>>,
+        pub(crate) worker_skills: Mapping<(AccountId, u32), u32, ManualKey<22>>,
+        pub(crate) request_roles: Mapping<(Id, u32), u32, ManualKey<23>>,
+        pub(crate) proposal_roles: Mapping<(Id, u32), u32, ManualKey<24>>,
+        pub(crate) proposal_skills: Mapping<(Id, u32), u32, ManualKey<25>>,
+        pub(crate) project_proposals: Mapping<(Id, u32), ProjectProposalRecord, ManualKey<26>>,
+        pub(crate) project_milestones: Mapping<MilestonePosition, MilestoneIdentity, ManualKey<27>>,
+        pub(crate) project_submission_values: Mapping<(Id, u32), Id, ManualKey<28>>,
+        pub(crate) project_imports:
+            Mapping<Id, crate::migration::ProjectImportProgress, ManualKey<29>>,
         pub(crate) reason_count: u64,
     }
     impl DirectoryData {
@@ -292,38 +309,48 @@ pub mod directory_v5 {
                 migration_phase: 0,
                 origins: Mapping::default(),
                 reason_records: Mapping::default(),
+                skill_role_values: Mapping::default(),
+                worker_roles: Mapping::default(),
+                worker_skills: Mapping::default(),
+                request_roles: Mapping::default(),
+                proposal_roles: Mapping::default(),
+                proposal_skills: Mapping::default(),
+                project_proposals: Mapping::default(),
+                project_milestones: Mapping::default(),
+                project_submission_values: Mapping::default(),
+                project_imports: Mapping::default(),
                 reason_count: 0,
                 calendar_code,
                 reservation_controller,
                 reference_controller,
                 roles: Mapping::default(),
-                role_ids: Vec::new(),
+                role_ids: StorageVec::default(),
                 skills: Mapping::default(),
-                skill_ids: Vec::new(),
+                skill_ids: StorageVec::default(),
                 skill_roles: Mapping::default(),
                 workers: Mapping::default(),
                 calendar_ids: Mapping::default(),
-                accounts: Vec::new(),
+                accounts: StorageVec::default(),
                 requests: Mapping::default(),
-                request_ids: Vec::new(),
+                request_ids: StorageVec::default(),
                 proposal_references: Mapping::default(),
-                proposal_ids: Vec::new(),
+                proposal_ids: StorageVec::default(),
                 score_policy: ScorePolicy::default(),
                 compensation_percent: 10,
                 project_code: None,
                 project_addresses: Mapping::default(),
-                project_ids: Vec::new(),
+                project_ids: StorageVec::default(),
                 registered_projects: Mapping::default(),
                 next_task_id: 1,
                 bank: Bank::default(),
                 project_layouts: Mapping::default(),
                 project_submissions: Mapping::default(),
-                dispute_ids: Vec::new(),
+                dispute_ids: StorageVec::default(),
                 dispute_owners: Mapping::default(),
                 evaluations: Mapping::default(),
-                skill_counts: FixedMapping::default(),
-                skill_members: FixedMapping::default(),
-                skill_positions: FixedMapping::default(),
+                skill_counts: Mapping::default(),
+                skill_members: Mapping::default(),
+                skill_positions: Mapping::default(),
             };
             for role in seed.roles {
                 require(
@@ -353,16 +380,13 @@ pub mod directory_v5 {
                             .all(|id| result.roles.contains(id)),
                     "invalid_catalog_state",
                 )?;
-                result
-                    .skill_roles
-                    .insert(association.skill_id, &association.role_ids);
+                result.write_skill_roles(association.skill_id, &association.role_ids);
                 result
                     .origins
                     .insert(association.skill_id, &association.origin);
             }
             require(
-                result
-                    .skill_ids
+                indices::values(&result.skill_ids)
                     .iter()
                     .all(|id| result.skill_roles.contains(id)),
                 "invalid_catalog_state",
@@ -385,11 +409,6 @@ pub mod directory_v5 {
                         .all(|id| self.skills.contains(id)),
                 "unknown_qualification",
             )
-        }
-        pub(crate) fn worker_record(&self, account: AccountId) -> Result<Worker> {
-            self.workers
-                .get(account)
-                .ok_or_else(|| String::from("worker_not_found"))
         }
         // Dense per-skill entries avoid packing a whole index into ink's 16 KiB
         // storage buffer. Candidate iteration has no fixed search/truncation limit.
@@ -491,7 +510,7 @@ pub mod directory_v5 {
                 .ok_or_else(|| String::from("project_not_found"))
         }
         pub fn projects(&self) -> Vec<(Id, AccountId)> {
-            self.project_ids
+            indices::values(&self.project_ids)
                 .iter()
                 .filter_map(|id| self.project_addresses.get(id).map(|address| (*id, address)))
                 .collect()
@@ -661,16 +680,16 @@ pub mod directory_v5 {
         /// Error identity depends on the later entity, not on which command generated it.
         pub(crate) fn validate_public_ids(&self) -> Result<()> {
             let mut identities = BTreeSet::new();
-            for account in &self.accounts {
+            for account in &indices::values(&self.accounts) {
                 let worker = self.worker_record(*account)?;
                 require(
                     identities.insert(worker.calendar_id),
                     "invalid_worker_state",
                 )?;
             }
-            for id in &self.project_ids {
+            for id in &indices::values(&self.project_ids) {
                 require(identities.insert(*id), "invalid_project_state")?;
-                for (proposal, milestones) in self.project_layouts.get(id).unwrap_or_default() {
+                for (proposal, milestones) in self.project_layout(*id) {
                     require(identities.insert(proposal), "duplicate_entity")?;
                     for (milestone, storage) in milestones {
                         require(
@@ -681,12 +700,12 @@ pub mod directory_v5 {
                 }
             }
             self.bank.validate_ids(&mut identities)?;
-            for id in &self.project_ids {
-                for submission in self.project_submissions.get(id).unwrap_or_default() {
+            for id in &indices::values(&self.project_ids) {
+                for submission in self.project_submission_ids(*id) {
                     require(identities.insert(submission), "invalid_submission_state")?;
                 }
             }
-            for id in &self.dispute_ids {
+            for id in &indices::values(&self.dispute_ids) {
                 require(identities.insert(*id), "invalid_dispute_id")?;
             }
             Ok(())
@@ -696,7 +715,7 @@ pub mod directory_v5 {
                 .registered_projects
                 .get(self.env().caller())
                 .ok_or_else(|| String::from("registered_project_required"))?;
-            self.project_layouts.insert(id, &layout);
+            self.write_project_layout(id, &layout);
             self.validate_public_ids()
         }
         pub fn set_project_submissions(&mut self, submissions: Vec<Id>) -> Result<()> {
@@ -704,7 +723,7 @@ pub mod directory_v5 {
                 .registered_projects
                 .get(self.env().caller())
                 .ok_or_else(|| String::from("registered_project_required"))?;
-            self.project_submissions.insert(id, &submissions);
+            self.write_project_submissions(id, &submissions);
             self.validate_public_ids()
         }
         pub fn register_dispute(&mut self, id: Id) -> Result<()> {
@@ -721,7 +740,7 @@ pub mod directory_v5 {
             self.dispute_owners.get(id)
         }
         pub fn disputes(&self) -> Vec<(Id, Id)> {
-            self.dispute_ids
+            indices::values(&self.dispute_ids)
                 .iter()
                 .filter_map(|id| self.dispute_owners.get(id).map(|project| (*id, project)))
                 .collect()
@@ -820,7 +839,7 @@ pub mod directory_v5 {
             seed: [u8; 32],
         ) -> Result<(AccountId, Id)> {
             let mut candidates = Vec::new();
-            for account in &self.accounts {
+            for account in &indices::values(&self.accounts) {
                 let worker = self.worker_record(*account)?;
                 if worker.mode == WorkerMode::Coordinator
                     && worker.coordinator_eligible
@@ -946,22 +965,19 @@ pub mod directory_v5 {
         }
         pub fn catalog(&self) -> CatalogSeed {
             CatalogSeed {
-                roles: self
-                    .role_ids
+                roles: indices::values(&self.role_ids)
                     .iter()
                     .filter_map(|id| self.roles.get(id))
                     .collect(),
-                skills: self
-                    .skill_ids
+                skills: indices::values(&self.skill_ids)
                     .iter()
                     .filter_map(|id| self.skills.get(id))
                     .collect(),
-                skill_roles: self
-                    .skill_ids
+                skill_roles: indices::values(&self.skill_ids)
                     .iter()
                     .map(|id| SkillRoleAssociation {
                         skill_id: *id,
-                        role_ids: self.skill_roles.get(id).unwrap_or_default(),
+                        role_ids: self.skill_role_ids(*id),
                         origin: self.origins.get(id).expect("skill origin missing"),
                     })
                     .collect(),
@@ -971,28 +987,33 @@ pub mod directory_v5 {
             self.workers.get(account).map(|worker| worker.calendar)
         }
         pub fn worker(&self, account: AccountId) -> Option<WorkerCore> {
-            self.workers.get(account).map(|worker| WorkerCore {
-                account,
-                content: worker.content,
-                qualifications: worker.qualifications,
-                mode: worker.mode,
-                coordinator_eligible: worker.coordinator_eligible,
-                calendar: CalendarV5Ref::from_account_id(worker.calendar).view(),
-                worker_score: worker.worker_score,
-                coordinator_score: worker.coordinator_score,
+            self.workers.get(account).map(|_| {
+                let worker = self
+                    .worker_with_qualifications(account)
+                    .expect("invalid worker record");
+                WorkerCore {
+                    account,
+                    content: worker.content,
+                    qualifications: worker.qualifications,
+                    mode: worker.mode,
+                    coordinator_eligible: worker.coordinator_eligible,
+                    calendar: CalendarV5Ref::from_account_id(worker.calendar).view(),
+                    worker_score: worker.worker_score,
+                    coordinator_score: worker.coordinator_score,
+                }
             })
         }
         pub fn workers(&self) -> Vec<WorkerCore> {
-            self.accounts
+            indices::values(&self.accounts)
                 .iter()
                 .filter_map(|account| self.worker(*account))
                 .collect()
         }
         pub fn skill_requests(&self) -> Vec<SkillRequestView> {
             let caller = self.env().caller();
-            self.request_ids
+            indices::values(&self.request_ids)
                 .iter()
-                .filter_map(|id| self.requests.get(id))
+                .filter_map(|id| self.request_record(*id))
                 .filter(|request| caller == self.root || caller == request.requester)
                 .collect()
         }
@@ -1024,7 +1045,7 @@ pub mod directory_v5 {
             .map_err(|_| String::from("calendar_instantiation_failed"))?
             .map_err(|_| String::from("calendar_instantiation_failed"))??;
             let skills = request.qualifications.skill_ids.clone();
-            self.workers.insert(
+            self.write_worker(
                 origin,
                 &Worker {
                     content: MetadataReferenceV1::Creation(request.content),
@@ -1046,7 +1067,7 @@ pub mod directory_v5 {
         pub fn update_qualifications(&mut self, qualifications: Qualifications) -> Result<Effect> {
             self.qualifications(&qualifications)?;
             let origin = self.env().caller();
-            let mut worker = self.worker_record(origin)?;
+            let mut worker = self.worker_with_qualifications(origin)?;
             let removed: Vec<_> = worker
                 .qualifications
                 .skill_ids
@@ -1063,7 +1084,7 @@ pub mod directory_v5 {
             self.index_remove(origin, &removed)?;
             self.index_add(origin, &added)?;
             worker.qualifications = qualifications;
-            self.workers.insert(origin, &worker);
+            self.write_worker(origin, &worker);
             Ok(Effect::new(1, None, origin))
         }
         pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<Effect> {
@@ -1116,7 +1137,7 @@ pub mod directory_v5 {
                     self.skills.insert(id, &entry);
                     insert_sorted(&mut self.skill_ids, id);
                     if !self.skill_roles.contains(id) {
-                        self.skill_roles.insert(id, &Vec::<u32>::new());
+                        self.write_skill_roles(id, &[]);
                         self.origins.insert(id, &entry.content);
                     }
                 }
@@ -1135,14 +1156,20 @@ pub mod directory_v5 {
                 CatalogKind::Skill => qualifications.skill_ids.contains(&id),
             };
             require(
-                !self.accounts.iter().any(|account| {
+                !indices::values(&self.accounts).iter().any(|account| {
                     self.workers
                         .get(account)
-                        .map(|worker| references(&worker.qualifications))
+                        .map(|_| {
+                            references(
+                                &self
+                                    .worker_with_qualifications(*account)
+                                    .expect("invalid worker record")
+                                    .qualifications,
+                            )
+                        })
                         .unwrap_or(false)
-                }) && !self.proposal_ids.iter().any(|proposal| {
-                    self.proposal_references
-                        .get(proposal)
+                }) && !indices::values(&self.proposal_ids).iter().any(|proposal| {
+                    self.proposal_qualifications(*proposal)
                         .map(|q| references(&q))
                         .unwrap_or(false)
                 }),
@@ -1151,24 +1178,21 @@ pub mod directory_v5 {
             match kind {
                 CatalogKind::Role => {
                     require(
-                        !self.skill_ids.iter().any(|skill| {
-                            self.skill_roles
-                                .get(skill)
-                                .unwrap_or_default()
-                                .contains(&id)
-                        }),
+                        !indices::values(&self.skill_ids)
+                            .iter()
+                            .any(|skill| self.skill_role_ids(*skill).contains(&id)),
                         "catalog_entry_in_use",
                     )?;
                     require(self.roles.contains(id), "catalog_entry_not_found")?;
                     self.roles.remove(id);
-                    self.role_ids.retain(|item| *item != id);
+                    indices::remove(&mut self.role_ids, &id);
                 }
                 CatalogKind::Skill => {
                     require(self.skills.contains(id), "catalog_entry_not_found")?;
                     self.skills.remove(id);
-                    self.skill_roles.remove(id);
+                    self.remove_skill_roles(id);
                     self.origins.remove(id);
-                    self.skill_ids.retain(|item| *item != id);
+                    indices::remove(&mut self.skill_ids, &id);
                 }
             }
             Ok(Effect::new(3, None, self.env().caller()))
@@ -1188,7 +1212,7 @@ pub mod directory_v5 {
                 "unknown_role",
             )?;
             require(!self.requests.contains(request_id), "request_id_collision")?;
-            self.requests.insert(
+            self.write_request(
                 request_id,
                 &SkillRequestView {
                     request_id,
@@ -1209,8 +1233,7 @@ pub mod directory_v5 {
         ) -> Result<Effect> {
             self.root()?;
             let mut request = self
-                .requests
-                .get(request_id)
+                .request_record(request_id)
                 .ok_or_else(|| String::from("skill_request_not_found"))?;
             require(
                 request.status == SkillRequestStatus::Pending,
@@ -1224,7 +1247,7 @@ pub mod directory_v5 {
                     )?;
                     let id = self
                         .skill_ids
-                        .last()
+                        .peek()
                         .map_or(Some(1), |id| id.checked_add(1))
                         .ok_or_else(|| String::from("catalog_id_exhausted"))?;
                     self.skills.insert(
@@ -1236,7 +1259,7 @@ pub mod directory_v5 {
                         },
                     );
                     insert_sorted(&mut self.skill_ids, id);
-                    self.skill_roles.insert(id, &request.role_ids);
+                    self.write_skill_roles(id, &request.role_ids);
                     self.origins.insert(id, &request.content);
                     request.status = SkillRequestStatus::Approved;
                     request.skill_id = Some(id);
@@ -1247,7 +1270,7 @@ pub mod directory_v5 {
                     33
                 }
             };
-            self.requests.insert(request_id, &request);
+            self.write_request_header(request_id, &request);
             Ok(Effect::moderated(
                 kind,
                 request_id,
@@ -1270,12 +1293,11 @@ pub mod directory_v5 {
             )?;
             if let Some(qualifications) = qualifications {
                 self.qualifications(&qualifications)?;
-                self.proposal_references
-                    .insert(proposal_id, &qualifications);
+                self.write_proposal_qualifications(proposal_id, &qualifications);
                 insert_sorted(&mut self.proposal_ids, proposal_id);
             } else {
-                self.proposal_references.remove(proposal_id);
-                self.proposal_ids.retain(|id| *id != proposal_id);
+                self.remove_proposal_qualifications(proposal_id);
+                indices::remove(&mut self.proposal_ids, &proposal_id);
             }
             Ok(())
         }
@@ -1295,19 +1317,14 @@ pub mod directory_v5 {
     }
 
     impl DirectoryV5 {
-        fn read_state<T>(&self, read: impl FnOnce(DirectoryData) -> T) -> T {
-            read(storage_v5::load(self.bytes))
+        fn read_state<T>(&self, read: impl FnOnce(&DirectoryData) -> T) -> T {
+            read(&self.data)
         }
         fn transact<T>(
             &mut self,
             change: impl FnOnce(&mut DirectoryData) -> Result<T>,
         ) -> Result<T> {
-            let mut data: DirectoryData = storage_v5::load(self.bytes);
-            let result = change(&mut data);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            change(&mut self.data)
         }
         fn change<T>(&mut self, change: impl FnOnce(&mut DirectoryData) -> Result<T>) -> Result<T> {
             self.transact(|data| {
@@ -1319,29 +1336,23 @@ pub mod directory_v5 {
         /// Migration is available only on a fresh root-owned instance, then seals forever.
         #[ink(message)]
         pub fn begin_import(&mut self) -> Result<()> {
-            self.transact(|data| data.begin_import())?;
-            self.record = Some((self.env().caller(), [0; 16], 0));
-            Ok(())
+            self.transact(|data| data.begin_import())
         }
         #[ink(message)]
-        pub fn import_record_page(
+        pub fn import_records(
             &mut self,
-            index: u32,
-            bytes: Vec<u8>,
-            finish: bool,
+            records: Vec<crate::migration::MigrationRecordV2>,
         ) -> Result<()> {
-            let mut record = self.record;
-            storage_v5::append_import_in(&mut record, u32::MAX - 1, index, &bytes)?;
-            if finish {
-                let (value, _, owner, id) = storage_v5::decode_import_in::<
-                    crate::migration::MigrationRecordV1,
-                >(&record, u32::MAX - 1)?;
-                self.transact(|data| data.import_record(value))?;
-                storage_v5::clear_import(&mut record, u32::MAX - 1);
-                record = Some((owner, id, 0));
-            }
-            self.record = record;
-            Ok(())
+            require(
+                !records.is_empty() && records.len() <= 64 && records.encoded_size() <= 8192,
+                "invalid_import_batch",
+            )?;
+            self.transact(|data| {
+                for record in records {
+                    data.import_record(record)?;
+                }
+                Ok(())
+            })
         }
         #[ink(message)]
         pub fn import_child_page(
@@ -1361,13 +1372,7 @@ pub mod directory_v5 {
         }
         #[ink(message)]
         pub fn seal_import(&mut self) -> Result<()> {
-            require(
-                self.record.is_some_and(|(_, _, length)| length == 0),
-                "record_in_progress",
-            )?;
-            self.transact(|data| data.seal_import())?;
-            self.record = None;
-            Ok(())
+            self.transact(|data| data.seal_import())
         }
         #[ink(message)]
         pub fn append_reason(&mut self, project_id: Id, bytes: Vec<u8>) -> Result<()> {
@@ -1390,10 +1395,7 @@ pub mod directory_v5 {
                 reference_controller,
                 seed,
             )?;
-            Ok(Self {
-                bytes: storage_v5::save(0, &data),
-                record: None,
-            })
+            Ok(Self { data })
         }
         #[ink(message)]
         pub fn configure_project_code(&mut self, code: Hash) -> Result<()> {

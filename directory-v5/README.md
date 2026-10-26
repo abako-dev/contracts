@@ -78,4 +78,38 @@ the origin, deletion removes it and actual recreation chooses a new one.
 existing numeric decisions and deletion retain permissions, role guards and actual
 max-ID+1 allocation. Name parsing and its Unicode compatibility tables are removed
 from the contract. Sealed import/export uses the new compact layout; no in-place
-upgrade or release is implied. Tasks and paging removal remain later slices.
+upgrade or release is implied. Project paging removal remains a later slice.
+
+## Ordinary ink storage (SPEC-0015 Directory slice)
+
+Directory and its Bank module now use ordinary ink storage fields, `Mapping`
+entries and `StorageVec` ID indexes. Each worker qualification, skill/request role,
+proposal reference, project identity and submission ID has its own keyed entry.
+No growing vector is encoded into a Directory cell. The small `indices` helpers
+preserve sorted insertion/removal using standard ink operations; they define no
+storage format or collection type. Matching order and catalog max-ID allocation
+remain unchanged. Fixed-header reads for matching, reputation and Calendar routing
+avoid loading qualification lists that those operations do not need.
+
+The maximum Directory header is 189 bytes. Worker, request, reason and project
+proposal records use at most 155, 107, 123 and 20 bytes respectively. Index values are
+4, 16 or 32 bytes; other membership/counter cells are fixed scalars. A host regression
+keeps the header unchanged with 5,001 ordinary catalog IDs (20,004 bytes of IDs
+spread across cells), then removes an interior ID without a hole or duplicate.
+The 16 KiB cell limit and existing input/static-buffer limits are unchanged.
+Runtime growth/rollback and artifact verification belong to the paired backend
+milestone gates; host tests alone do not establish them.
+
+Fresh imports use typed `MigrationRecordV2` batches of at most 64 natural records
+and 8192 encoded bytes. Headers declare list counts; entries are individually
+addressed and duplicate/out-of-range writes are rejected. Sealing verifies complete
+lists and child state before permanently removing import authority. Failed batches
+revert all earlier records through the ordinary ink message transaction. Project
+case/evaluation import counters are discarded on sealing.
+
+Directory no longer depends on `storage-v5`. The temporary forwarding calls for
+Project child pages remain until Project's separate ordinary-storage slice. The
+logical provider archive stays V5: export the complete current archive, import
+into a fresh cohort, reopen and compare it before switching. Existing databases
+cannot be reinterpreted under the new physical layout. This source is a candidate,
+not a deployed upgrade or a claim that the Project/R5 cleanup is complete.
