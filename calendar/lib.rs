@@ -9,7 +9,6 @@ pub mod calendar {
 
     pub type Result<T> = core::result::Result<T, String>;
     const ARITHMETIC: &str = "arithmetic_or_calendar_error";
-    const MAX_IMPORT_RECORDS: usize = 64;
 
     // Layouts deliberately match the provider's v1 SCALE DTOs. The backend tests
     // decode actual WASM replies using those DTOs, without linking this crate.
@@ -130,9 +129,6 @@ pub mod calendar {
         pub overrides: u32,
         pub reservations: u32,
         pub reserved_weeks: u32,
-        pub expected: Option<(u32, u32)>,
-        // 0: fresh import, 1: records, 2: verified dormant, 3: live.
-        pub phase: u8,
     }
     use ink::storage::{traits::ManualKey, Lazy, Mapping};
 
@@ -164,20 +160,6 @@ pub mod calendar {
             };
             value.header.set(&header);
             value
-        }
-        fn live(&self) -> Result<CalendarHeader> {
-            let header = self.header();
-            require(header.phase == 3, "migration_in_progress")?;
-            Ok(header)
-        }
-        fn importing(&self, phase: u8) -> Result<CalendarHeader> {
-            let header = self.header();
-            require(
-                self.env().caller() == header.directory,
-                "directory_required",
-            )?;
-            require(header.phase == phase, "invalid_archive")?;
-            Ok(header)
         }
         fn capacity(&self, header: &CalendarHeader, week: Week) -> u32 {
             self.overrides
@@ -233,8 +215,6 @@ pub mod calendar {
                 overrides,
                 reservations: 0,
                 reserved_weeks: 0,
-                expected: None,
-                phase: 3,
             };
             let mut value = Self::blank(header);
             for (index, item) in (0..overrides).zip(definition.overrides) {
@@ -242,138 +222,6 @@ pub mod calendar {
                 value.override_keys.insert(index, &item.week);
             }
             Ok(value)
-        }
-        #[ink(constructor)]
-        pub fn from_archive(directory: AccountId, id: [u8; 16]) -> Result<Self> {
-            require(Self::env().caller() == directory, "directory_required")?;
-            Ok(Self::blank(CalendarHeader {
-                calendar_id: id,
-                owner: directory,
-                directory,
-                reservation_controller: directory,
-                default_weekly_minutes: 0,
-                overrides: 0,
-                reservations: 0,
-                reserved_weeks: 0,
-                expected: None,
-                phase: 0,
-            }))
-        }
-        /// Each import call supplies one bounded, typed record. No byte pages.
-        #[ink(message)]
-        pub fn import_definition(
-            &mut self,
-            owner: AccountId,
-            default_weekly_minutes: u32,
-            overrides: u32,
-            reservations: u32,
-        ) -> Result<()> {
-            let mut header = self.importing(0)?;
-            header.owner = owner;
-            header.default_weekly_minutes = default_weekly_minutes;
-            header.expected = Some((overrides, reservations));
-            header.phase = 1;
-            self.header.set(&header);
-            Ok(())
-        }
-        #[ink(message)]
-        pub fn import_overrides(&mut self, records: Vec<WeekOverride>) -> Result<()> {
-            require(
-                !records.is_empty() && records.len() <= MAX_IMPORT_RECORDS,
-                "invalid_archive",
-            )?;
-            // ink marks Err responses as REVERT, including earlier records in
-            // this bounded batch. No partial batch can be externally committed.
-            for record in records {
-                self.import_override(record)?;
-            }
-            Ok(())
-        }
-        #[ink(message)]
-        pub fn import_reservations(&mut self, records: Vec<ReservationView>) -> Result<()> {
-            require(
-                !records.is_empty() && records.len() <= MAX_IMPORT_RECORDS,
-                "invalid_archive",
-            )?;
-            for record in records {
-                self.import_reservation(record)?;
-            }
-            Ok(())
-        }
-        fn import_override(&mut self, item: WeekOverride) -> Result<()> {
-            let mut header = self.importing(1)?;
-            let expected = header
-                .expected
-                .ok_or_else(|| String::from("invalid_archive"))?;
-            require(
-                header.overrides < expected.0
-                    && header.reservations == 0
-                    && !self.overrides.contains(item.week),
-                "invalid_archive",
-            )?;
-            self.overrides.insert(item.week, &item.capacity);
-            self.override_keys.insert(header.overrides, &item.week);
-            header.overrides = header
-                .overrides
-                .checked_add(1)
-                .expect("declared import count checked before writing");
-            self.header.set(&header);
-            Ok(())
-        }
-        fn import_reservation(&mut self, item: ReservationView) -> Result<()> {
-            let mut header = self.importing(1)?;
-            let expected = header
-                .expected
-                .ok_or_else(|| String::from("invalid_archive"))?;
-            require(
-                header.overrides == expected.0 && header.reservations < expected.1,
-                "invalid_archive",
-            )?;
-            let total = self
-                .reserved
-                .get(item.week)
-                .unwrap_or(0u32)
-                .checked_add(item.minutes)
-                .ok_or_else(|| String::from(ARITHMETIC))?;
-            require(
-                total <= self.capacity(&header, item.week),
-                "calendar_overcommitted",
-            )?;
-            if !self.reserved.contains(item.week) {
-                self.reserved_week_keys
-                    .insert(header.reserved_weeks, &item.week);
-                header.reserved_weeks = header
-                    .reserved_weeks
-                    .checked_add(1)
-                    .expect("distinct weeks cannot exceed checked reservation count");
-            }
-            self.reservations.insert(header.reservations, &item);
-            self.reserved.insert(item.week, &total);
-            header.reservations = header
-                .reservations
-                .checked_add(1)
-                .expect("reservation count checked before writing");
-            self.header.set(&header);
-            Ok(())
-        }
-        #[ink(message)]
-        pub fn finish_import(&mut self) -> Result<()> {
-            let mut header = self.importing(1)?;
-            require(
-                header.expected == Some((header.overrides, header.reservations)),
-                "import_incomplete",
-            )?;
-            header.expected = None;
-            header.phase = 2;
-            self.header.set(&header);
-            Ok(())
-        }
-        #[ink(message)]
-        pub fn seal_import(&mut self) -> Result<()> {
-            let mut header = self.importing(2)?;
-            header.phase = 3;
-            self.header.set(&header);
-            Ok(())
         }
         #[ink(message)]
         pub fn header(&self) -> CalendarHeader {
@@ -412,7 +260,7 @@ pub mod calendar {
         }
         #[ink(message)]
         pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<()> {
-            let mut header = self.live()?;
+            let mut header = self.header();
             require(
                 self.env().caller() == header.owner || self.env().caller() == header.directory,
                 "calendar_owner_required",
@@ -463,7 +311,7 @@ pub mod calendar {
             minutes: u32,
             reference: ReservationView,
         ) -> Result<()> {
-            let mut header = self.live()?;
+            let mut header = self.header();
             require(
                 self.env().caller() == header.reservation_controller,
                 "reservation_controller_required",
@@ -596,43 +444,6 @@ pub mod calendar {
             assert!(calendar.override_at(0).is_none());
             assert!(calendar.override_at(1).is_none());
             assert_eq!(calendar.available(first), Ok(700));
-        }
-        #[ink::test]
-        fn typed_import_checks_counts_order_capacity_and_seals_exactly_once() {
-            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
-            let mut calendar = Calendar::from_archive(accounts.alice, [1; 16]).unwrap();
-            let week = Week::new(2026, 1).unwrap();
-            assert_eq!(
-                calendar.set_calendar(definition(600)),
-                Err("migration_in_progress".into())
-            );
-            calendar.import_definition(accounts.bob, 600, 1, 1).unwrap();
-            assert!(calendar.finish_import().is_err());
-            assert!(calendar.import_reservation(reservation(week, 100)).is_err());
-            let item = WeekOverride {
-                week,
-                capacity: 200,
-            };
-            calendar.import_override(item.clone()).unwrap();
-            assert!(calendar.import_override(item).is_err());
-            assert_eq!(
-                calendar.import_reservation(reservation(week, 201)),
-                Err("calendar_overcommitted".into())
-            );
-            assert_eq!(calendar.header().reservations, 0);
-            calendar.import_reservation(reservation(week, 100)).unwrap();
-            calendar.finish_import().unwrap();
-            assert_eq!(calendar.header().phase, 2);
-            assert!(calendar.import_reservation(reservation(week, 1)).is_err());
-            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
-            assert_eq!(calendar.seal_import(), Err("directory_required".into()));
-            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-            calendar.seal_import().unwrap();
-            assert!(calendar.seal_import().is_err());
-            assert_eq!(calendar.available(week), Ok(100));
-            assert_eq!(calendar.header().owner, accounts.bob);
-            assert_eq!(calendar.header().reservation_controller, accounts.alice);
-            assert_eq!(calendar.view().reservations, vec![reservation(week, 100)]);
         }
     }
 }
