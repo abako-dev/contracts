@@ -9,6 +9,7 @@ pub mod calendar_v5 {
 
     pub type Result<T> = core::result::Result<T, String>;
     const ARITHMETIC: &str = "arithmetic_or_calendar_error";
+    const MAX_IMPORT_RECORDS: usize = 64;
 
     // Layouts deliberately match the provider's v1 SCALE DTOs. The backend tests
     // decode actual WASM replies using those DTOs, without linking this crate.
@@ -278,7 +279,7 @@ pub mod calendar_v5 {
         #[ink(message)]
         pub fn import_overrides(&mut self, records: Vec<WeekOverride>) -> Result<()> {
             require(
-                !records.is_empty() && records.len() <= 64,
+                !records.is_empty() && records.len() <= MAX_IMPORT_RECORDS,
                 "invalid_archive",
             )?;
             // ink marks Err responses as REVERT, including earlier records in
@@ -291,7 +292,7 @@ pub mod calendar_v5 {
         #[ink(message)]
         pub fn import_reservations(&mut self, records: Vec<ReservationView>) -> Result<()> {
             require(
-                !records.is_empty() && records.len() <= 64,
+                !records.is_empty() && records.len() <= MAX_IMPORT_RECORDS,
                 "invalid_archive",
             )?;
             for record in records {
