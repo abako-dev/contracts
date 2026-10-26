@@ -107,9 +107,8 @@ lists and child state before permanently removing import authority. Failed batch
 revert all earlier records through the ordinary ink message transaction. Project
 case/evaluation import counters are discarded on sealing.
 
-Directory no longer depends on `storage-v5`. The temporary forwarding calls for
-Project child pages remain until Project's separate ordinary-storage slice. The
+Directory uses ordinary ink storage and forwards bounded typed Project records. The
 logical provider archive stays V5: export the complete current archive, import
 into a fresh cohort, reopen and compare it before switching. Existing databases
 cannot be reinterpreted under the new physical layout. This source is a candidate,
-not a deployed upgrade or a claim that the Project/R5 cleanup is complete.
+not a deployed upgrade. Acceptance evidence belongs to the paired backend PR.

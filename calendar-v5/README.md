@@ -1,8 +1,8 @@
 # Candidate v5 Calendar
 
 SPEC-0013 Calendar candidate. This contract implements the current application's
-integer-minute calendar rules; the old `calendar/` remains the deployed legacy
-compatibility fixture. Neither this source nor its backend artifact is deployed.
+integer-minute calendar rules; the deployed legacy source is preserved at its
+[historical revision](https://github.com/abako-dev/contracts/tree/a0c881fba4aee54af5aebd37e75a429838b7e8d0/calendar). Neither this source nor its backend artifact is deployed.
 
 Directory creates one instance per worker with a public calendar ID, owner,
 definition and immutable reservation controller. Only the owner or creating
@@ -60,7 +60,7 @@ preserve enumeration and original vector order without storing a growing vector
 in one cell. Reservations write only the new records/totals; capacity changes
 validate each distinct reserved week before modifying any definition cell.
 There is no `storage-v5` dependency, root serialization or byte-page interface in
-Calendar. Directory and Project remain on their preceding layouts in this slice.
+Calendar. Directory and Project also use ordinary ink storage.
 
 The fixed header encodes to at most 138 bytes, a reservation to at most 47 bytes,
 and an override to 9 bytes. Index/total cells contain a single week (5 bytes) or
@@ -77,8 +77,8 @@ are compared with the source archive before publication. Existing checkpoints
 must be exported and imported into fresh contracts; do not reinterpret an old
 Calendar checkpoint under this layout.
 
-Calendar, Directory and Project use local path references for their shared v5
-contract interfaces, so a single source commit determines the rebuilt cohort.
+Shared v5 contract interfaces use immutable Git revisions recorded in Cargo.toml
+and the build locks. The backend manifest pins the source commit for reproduction.
 This changes no runtime dependency family or user permission.
 
 The batch bound avoids one VM invocation per record during migration. A failed

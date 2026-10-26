@@ -8,6 +8,7 @@ mod sandbox_probe {
 
     #[ink(storage)]
     pub struct SandboxProbe {
+        owner: AccountId,
         values: Mapping<u32, u32>,
     }
 
@@ -28,6 +29,7 @@ mod sandbox_probe {
         #[ink(constructor)]
         pub fn new() -> Self {
             Self {
+                owner: Self::env().caller(),
                 values: Mapping::default(),
             }
         }
@@ -35,6 +37,15 @@ mod sandbox_probe {
         #[ink(message)]
         pub fn value(&self) -> u32 {
             self.values.get(0_u32).unwrap_or(0)
+        }
+
+        #[ink(message)]
+        pub fn set_value(&mut self, value: u32) -> Result<(), Error> {
+            if self.env().caller() != self.owner {
+                return Err(Error::Rejected);
+            }
+            self.values.insert(0_u32, &value);
+            Ok(())
         }
 
         #[ink(message)]
