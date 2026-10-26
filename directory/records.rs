@@ -1,5 +1,5 @@
 //! Fixed Directory records; growing domain lists use explicit keyed entries.
-use crate::directory_v5::*;
+use crate::directory::*;
 use ink::{
     prelude::{string::String, vec::Vec},
     primitives::AccountId,

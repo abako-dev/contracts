@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
 #[ink::contract]
-pub mod calendar_v5 {
+pub mod calendar {
     use chrono::{Datelike, Duration, NaiveDate, Weekday};
     use ink::prelude::{string::String, vec::Vec};
     #[cfg(feature = "std")]
@@ -137,7 +137,7 @@ pub mod calendar_v5 {
     use ink::storage::{traits::ManualKey, Lazy, Mapping};
 
     #[ink(storage)]
-    pub struct CalendarV5 {
+    pub struct Calendar {
         header: Lazy<CalendarHeader, ManualKey<0x4341_4c01>>,
         overrides: Mapping<Week, u32, ManualKey<0x4341_4c02>>,
         override_keys: Mapping<u32, Week, ManualKey<0x4341_4c03>>,
@@ -152,7 +152,7 @@ pub mod calendar_v5 {
             Err(String::from(code))
         }
     }
-    impl CalendarV5 {
+    impl Calendar {
         fn blank(header: CalendarHeader) -> Self {
             let mut value = Self {
                 header: Lazy::new(),
@@ -529,7 +529,7 @@ pub mod calendar_v5 {
         fn many_reservations_keep_fixed_cells_and_failed_capacity_changes_atomic() {
             let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
             let mut calendar =
-                CalendarV5::new(accounts.alice, accounts.alice, [1; 16], definition(2000)).unwrap();
+                Calendar::new(accounts.alice, accounts.alice, [1; 16], definition(2000)).unwrap();
             let week = Week::new(2026, 1).unwrap();
             let window = WeekWindow {
                 start: week,
@@ -570,7 +570,7 @@ pub mod calendar_v5 {
         fn replacing_overrides_removes_old_keys_and_preserves_input_order() {
             let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
             let mut calendar =
-                CalendarV5::new(accounts.alice, accounts.alice, [1; 16], definition(600)).unwrap();
+                Calendar::new(accounts.alice, accounts.alice, [1; 16], definition(600)).unwrap();
             let first = Week::new(2026, 1).unwrap();
             let second = Week::new(2026, 2).unwrap();
             let definition = CalendarDefinition {
@@ -600,7 +600,7 @@ pub mod calendar_v5 {
         #[ink::test]
         fn typed_import_checks_counts_order_capacity_and_seals_exactly_once() {
             let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
-            let mut calendar = CalendarV5::from_archive(accounts.alice, [1; 16]).unwrap();
+            let mut calendar = Calendar::from_archive(accounts.alice, [1; 16]).unwrap();
             let week = Week::new(2026, 1).unwrap();
             assert_eq!(
                 calendar.set_calendar(definition(600)),

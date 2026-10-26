@@ -1,7 +1,7 @@
 //! Fixed Project records. Growing domain collections live in separate ink cells.
 use crate::types::*;
-use calendar_v5::calendar_v5::WeekWindow;
-use directory_v5::directory_v5::MetadataReferenceV1;
+use calendar::calendar::WeekWindow;
+use directory::directory::MetadataReferenceV1;
 use ink::{
     prelude::{string::String, vec::Vec},
     primitives::AccountId,
@@ -31,7 +31,7 @@ pub enum StoredDelivery {
 }
 impl StoredDelivery {
     pub fn from_view(value: &DeliveryPreference) -> Result<Self> {
-        crate::projects_v5::validate_delivery(value)?;
+        crate::project::validate_delivery(value)?;
         Ok(match value {
             DeliveryPreference::WithinOneMonth {} => Self::WithinOneMonth,
             DeliveryPreference::OneToThreeMonths {} => Self::OneToThreeMonths,
@@ -53,7 +53,7 @@ impl StoredDelivery {
                     .map_err(|_| String::from("invalid_contract"))?,
             },
         };
-        crate::projects_v5::validate_delivery(&value)?;
+        crate::project::validate_delivery(&value)?;
         Ok(value)
     }
 }

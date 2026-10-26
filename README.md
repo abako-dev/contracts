@@ -1,54 +1,90 @@
-# Canonical ink! v5 contracts
+# Abako contracts
 
-Three application contract types implement the enforceable marketplace rules.
-They run together in the backend's embedded runtime; local development needs no
-parachain nodes or block production. ink! v5 remains the Kreivo target; v6 is outside this work.
+Three ink! 5.1.1 contracts implement the marketplace's enforceable rules.
+The backend runs their WASM in one embedded runtime for local development,
+without parachain nodes or block production. ink! v5 remains the Kreivo target.
 
-| Contract | Responsibility |
-|---|---|
-| [Directory](directory-v5/README.md) | Catalog IDs, qualifications, selection, global IDs, Project factory, shared accounting and Bramp |
-| [Calendar](calendar-v5/README.md) | Integer-minute capacity and reservations |
-| [Project](projects-v5/README.md) | Commercial terms, task IDs and assignees, lifecycle, escrow, settlement, disputes and evaluations |
+| Directory | Responsibility | Start reading |
+|---|---|---|
+| `directory/` | Catalog IDs, qualifications, worker selection, global IDs, Project factory and shared accounting | [lib.rs](directory/lib.rs) |
+| `calendar/` | Integer-minute capacity and reservations by ISO week | [lib.rs](calendar/lib.rs) |
+| `project/` | Commercial terms, task IDs/assignees, lifecycle, escrow, settlement, disputes and evaluations | [lib.rs](project/lib.rs), [execution.rs](project/execution.rs) |
+| `sandbox-probe/` | Private regression fixture for traps, reverts, gas and persistence; not an application contract | [lib.rs](sandbox-probe/lib.rs) |
 
-The adapter owns names, profiles, descriptions, task text/progress, evidence,
-notifications and public views in PostgreSQL. Contracts retain fixed commitments
-where needed to bind content, while independently enforcing permissions and
-financial rules. Task creation/deletion and assignee changes are core transactions.
-The wallet owns keys and signing. Money uses checked integer units.
+The API owns names, descriptions, profiles, task text/progress, evidence and
+notifications in PostgreSQL. Contracts retain fixed content commitments where
+needed and independently check permissions, capacity, lifecycle and money.
+Task creation/deletion and assignee changes are contract transactions. The wallet
+owns keys and signing. All monetary calculations use checked integer units.
 
-All three contracts use ordinary ink! storage fields, Lazy, Mapping or StorageVec.
-There is no custom paging helper or full URL parser in the current contracts.
-Growing lists have individually addressed entries; fixed record sizes and remaining
-history-scan costs are documented beside each contract. Existing runtime limits
-are unchanged. Project WASM is184306 bytes, below the196608-byte code limit.
+## Build and test
 
-Build with cargo-contract5.0.3 and Rust1.88.0:
+Use Rust **1.88.0**, its `wasm32-unknown-unknown` target and
+**cargo-contract 5.0.3**. Each contract has a committed lockfile. Shared contract
+interfaces use local paths, so one checkout contains the complete implementation.
 
 ```sh
-bash build-v5.sh calendar-v5 --offline
-bash build-v5.sh directory-v5 --offline
-bash build-v5.sh projects-v5 --offline
+bash build.sh calendar --offline
+bash build.sh directory --offline
+bash build.sh project --offline
+bash build.sh sandbox-probe --offline
+
+cargo +1.88.0 test --manifest-path calendar/Cargo.toml --locked
+cargo +1.88.0 test --manifest-path directory/Cargo.toml --locked
+cargo +1.88.0 test --manifest-path project/Cargo.toml --locked
 ```
 
-The build helper retains the existing ink buffer size. Immutable shared-interface
-Git revisions and exact build locks determine dependencies. The paired backend
-pins source, WASM, ABI and lock hashes and independently reproduces artifacts.
+Omit `--offline` to fetch missing locked dependencies. The build script retains
+the existing ink buffer settings. Use an SSD directory for `TMPDIR` and Cargo
+build output when `/tmp` is memory-backed.
 
-The current logical provider archive is V5. A physical storage/cohort change
-requires export into fresh sealed contracts, complete comparison, reopen and an
-explicit switch; startup never reinterprets old checkpoints. Backups and rollback
-must include adapter content as well as provider state. Imports restore facts;
-they do not replay payments or reputation.
+The [backend sandbox](https://github.com/abako-project/backend-v2/tree/review/ink-v5-runtime/tools/ink-sandbox)
+pins the source commit, artifacts and build locks. Its rebuild command reproduces
+WASM and ABI; signed tests compare complete state, receipts, events, failures and
+restart against the native engine. Host unit tests alone do not prove VM parity.
+Verification of the current change belongs in the paired
+[backend PR](https://github.com/abako-project/backend-v2/pull/24) and
+[contracts PR](https://github.com/abako-dev/contracts/pull/21).
 
-[sandbox-probe](sandbox-probe/lib.rs) is one private runtime regression fixture for
-traps, nested reverts, gas, persistence and query isolation. It is not an application
-contract. Obsolete proof contracts and the former paging helper have been removed
-from the current tree; [immutable provenance](legacy-provenance.md) preserves their
-source and original artifact/lock references. Deployed legacy instances are unaffected.
+## Storage and execution
 
-The native engine remains the reference and default. The embedded candidate has
-signed parity, migration and rollback evidence in the
-[backend handoff](https://github.com/abako-project/backend-v2/blob/review/ink-v5-runtime/progress/handoffs/SPEC-0015.md).
-SDK dependency-policy approval, controlled-host performance, frontend cutover,
-promotion and observed releases remain separate gates. These sources authorize
-neither deployment nor a release.
+Contracts use ordinary ink `Lazy`, `Mapping` and `StorageVec`. Growing lists have
+individually addressed records; no custom paging library or URL parser is used.
+Calendar headers are at most 138 encoded bytes and reservations 47. Directory
+headers are at most 189 bytes. Project's largest measured fixed record is 310
+bytes. The existing 16 KiB cell and 192 KiB code limits remain unchanged.
+
+Project hydrates one transient business-state tree and writes changed fixed cells,
+clearing obsolete children on removal or reordering. Whole-history scans still
+have finite gas/memory costs. This is not an unbounded-history guarantee.
+Directory coordinates atomic nested changes across contracts. Calendar reserves
+integer minutes; approved rules do not release consumed reservations. Milestone
+settlement uses the stored allocation, independently of task progress.
+
+Fresh imports use typed records, with at most 64 entries per call. Directory and
+Project batches also have an 8192-byte bound. Headers declare counts; incomplete,
+duplicate and invalid records fail. Complete archives are compared before imports
+are permanently sealed. Imports restore facts without replaying payments.
+
+## Compatibility and limits
+
+Names identify components; format versions remain explicit in signed messages,
+content references and migration records. A changed artifact cohort requires an
+explicit export into fresh contracts, full comparison and reopen before switching.
+Never reinterpret an old physical checkpoint. Backups include current provider
+state and API-owned content. Rollback uses current state after accepted writes.
+
+These sources are not a deployed upgrade. Real-chain integration, SDK security
+remediation, controlled performance acceptance and frontend cutover remain release
+gates. The native engine remains the reference and default in the backend.
+Historical proof source and the former storage helper remain in
+[Git history](https://github.com/abako-dev/contracts/tree/a0c881fba4aee54af5aebd37e75a429838b7e8d0);
+renaming current source does not alter legacy deployed instances.
+
+Dependencies stay pinned to the reviewed ink/SCALE family. Chrono uses pure
+Gregorian/ISO-week arithmetic with defaults disabled; rand uses the existing
+captured version-1 deterministic stream with only `std_rng`. No new native,
+cryptographic or handwritten unsafe implementation is introduced. Primary feature
+metadata: [chrono](https://docs.rs/crate/chrono/0.4.45/source/Cargo.toml),
+[rand](https://docs.rs/crate/rand/0.10.2/source/Cargo.toml),
+[ink](https://docs.rs/crate/ink/5.1.1/source/Cargo.toml).

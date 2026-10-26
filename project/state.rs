@@ -1,6 +1,6 @@
 //! Ordinary ink storage for Project's fixed records and ordered child entries.
 //! The hydrated ProjectData is transient input to the existing business rules.
-use crate::{projects_v5::ProjectData, records::*, types::*};
+use crate::{project::ProjectData, records::*, types::*};
 use ink::{
     primitives::AccountId,
     storage::{traits::ManualKey, Lazy, Mapping},
@@ -466,8 +466,8 @@ impl ProjectStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calendar_v5::calendar_v5::{Week, WeekWindow};
-    use directory_v5::directory_v5::{MetadataCommitmentV1, MetadataReferenceV1};
+    use calendar::calendar::{Week, WeekWindow};
+    use directory::directory::{MetadataCommitmentV1, MetadataReferenceV1};
     use ink::prelude::vec;
     use scale::Encode;
 

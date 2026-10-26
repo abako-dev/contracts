@@ -1,5 +1,5 @@
 //! Internal Project-controller inputs; roles are descriptive and never a filter.
-use calendar_v5::calendar_v5::WeekWindow;
+use calendar::calendar::WeekWindow;
 use ink::prelude::vec::Vec;
 
 #[derive(Debug, Clone, scale::Encode, scale::Decode)]

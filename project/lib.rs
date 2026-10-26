@@ -7,12 +7,12 @@ mod state;
 mod types;
 
 #[ink::contract]
-pub mod projects_v5 {
+pub mod project {
     use crate::types::*;
-    use calendar_v5::calendar_v5::Week;
+    use calendar::calendar::Week;
     use chrono::{Datelike, Duration, NaiveDate, Weekday};
-    use directory_v5::directory_v5::{
-        DirectoryV5Ref, Effect, MetadataCommitmentV1, MetadataReferenceV1, Qualifications,
+    use directory::directory::{
+        DirectoryRef, Effect, MetadataCommitmentV1, MetadataReferenceV1, Qualifications,
     };
     use ink::codegen::Env as _;
     use ink::{
@@ -26,7 +26,7 @@ pub mod projects_v5 {
     use rand::{rngs::StdRng, Rng, SeedableRng};
 
     #[ink(storage)]
-    pub struct ProjectsV5 {
+    pub struct Project {
         data: crate::state::ProjectStorage,
     }
 
@@ -114,8 +114,8 @@ pub mod projects_v5 {
                 .collect();
             self.registry().set_project_identities(layout)
         }
-        pub(crate) fn registry(&self) -> DirectoryV5Ref {
-            DirectoryV5Ref::from_account_id(self.directory)
+        pub(crate) fn registry(&self) -> DirectoryRef {
+            DirectoryRef::from_account_id(self.directory)
         }
         pub(crate) fn guard(&self) -> Result<()> {
             require(!self.project.cancelled, "project_cancelled")?;
@@ -506,7 +506,7 @@ pub mod projects_v5 {
             if self.registry().money_enabled() {
                 self.registry()
                     .book_credit(self.project.coordinator, self.project.planning.escrow)?;
-                directory_v5::assets::transfer(
+                directory::assets::transfer(
                     u128::from(self.project.planning.escrow),
                     self.project.coordinator,
                 )?;
@@ -737,7 +737,7 @@ pub mod projects_v5 {
         }
     }
 
-    impl ProjectsV5 {
+    impl Project {
         fn read_state<T>(&self, read: impl FnOnce(ProjectData) -> T) -> T {
             read(self.data.load().expect("complete Project storage"))
         }

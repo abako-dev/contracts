@@ -1,14 +1,14 @@
 //! Formal cases freeze Project effects; no resolution or payout authority exists.
 use crate::{
     execution::{milestone, milestone_mut},
-    projects_v5::ProjectData as ProjectsV5,
+    project::ProjectData,
     types::*,
 };
-use directory_v5::directory_v5::Effect;
+use directory::directory::Effect;
 use ink::{codegen::Env, prelude::string::String};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 pub fn open(
-    state: &mut ProjectsV5,
+    state: &mut ProjectData,
     milestone_id: Id,
     submission_id: Id,
     evidence: Option<EvidenceReference>,
@@ -79,7 +79,7 @@ pub fn open(
     state.project.active_dispute_id = Some(id);
     Ok(state.effect(25, id))
 }
-pub fn respond(state: &mut ProjectsV5, id: Id, evidence: EvidenceReference) -> Result<Effect> {
+pub fn respond(state: &mut ProjectData, id: Id, evidence: EvidenceReference) -> Result<Effect> {
     require(!state.project.cancelled, "project_cancelled")?;
     let project = state
         .registry()
@@ -106,7 +106,7 @@ pub fn respond(state: &mut ProjectsV5, id: Id, evidence: EvidenceReference) -> R
     require(now >= case.opened_at, "invalid_dispute_response")?;
     Ok(state.effect(26, id))
 }
-pub fn view(state: &ProjectsV5, id: Id) -> Result<(DisputeRecord, MilestoneCore)> {
+pub fn view(state: &ProjectData, id: Id) -> Result<(DisputeRecord, MilestoneCore)> {
     let case = state
         .disputes
         .iter()

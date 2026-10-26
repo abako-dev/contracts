@@ -3,14 +3,14 @@
 use crate::{
     assets,
     bank::{Deposit, Withdrawal},
-    directory_v5::*,
+    directory::*,
     factory, indices,
     records::{
         ProjectProposalRecord, QualificationCounts, ReasonRecord, RequestRecord, WorkerRecord,
     },
     reputation::ScorePolicy,
 };
-use calendar_v5::calendar_v5::{CalendarV5Ref, ReservationView, WeekOverride};
+use calendar::calendar::{CalendarRef, ReservationView, WeekOverride};
 use ink::env::call::FromAccountId;
 use ink::{
     codegen::Env as _,
@@ -137,17 +137,17 @@ impl DirectoryData {
         require(self.migration_phase == 1)?;
         match record {
             MigrationRecordV2::CalendarDefinition(owner, minutes, overrides, reservations) => {
-                CalendarV5Ref::from_account_id(self.worker_record(owner)?.calendar)
+                CalendarRef::from_account_id(self.worker_record(owner)?.calendar)
                     .import_definition(owner, minutes, overrides, reservations)?;
             }
             MigrationRecordV2::CalendarOverrides(owner, items) => {
                 require(items.len() <= 64)?;
-                CalendarV5Ref::from_account_id(self.worker_record(owner)?.calendar)
+                CalendarRef::from_account_id(self.worker_record(owner)?.calendar)
                     .import_overrides(items)?;
             }
             MigrationRecordV2::CalendarReservations(owner, items) => {
                 require(items.len() <= 64)?;
-                CalendarV5Ref::from_account_id(self.worker_record(owner)?.calendar)
+                CalendarRef::from_account_id(self.worker_record(owner)?.calendar)
                     .import_reservations(items)?;
             }
             MigrationRecordV2::Worker(view) => {

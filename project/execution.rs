@@ -1,8 +1,8 @@
 //! Project-owned execution rules. Every external effect shares the parent transaction.
-use crate::{projects_v5::ProjectData as ProjectsV5, types::*};
-use directory_v5::{
+use crate::{project::ProjectData, types::*};
+use directory::{
     assets,
-    directory_v5::{Effect, WorkerMode},
+    directory::{Effect, WorkerMode},
     matching,
     reputation::{Contribution, VoteKind},
 };
@@ -59,7 +59,7 @@ fn current_mut(milestone: &mut MilestoneCore) -> Result<&mut CompletionSubmissio
         .ok_or_else(|| String::from("submission_not_current"))
 }
 pub fn approve(
-    state: &mut ProjectsV5,
+    state: &mut ProjectData,
     proposal_id: Id,
     expected_revision: u64,
     seed: [u8; 32],
@@ -145,7 +145,7 @@ pub fn approve(
     Ok(state.effect(15, proposal_id))
 }
 pub fn submit(
-    state: &mut ProjectsV5,
+    state: &mut ProjectData,
     milestone_id: Id,
     deliverable: Option<EvidenceReference>,
     ratings: Option<Vec<WorkerRating>>,
@@ -207,7 +207,7 @@ pub fn submit(
     Ok(state.effect(22, id))
 }
 pub fn reject(
-    state: &mut ProjectsV5,
+    state: &mut ProjectData,
     milestone_id: Id,
     submission_id: Id,
     reason: Option<EvidenceReference>,
@@ -244,7 +244,7 @@ pub fn reject(
     Ok(state.effect(24, submission_id))
 }
 pub fn accept(
-    state: &mut ProjectsV5,
+    state: &mut ProjectData,
     milestone_id: Id,
     submission_id: Id,
     legacy: Option<(u8, TeamRating)>,
@@ -371,7 +371,7 @@ pub fn accept(
     )?;
     Ok(state.effect(23, milestone_id))
 }
-pub fn evaluate(state: &mut ProjectsV5, ratings: Vec<AccountRating>) -> Result<Effect> {
+pub fn evaluate(state: &mut ProjectData, ratings: Vec<AccountRating>) -> Result<Effect> {
     require(
         ratings.iter().all(|r| (1..=5).contains(&r.score))
             && unique(&ratings.iter().map(|r| r.account).collect::<Vec<_>>()),

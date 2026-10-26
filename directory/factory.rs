@@ -1,5 +1,5 @@
 //! Explicit constructor ABIs avoid source cycles between Directory and Project.
-use crate::directory_v5::MetadataCommitmentV1;
+use crate::directory::MetadataCommitmentV1;
 use ink::{
     env::{
         call::{build_create, ExecutionInput, FromAccountId, Selector},

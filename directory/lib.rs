@@ -10,7 +10,7 @@ pub mod records;
 pub mod reputation;
 
 #[ink::contract]
-pub mod directory_v5 {
+pub mod directory {
     use crate::bank::{Bank, Deposit, FinancialProjection, Withdrawal};
     pub(crate) use crate::indices::insert as insert_sorted;
     use crate::{
@@ -23,8 +23,8 @@ pub mod directory_v5 {
         matching::{Milestone, Requirement},
         reputation::{self, Contribution, ScorePolicy, VoteKind},
     };
-    use calendar_v5::calendar_v5::{
-        CalendarDefinition, CalendarV5Ref, CalendarView, ReservationView, Week, WeekWindow,
+    use calendar::calendar::{
+        CalendarDefinition, CalendarRef, CalendarView, ReservationView, Week, WeekWindow,
     };
     use chrono::Datelike;
     use core::cmp::Ordering;
@@ -233,7 +233,7 @@ pub mod directory_v5 {
         )
     }
     #[ink(storage)]
-    pub struct DirectoryV5 {
+    pub struct Directory {
         data: DirectoryData,
     }
 
@@ -844,7 +844,7 @@ pub mod directory_v5 {
                 if worker.mode == WorkerMode::Coordinator
                     && worker.coordinator_eligible
                     && *account != client
-                    && CalendarV5Ref::from_account_id(worker.calendar).available(week)? != 0
+                    && CalendarRef::from_account_id(worker.calendar).available(week)? != 0
                 {
                     candidates.push(*account);
                 }
@@ -865,7 +865,7 @@ pub mod directory_v5 {
         ) -> Result<()> {
             self.project_controller()?;
             let worker = self.worker_record(worker)?;
-            CalendarV5Ref::from_account_id(worker.calendar).reserve(window, minutes, reference)
+            CalendarRef::from_account_id(worker.calendar).reserve(window, minutes, reference)
         }
         /// All milestones share one RNG and transaction. Returning Err reverts
         /// every nested Calendar reservation, including earlier slots/milestones.
@@ -889,7 +889,7 @@ pub mod directory_v5 {
                     week: milestone.window.start(),
                     minutes: 0,
                 };
-                CalendarV5Ref::from_account_id(self.worker_record(coordinator)?.calendar).reserve(
+                CalendarRef::from_account_id(self.worker_record(coordinator)?.calendar).reserve(
                     milestone.window,
                     milestone.coordinator_minutes,
                     reference.clone(),
@@ -925,7 +925,7 @@ pub mod directory_v5 {
                         if used.contains(&account) || worker.mode != WorkerMode::Worker {
                             continue;
                         }
-                        match CalendarV5Ref::from_account_id(worker.calendar)
+                        match CalendarRef::from_account_id(worker.calendar)
                             .allocation(milestone.window, minutes)
                         {
                             Ok(_) => available.push(account),
@@ -947,7 +947,7 @@ pub mod directory_v5 {
                         WorkerMode::Worker,
                         &mut rng,
                     )?;
-                    CalendarV5Ref::from_account_id(self.worker_record(chosen)?.calendar).reserve(
+                    CalendarRef::from_account_id(self.worker_record(chosen)?.calendar).reserve(
                         milestone.window,
                         minutes,
                         ReservationView {
@@ -997,7 +997,7 @@ pub mod directory_v5 {
                     qualifications: worker.qualifications,
                     mode: worker.mode,
                     coordinator_eligible: worker.coordinator_eligible,
-                    calendar: CalendarV5Ref::from_account_id(worker.calendar).view(),
+                    calendar: CalendarRef::from_account_id(worker.calendar).view(),
                     worker_score: worker.worker_score,
                     coordinator_score: worker.coordinator_score,
                 }
@@ -1032,7 +1032,7 @@ pub mod directory_v5 {
             )?;
             // Creation and Directory registration share the parent transaction.
             // Native storage deposits use the runtime's technical funding, never assets.
-            let calendar = CalendarV5Ref::new(
+            let calendar = CalendarRef::new(
                 origin,
                 self.env().account_id(),
                 calendar_id,
@@ -1090,7 +1090,7 @@ pub mod directory_v5 {
         pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<Effect> {
             let origin = self.env().caller();
             let worker = self.worker_record(origin)?;
-            CalendarV5Ref::from_account_id(worker.calendar).set_calendar(definition)?;
+            CalendarRef::from_account_id(worker.calendar).set_calendar(definition)?;
             Ok(Effect::new(2, Some(worker.calendar_id), origin))
         }
         pub fn set_worker_mode(&mut self, mode: WorkerMode) -> Result<Effect> {
@@ -1316,7 +1316,7 @@ pub mod directory_v5 {
         }
     }
 
-    impl DirectoryV5 {
+    impl Directory {
         fn read_state<T>(&self, read: impl FnOnce(&DirectoryData) -> T) -> T {
             read(&self.data)
         }

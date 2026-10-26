@@ -1,5 +1,5 @@
 //! Exact accumulators and ratio comparison from the approved native behavior.
-use crate::directory_v5::{ReputationView, Result};
+use crate::directory::{ReputationView, Result};
 use core::cmp::Ordering;
 use ink::prelude::string::String;
 
