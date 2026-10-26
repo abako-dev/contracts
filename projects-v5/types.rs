@@ -75,10 +75,7 @@ pub enum DeliveryPreference {
     WithinOneMonth {},
     OneToThreeMonths {},
     ThreeToSixMonths {},
-    SpecificDate {
-        #[codec(encoded_as = "storage_v5::Text")]
-        date: String,
-    },
+    SpecificDate { date: String },
 }
 dto!(TaskCore { task_id:u32, assignees:Vec<AccountId> });
 dto!(TaskStorageCore {task_storage_id:Id,milestone_id:Id,tasks:Vec<TaskCore>});

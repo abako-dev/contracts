@@ -1,7 +1,6 @@
 # Project v5 candidate
 
-SPEC-0013 implements unpaid planning, proposals, revisions, optional tracking
-tasks, estimates and cancellation. Directory creates and registers each Project;
+SPEC-0013 implements unpaid planning, proposals, revisions, core task identities, membership and cancellation. Directory creates and registers each Project;
 verified users call their Project directly. Only the creating Directory may run
 the constructor. Ordered global ID validation and the task counter share the
 outer runtime transaction, so failed commands cannot consume IDs or task keys.
@@ -66,4 +65,21 @@ refs enter through sealed import only. Root creation refs from R2a are unchanged
 R2b2 now replaces cancellation/planning reason text with fixed commitments while
 retaining target, actor, actual execution time, effect kind and order. The API owns
 reason content; `cancel_project_core` and `dispute_planning_core` keep existing
-permissions and lifecycle effects. Tasks and paging removal remain later slices.
+permissions and lifecycle effects. R3 retains task IDs and assignees in core; task text and progress stay in the API.
+
+
+The R4 candidate uses ordinary ink! Lazy/Mapping fields. Each proposal,
+milestone, requirement, task, submission and evaluation has a fixed header;
+growing child lists use individually addressed entries. Reason and dispute
+records are fixed. Maximum measured headers are Project222 bytes, Proposal142,
+Milestone81, Submission208, Reason123 and Dispute310. Canonical delivery dates
+remain losslessly represented by ten bytes. No storage-v5 dependency remains.
+
+Business operations hydrate the existing transient ProjectData and persist only
+changed fixed cells, clearing obsolete tails on shrink/removal. They still scan
+Project history and remain subject to unchanged memory/gas limits. No constant-cost
+or unbounded-history claim is made. Directory forwards bounded natural-record
+batches (at most64 records/8192 encoded bytes); Project checks authority, parents,
+counts, duplicates and complete decoding without retaining byte pages. Fresh
+imports finish dormant and seal only under Directory control. Current runtime
+verification and migration acceptance are recorded with the paired backend PR.

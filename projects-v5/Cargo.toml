@@ -7,12 +7,11 @@ publish = false
 license = "Apache-2.0 AND Unicode-3.0"
 
 [dependencies]
-storage-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "09ca7bec6edaf81dd52fbdc9e3ab0dc767c91a35", default-features = false }
 ink = { version = "=5.1.1", default-features = false }
 scale = { package = "parity-scale-codec", version = "=3.7.5", default-features = false, features = ["derive"] }
 scale-info = { version = "=2.11.6", default-features = false, features = ["derive"], optional = true }
 calendar-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "d1abf49066f80d10ae53fc4cb30c8dc7a659d15b", default-features = false, features = ["ink-as-dependency"] }
-directory-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "348817540f899ed85390530161f5165a6ca6ba8f", default-features = false, features = ["ink-as-dependency"] }
+directory-v5 = { git = "https://github.com/abako-dev/contracts.git", rev = "459b41c5fad00e4f701cbb4d923f41b1e79c22ef", default-features = false, features = ["ink-as-dependency"] }
 rand = { version = "=0.10.2", default-features = false, features = ["std_rng"] }
 chrono = { version = "=0.4.45", default-features = false }
 
@@ -21,5 +20,5 @@ path = "lib.rs"
 
 [features]
 default = ["std"]
-std = ["storage-v5/std", "ink/std", "scale/std", "scale-info/std", "calendar-v5/std", "directory-v5/std", "chrono/std"]
+std = ["ink/std", "scale/std", "scale-info/std", "calendar-v5/std", "directory-v5/std", "chrono/std"]
 ink-as-dependency = []

@@ -1,6 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 mod disputes;
 mod execution;
+mod migration;
+mod records;
+mod state;
 mod types;
 
 #[ink::contract]
@@ -24,11 +27,9 @@ pub mod projects_v5 {
 
     #[ink(storage)]
     pub struct ProjectsV5 {
-        bytes: u32,
-        import: storage_v5::Import,
+        data: crate::state::ProjectStorage,
     }
 
-    #[derive(scale::Encode, scale::Decode)]
     pub(crate) struct ProjectData {
         pub(crate) directory: AccountId,
         pub(crate) project: ProjectCore,
@@ -680,7 +681,7 @@ pub mod projects_v5 {
         }
         milestones
     }
-    fn validate_delivery(delivery: &DeliveryPreference) -> Result<()> {
+    pub(crate) fn validate_delivery(delivery: &DeliveryPreference) -> Result<()> {
         if let DeliveryPreference::SpecificDate { date } = delivery {
             let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d")
                 .map_err(|_| String::from("invalid_contract"))?;
@@ -738,68 +739,38 @@ pub mod projects_v5 {
 
     impl ProjectsV5 {
         fn read_state<T>(&self, read: impl FnOnce(ProjectData) -> T) -> T {
-            read(storage_v5::load(self.bytes))
-        }
-        fn transact<T>(&mut self, change: impl FnOnce(&mut ProjectData) -> Result<T>) -> Result<T> {
-            let mut data: ProjectData = storage_v5::load(self.bytes);
-            let result = change(&mut data);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            read(self.data.load().expect("complete Project storage"))
         }
         fn change<T>(&mut self, change: impl FnOnce(&mut ProjectData) -> Result<T>) -> Result<T> {
-            if self.import.is_some() {
-                return Err(String::from("migration_in_progress"));
-            }
-            self.transact(|data| {
-                data.ensure_live()?;
-                change(data)
-            })
+            require(self.data.phase == 2, "migration_in_progress")?;
+            let mut data = self.data.load()?;
+            data.ensure_live()?;
+            let result = change(&mut data)?;
+            self.data.save(&data)?;
+            Ok(result)
         }
-
-        /// Fresh dormant storage accepts bounded pages only from its Directory.
+        /// Only the creating Directory can populate a fresh dormant Project.
         #[ink(constructor)]
-        pub fn from_archive(directory: AccountId, id: [u8; 16]) -> Result<Self> {
+        pub fn from_archive(directory: AccountId, id: Id) -> Result<Self> {
+            require(
+                Self::env().caller() == directory && Self::env().is_contract(&directory),
+                "directory_required",
+            )?;
             Ok(Self {
-                bytes: 0,
-                import: storage_v5::import_from(directory, id)?,
+                data: crate::state::ProjectStorage::new(directory, id, 0),
             })
         }
         #[ink(message)]
-        pub fn import_page(&mut self, index: u32, bytes: Vec<u8>) -> Result<()> {
-            storage_v5::append_import(&mut self.import, index, &bytes)
+        pub fn import_records(&mut self, bytes: Vec<u8>) -> Result<()> {
+            self.data.import_records(&bytes)
         }
         #[ink(message)]
         pub fn finish_import(&mut self) -> Result<()> {
-            let (data, length, parent, id): (ProjectData, u32, AccountId, [u8; 16]) =
-                storage_v5::decode_import(&self.import)?;
-            require(
-                data.directory == parent
-                    && data.project.project_id == id
-                    && !data.live
-                    && data.reasons.iter().all(|r| r.project_id == id)
-                    && data.disputes.iter().all(|d| d.project_id == id),
-                "invalid_project_state",
-            )?;
-            self.bytes = length;
-            self.import = None;
-            Ok(())
+            self.data.finish_import()
         }
         #[ink(message)]
         pub fn seal_import(&mut self) -> Result<()> {
-            if self.import.is_some() {
-                return Err(String::from("import_incomplete"));
-            }
-            self.transact(|data| {
-                if data.live
-                    || <ProjectData as ink::codegen::StaticEnv>::env().caller() != data.directory
-                {
-                    return Err(String::from("directory_required"));
-                }
-                data.live = true;
-                Ok(())
-            })
+            self.data.seal_import()
         }
         #[ink(constructor)]
         #[allow(
@@ -815,10 +786,9 @@ pub mod projects_v5 {
             now: u64,
         ) -> Result<Self> {
             let data = ProjectData::new(directory, project_id, client, coordinator, content, now)?;
-            Ok(Self {
-                bytes: storage_v5::save(0, &data),
-                import: None,
-            })
+            let mut stored = crate::state::ProjectStorage::new(directory, project_id, 2);
+            stored.save(&data)?;
+            Ok(Self { data: stored })
         }
         #[ink(message)]
         pub fn view(&self) -> ProjectCore {
@@ -837,13 +807,9 @@ pub mod projects_v5 {
             seed: [u8; 32],
             event_cursor: u64,
         ) -> Result<Effect> {
-            let mut data: ProjectData = storage_v5::load(self.bytes);
-            let result =
-                data.open_dispute(milestone_id, submission_id, evidence, seed, event_cursor);
-            if result.is_ok() {
-                self.bytes = storage_v5::save(self.bytes, &data);
-            }
-            result
+            self.change(|data| {
+                data.open_dispute(milestone_id, submission_id, evidence, seed, event_cursor)
+            })
         }
         #[ink(message)]
         pub fn open_dispute_comment(
@@ -1040,14 +1006,6 @@ pub mod projects_v5 {
         #[ink(message)]
         pub fn dispute_planning_core(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
             self.change(|data| data.dispute_planning_core(content))
-        }
-        #[ink(message)]
-        pub fn archive_len(&self) -> u32 {
-            self.bytes
-        }
-        #[ink(message)]
-        pub fn archive_page(&self, index: u32) -> Option<ink::prelude::vec::Vec<u8>> {
-            storage_v5::page(self.bytes, index)
         }
     }
 }
