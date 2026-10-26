@@ -28,7 +28,7 @@ The backend pins the WASM/ABI/build lock, runs it in pallet-contracts and replay
 the same committed cases against its independent Rust engine. The default
 application continues using Rust. Full Directory/Project parity and fresh sealed imports are implemented in the paired backend candidate; formal
 performance acceptance, promotion and release observation remain separate gates.
-The build helper sets the required `INK_STATIC_BUFFER_SIZE=294912` without
+The build helper retains the existing `INK_STATIC_BUFFER_SIZE=294912` without
 relaxing the contract value or memory limits.
 
 ## Dependency review
@@ -51,3 +51,32 @@ application dependencies into WASM.
 Primary sources: [chrono manifest and features](https://docs.rs/crate/chrono/0.4.45/source/Cargo.toml),
 [checked ISO-week conversion](https://docs.rs/chrono/0.4.45/chrono/naive/struct.NaiveDate.html#method.from_isoywd_opt),
 [registry metadata](https://crates.io/crates/chrono/0.4.45).
+
+## Standard ink storage (SPEC-0015 Calendar slice)
+
+Calendar now uses an ordinary `Lazy` header and `Mapping` entries for overrides,
+reservation records and checked per-week totals. Indexed week/reservation keys
+preserve enumeration and original vector order without storing a growing vector
+in one cell. Reservations write only the new records/totals; capacity changes
+validate each distinct reserved week before modifying any definition cell.
+There is no `storage-v5` dependency, root serialization or byte-page interface in
+Calendar. Directory and Project remain on their preceding layouts in this slice.
+
+The fixed header encodes to at most 138 bytes, a reservation to at most 47 bytes,
+and an override to 9 bytes. Index/total cells contain a single week (5 bytes) or
+u32 (4 bytes). The existing 16 KiB cell limit and input/static-buffer settings
+are unchanged. The existing view remains a convenience ABI; owner exports read
+individual fixed records. A thousand ordinary reservations exceed one old root
+cell while each new stored record retains these bounds.
+
+Fresh imports receive a header, individual typed overrides and reservations,
+then verify declared counts/capacity before Directory seals the instance exactly
+once. Partial or sealed imports reject inappropriate writes. Directory routes
+these typed records through its existing root-only importer. Complete imports
+are compared with the source archive before publication. Existing checkpoints
+must be exported and imported into fresh contracts; do not reinterpret an old
+Calendar checkpoint under this layout.
+
+Calendar, Directory and Project use local path references for their shared v5
+contract interfaces, so a single source commit determines the rebuilt cohort.
+This changes no runtime dependency family or user permission.

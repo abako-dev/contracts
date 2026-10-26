@@ -124,7 +124,6 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 [[package]]
 name = "calendar-v5"
 version = "0.1.0"
-source = "git+https://github.com/abako-dev/contracts.git?rev=b21f84fd44ae657b653dcad0de980d2517723fa2#b21f84fd44ae657b653dcad0de980d2517723fa2"
 dependencies = [
  "chrono",
  "ink",
@@ -374,7 +373,6 @@ dependencies = [
 [[package]]
 name = "directory-v5"
 version = "0.1.0"
-source = "git+https://github.com/abako-dev/contracts.git?rev=f38f6e718c540debda7e8b1355642d8a98228979#f38f6e718c540debda7e8b1355642d8a98228979"
 dependencies = [
  "calendar-v5",
  "chrono",

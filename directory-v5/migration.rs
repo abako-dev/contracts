@@ -7,6 +7,8 @@ use crate::{
     factory,
     reputation::ScorePolicy,
 };
+use calendar_v5::calendar_v5::{CalendarV5Ref, ReservationView, WeekOverride};
+use ink::env::call::FromAccountId;
 use ink::{
     codegen::Env as _,
     prelude::{string::String, vec::Vec},
@@ -60,7 +62,7 @@ pub struct ProjectImport {
 #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "Eleven fixed SCALE discriminants fit u8."
+    reason = "Fourteen fixed SCALE discriminants fit u8."
 )]
 pub enum MigrationRecordV1 {
     Worker(WorkerImport),
@@ -74,6 +76,9 @@ pub enum MigrationRecordV1 {
     Reason(Vec<u8>),
     Catalog(CatalogKind, CatalogEntry, Vec<u32>, CatalogReferenceV1),
     WorkerIndex(AccountId),
+    CalendarDefinition(AccountId, u32, u32, u32),
+    CalendarOverride(AccountId, WeekOverride),
+    CalendarReservation(AccountId, ReservationView),
 }
 fn require(condition: bool) -> Result<()> {
     if condition {
@@ -103,6 +108,18 @@ impl DirectoryData {
         self.root()?;
         require(self.migration_phase == 1)?;
         match record {
+            MigrationRecordV1::CalendarDefinition(owner, minutes, overrides, reservations) => {
+                CalendarV5Ref::from_account_id(self.worker_record(owner)?.calendar)
+                    .import_definition(owner, minutes, overrides, reservations)?;
+            }
+            MigrationRecordV1::CalendarOverride(owner, item) => {
+                CalendarV5Ref::from_account_id(self.worker_record(owner)?.calendar)
+                    .import_override(item)?;
+            }
+            MigrationRecordV1::CalendarReservation(owner, item) => {
+                CalendarV5Ref::from_account_id(self.worker_record(owner)?.calendar)
+                    .import_reservation(item)?;
+            }
             MigrationRecordV1::Worker(view) => {
                 require(
                     !self.workers.contains(view.account)
