@@ -186,6 +186,8 @@ pub mod directory_v5 {
         pub kind: u8,
         pub entity_id: Option<Id>,
         pub recipients: Vec<AccountId>,
+        /// Exact private allocation returned only by compact task creation.
+        pub allocated_task_id: Option<u32>,
     }
     impl Effect {
         fn new(kind: u8, entity_id: Option<Id>, account: AccountId) -> Self {
@@ -193,6 +195,7 @@ pub mod directory_v5 {
                 kind,
                 entity_id,
                 recipients: ink::prelude::vec![account],
+                allocated_task_id: None,
             }
         }
         fn moderated(kind: u8, id: Id, requester: AccountId, root: AccountId) -> Self {
@@ -200,6 +203,7 @@ pub mod directory_v5 {
                 kind,
                 entity_id: Some(id),
                 recipients: BTreeSet::from([requester, root]).into_iter().collect(),
+                allocated_task_id: None,
             }
         }
     }
@@ -539,6 +543,7 @@ pub mod directory_v5 {
                 kind: 7,
                 entity_id: Some(id),
                 recipients: BTreeSet::from([client, coordinator]).into_iter().collect(),
+                allocated_task_id: None,
             })
         }
         pub fn compensation_policy(&self) -> u8 {
