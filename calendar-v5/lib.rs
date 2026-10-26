@@ -201,7 +201,9 @@ pub mod calendar_v5 {
                 let assigned = self.available_at(header, week)?.min(remaining);
                 if assigned != 0 {
                     slots.push((week, assigned));
-                    remaining -= assigned;
+                    remaining = remaining
+                        .checked_sub(assigned)
+                        .ok_or_else(|| String::from(ARITHMETIC))?;
                 }
                 if week == window.end {
                     break;
@@ -287,7 +289,10 @@ pub mod calendar_v5 {
             )?;
             self.overrides.insert(item.week, &item.capacity);
             self.override_keys.insert(header.overrides, &item.week);
-            header.overrides += 1;
+            header.overrides = header
+                .overrides
+                .checked_add(1)
+                .expect("declared import count checked before writing");
             self.header.set(&header);
             Ok(())
         }
@@ -314,11 +319,17 @@ pub mod calendar_v5 {
             if !self.reserved.contains(item.week) {
                 self.reserved_week_keys
                     .insert(header.reserved_weeks, &item.week);
-                header.reserved_weeks += 1;
+                header.reserved_weeks = header
+                    .reserved_weeks
+                    .checked_add(1)
+                    .expect("distinct weeks cannot exceed checked reservation count");
             }
             self.reservations.insert(header.reservations, &item);
             self.reserved.insert(item.week, &total);
-            header.reservations += 1;
+            header.reservations = header
+                .reservations
+                .checked_add(1)
+                .expect("reservation count checked before writing");
             self.header.set(&header);
             Ok(())
         }
@@ -447,14 +458,25 @@ pub mod calendar_v5 {
                     minutes,
                     ..reference.clone()
                 };
-                let total = self.reserved.get(week).unwrap_or(0) + minutes;
+                let total = self
+                    .reserved
+                    .get(week)
+                    .unwrap_or(0u32)
+                    .checked_add(minutes)
+                    .expect("allocation fits the checked week capacity");
                 if !self.reserved.contains(week) {
                     self.reserved_week_keys.insert(header.reserved_weeks, &week);
-                    header.reserved_weeks += 1;
+                    header.reserved_weeks = header
+                        .reserved_weeks
+                        .checked_add(1)
+                        .expect("distinct weeks cannot exceed checked reservation count");
                 }
                 self.reservations.insert(header.reservations, &item);
                 self.reserved.insert(week, &total);
-                header.reservations += 1;
+                header.reservations = header
+                    .reservations
+                    .checked_add(1)
+                    .expect("reservation count checked before writing");
             }
             debug_assert_eq!(header.reservations, count);
             self.header.set(&header);
