@@ -276,7 +276,30 @@ pub mod calendar_v5 {
             Ok(())
         }
         #[ink(message)]
-        pub fn import_override(&mut self, item: WeekOverride) -> Result<()> {
+        pub fn import_overrides(&mut self, records: Vec<WeekOverride>) -> Result<()> {
+            require(
+                !records.is_empty() && records.len() <= 64,
+                "invalid_archive",
+            )?;
+            // ink marks Err responses as REVERT, including earlier records in
+            // this bounded batch. No partial batch can be externally committed.
+            for record in records {
+                self.import_override(record)?;
+            }
+            Ok(())
+        }
+        #[ink(message)]
+        pub fn import_reservations(&mut self, records: Vec<ReservationView>) -> Result<()> {
+            require(
+                !records.is_empty() && records.len() <= 64,
+                "invalid_archive",
+            )?;
+            for record in records {
+                self.import_reservation(record)?;
+            }
+            Ok(())
+        }
+        fn import_override(&mut self, item: WeekOverride) -> Result<()> {
             let mut header = self.importing(1)?;
             let expected = header
                 .expected
@@ -296,8 +319,7 @@ pub mod calendar_v5 {
             self.header.set(&header);
             Ok(())
         }
-        #[ink(message)]
-        pub fn import_reservation(&mut self, item: ReservationView) -> Result<()> {
+        fn import_reservation(&mut self, item: ReservationView) -> Result<()> {
             let mut header = self.importing(1)?;
             let expected = header
                 .expected

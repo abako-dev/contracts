@@ -69,8 +69,8 @@ are unchanged. The existing view remains a convenience ABI; owner exports read
 individual fixed records. A thousand ordinary reservations exceed one old root
 cell while each new stored record retains these bounds.
 
-Fresh imports receive a header, individual typed overrides and reservations,
-then verify declared counts/capacity before Directory seals the instance exactly
+Fresh imports receive a header and batches of at most 64 typed overrides or
+reservations (under 3.1 KiB per batch), then verify declared counts/capacity before Directory seals the instance exactly
 once. Partial or sealed imports reject inappropriate writes. Directory routes
 these typed records through its existing root-only importer. Complete imports
 are compared with the source archive before publication. Existing checkpoints
@@ -80,3 +80,7 @@ Calendar checkpoint under this layout.
 Calendar, Directory and Project use local path references for their shared v5
 contract interfaces, so a single source commit determines the rebuilt cohort.
 This changes no runtime dependency family or user permission.
+
+The batch bound avoids one VM invocation per record during migration. A failed
+batch reverts all of its writes using the standard ink message REVERT behavior.
+It adds no persistent staging buffer or storage codec.

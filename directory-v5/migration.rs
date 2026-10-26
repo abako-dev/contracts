@@ -77,8 +77,8 @@ pub enum MigrationRecordV1 {
     Catalog(CatalogKind, CatalogEntry, Vec<u32>, CatalogReferenceV1),
     WorkerIndex(AccountId),
     CalendarDefinition(AccountId, u32, u32, u32),
-    CalendarOverride(AccountId, WeekOverride),
-    CalendarReservation(AccountId, ReservationView),
+    CalendarOverrides(AccountId, Vec<WeekOverride>),
+    CalendarReservations(AccountId, Vec<ReservationView>),
 }
 fn require(condition: bool) -> Result<()> {
     if condition {
@@ -112,13 +112,13 @@ impl DirectoryData {
                 CalendarV5Ref::from_account_id(self.worker_record(owner)?.calendar)
                     .import_definition(owner, minutes, overrides, reservations)?;
             }
-            MigrationRecordV1::CalendarOverride(owner, item) => {
+            MigrationRecordV1::CalendarOverrides(owner, items) => {
                 CalendarV5Ref::from_account_id(self.worker_record(owner)?.calendar)
-                    .import_override(item)?;
+                    .import_overrides(items)?;
             }
-            MigrationRecordV1::CalendarReservation(owner, item) => {
+            MigrationRecordV1::CalendarReservations(owner, items) => {
                 CalendarV5Ref::from_account_id(self.worker_record(owner)?.calendar)
-                    .import_reservation(item)?;
+                    .import_reservations(items)?;
             }
             MigrationRecordV1::Worker(view) => {
                 require(
