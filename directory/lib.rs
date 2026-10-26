@@ -5,7 +5,6 @@ pub mod bank;
 mod factory;
 mod indices;
 pub mod matching;
-pub mod migration;
 pub mod records;
 pub mod reputation;
 
@@ -38,6 +37,7 @@ pub mod directory {
         ToAccountId,
     };
     use rand::{rngs::StdRng, Rng, RngExt, SeedableRng};
+    use scale::DecodeAll;
     use scale::Encode;
 
     pub type Result<T> = core::result::Result<T, String>;
@@ -63,8 +63,6 @@ pub mod directory {
     pub enum MetadataReferenceV1 {
         #[codec(index = 0)]
         Creation(MetadataCommitmentV1),
-        #[codec(index = 1)]
-        Migration([u8; 32]),
     }
 
     /// Names/categories are API-owned; only these fixed references are stored.
@@ -77,8 +75,6 @@ pub mod directory {
     pub enum CatalogReferenceV1 {
         #[codec(index = 0)]
         Write(MetadataCommitmentV1),
-        #[codec(index = 1)]
-        Migration([u8; 32]),
         #[codec(index = 2)]
         Seed([u8; 32]),
     }
@@ -268,12 +264,10 @@ pub mod directory {
         pub(crate) project_submissions: Mapping<Id, u32, ManualKey<11>>,
         pub(crate) dispute_ids: StorageVec<Id, ManualKey<56>>,
         pub(crate) dispute_owners: Mapping<Id, Id, ManualKey<12>>,
-        pub(crate) evaluations:
-            Mapping<(Id, AccountId), crate::migration::RecordedEvaluation, ManualKey<13>>,
+        pub(crate) evaluations: Mapping<(Id, AccountId), Hash, ManualKey<13>>,
         pub(crate) skill_counts: Mapping<u32, u32, ManualKey<14>>,
         pub(crate) skill_members: Mapping<(u32, u32), AccountId, ManualKey<15>>,
         pub(crate) skill_positions: Mapping<(u32, AccountId), u32, ManualKey<16>>,
-        pub(crate) migration_phase: u8,
         pub(crate) origins: Mapping<u32, CatalogReferenceV1, ManualKey<18>>,
         pub(crate) reason_records: Mapping<u64, ReasonRecord, ManualKey<19>>,
         pub(crate) skill_role_values: Mapping<(u32, u32), u32, ManualKey<20>>,
@@ -285,17 +279,25 @@ pub mod directory {
         pub(crate) project_proposals: Mapping<(Id, u32), ProjectProposalRecord, ManualKey<26>>,
         pub(crate) project_milestones: Mapping<MilestonePosition, MilestoneIdentity, ManualKey<27>>,
         pub(crate) project_submission_values: Mapping<(Id, u32), Id, ManualKey<28>>,
-        pub(crate) project_imports:
-            Mapping<Id, crate::migration::ProjectImportProgress, ManualKey<29>>,
         pub(crate) reason_count: u64,
     }
     impl DirectoryData {
-        pub(crate) fn ensure_live(&self) -> Result<()> {
-            if self.migration_phase != 1 {
-                Ok(())
-            } else {
-                Err(String::from("migration_in_progress"))
+        fn push_reason(&mut self, bytes: Vec<u8>) -> Result<()> {
+            let next = self
+                .reason_count
+                .checked_add(1)
+                .ok_or_else(|| String::from("invalid_archive"))?;
+            let record = crate::records::ReasonRecord::decode_all(&mut &bytes[..])
+                .map_err(|_| String::from("invalid_archive"))?;
+            self.reason_records.insert(self.reason_count, &record);
+            self.reason_count = next;
+            Ok(())
+        }
+        pub(crate) fn append_reason(&mut self, project: Id, bytes: Vec<u8>) -> Result<()> {
+            if self.registered_projects.get(self.env().caller()) != Some(project) {
+                return Err(String::from("invalid_project_origin"));
             }
+            self.push_reason(bytes)
         }
 
         pub fn new(
@@ -306,7 +308,6 @@ pub mod directory {
         ) -> Result<Self> {
             let mut result = Self {
                 root: <Self as ink::codegen::StaticEnv>::env().caller(),
-                migration_phase: 0,
                 origins: Mapping::default(),
                 reason_records: Mapping::default(),
                 skill_role_values: Mapping::default(),
@@ -318,7 +319,6 @@ pub mod directory {
                 project_proposals: Mapping::default(),
                 project_milestones: Mapping::default(),
                 project_submission_values: Mapping::default(),
-                project_imports: Mapping::default(),
                 reason_count: 0,
                 calendar_code,
                 reservation_controller,
@@ -793,14 +793,7 @@ pub mod directory {
             let hash = Hash::from(hash);
             let key = (project_id, author);
             if let Some(prior) = self.evaluations.get(key) {
-                return match prior {
-                    crate::migration::RecordedEvaluation::Applied(prior) => {
-                        require(prior == hash, "evaluation_conflict")
-                    }
-                    crate::migration::RecordedEvaluation::Imported => {
-                        Err(String::from("project_already_evaluated"))
-                    }
-                };
+                return require(prior == hash, "evaluation_conflict");
             }
             for vote in votes {
                 let mut worker = self.worker_record(vote.account)?;
@@ -817,8 +810,7 @@ pub mod directory {
                 )?;
                 self.workers.insert(vote.account, &worker);
             }
-            self.evaluations
-                .insert(key, &crate::migration::RecordedEvaluation::Applied(hash));
+            self.evaluations.insert(key, &hash);
             Ok(())
         }
         /// Used by the Project factory. Captured entropy derives the same ID
@@ -1326,52 +1318,9 @@ pub mod directory {
         ) -> Result<T> {
             change(&mut self.data)
         }
-        fn change<T>(&mut self, change: impl FnOnce(&mut DirectoryData) -> Result<T>) -> Result<T> {
-            self.transact(|data| {
-                data.ensure_live()?;
-                change(data)
-            })
-        }
-
-        /// Migration is available only on a fresh root-owned instance, then seals forever.
-        #[ink(message)]
-        pub fn begin_import(&mut self) -> Result<()> {
-            self.transact(|data| data.begin_import())
-        }
-        #[ink(message)]
-        pub fn import_records(
-            &mut self,
-            records: Vec<crate::migration::MigrationRecordV2>,
-        ) -> Result<()> {
-            require(
-                !records.is_empty() && records.len() <= 64 && records.encoded_size() <= 8192,
-                "invalid_import_batch",
-            )?;
-            self.transact(|data| {
-                for record in records {
-                    data.import_record(record)?;
-                }
-                Ok(())
-            })
-        }
-        #[ink(message)]
-        pub fn import_project_records(&mut self, id: Id, bytes: Vec<u8>) -> Result<()> {
-            self.transact(|data| data.import_project_records(id, bytes))
-        }
-        #[ink(message)]
-        pub fn finish_child_import(
-            &mut self,
-            target: crate::migration::ImportTarget,
-        ) -> Result<()> {
-            self.transact(|data| data.finish_child_import(target))
-        }
-        #[ink(message)]
-        pub fn seal_import(&mut self) -> Result<()> {
-            self.transact(|data| data.seal_import())
-        }
         #[ink(message)]
         pub fn append_reason(&mut self, project_id: Id, bytes: Vec<u8>) -> Result<()> {
-            self.change(|data| data.append_reason(project_id, bytes))
+            self.transact(|data| data.append_reason(project_id, bytes))
         }
         #[ink(constructor)]
         #[allow(
@@ -1394,7 +1343,7 @@ pub mod directory {
         }
         #[ink(message)]
         pub fn configure_project_code(&mut self, code: Hash) -> Result<()> {
-            self.change(|data| data.configure_project_code(code))
+            self.transact(|data| data.configure_project_code(code))
         }
         #[ink(message)]
         pub fn project_address(&self, id: Id) -> Option<AccountId> {
@@ -1414,7 +1363,7 @@ pub mod directory {
             content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
-            self.change(|data| data.create_project_core(content, seed))
+            self.transact(|data| data.create_project_core(content, seed))
         }
         #[ink(message)]
         pub fn compensation_policy(&self) -> u8 {
@@ -1422,7 +1371,7 @@ pub mod directory {
         }
         #[ink(message)]
         pub fn set_compensation_policy(&mut self, percent: u8) -> Result<Effect> {
-            self.change(|data| data.set_compensation_policy(percent))
+            self.transact(|data| data.set_compensation_policy(percent))
         }
         #[ink(message)]
         pub fn validate_qualifications(&self, qualifications: Qualifications) -> Result<()> {
@@ -1434,7 +1383,7 @@ pub mod directory {
         }
         #[ink(message)]
         pub fn configure_money(&mut self, mock_funding: bool) -> Result<()> {
-            self.change(|data| data.configure_money(mock_funding))
+            self.transact(|data| data.configure_money(mock_funding))
         }
         #[ink(message)]
         pub fn money_enabled(&self) -> bool {
@@ -1442,23 +1391,23 @@ pub mod directory {
         }
         #[ink(message)]
         pub fn fund_account(&mut self, account: AccountId, amount: u64) -> Result<Effect> {
-            self.change(|data| data.fund_account(account, amount))
+            self.transact(|data| data.fund_account(account, amount))
         }
         #[ink(message)]
         pub fn create_deposit(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
-            self.change(|data| data.create_deposit(amount, seed))
+            self.transact(|data| data.create_deposit(amount, seed))
         }
         #[ink(message)]
         pub fn confirm_deposit(&mut self, id: Id) -> Result<Effect> {
-            self.change(|data| data.confirm_deposit(id))
+            self.transact(|data| data.confirm_deposit(id))
         }
         #[ink(message)]
         pub fn create_withdrawal(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
-            self.change(|data| data.create_withdrawal(amount, seed))
+            self.transact(|data| data.create_withdrawal(amount, seed))
         }
         #[ink(message)]
         pub fn cancel_withdrawal(&mut self, id: Id) -> Result<Effect> {
-            self.change(|data| data.cancel_withdrawal(id))
+            self.transact(|data| data.cancel_withdrawal(id))
         }
         #[ink(message)]
         pub fn deposit(&self, id: Id) -> Result<Deposit> {
@@ -1474,23 +1423,23 @@ pub mod directory {
         }
         #[ink(message)]
         pub fn book_debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
-            self.change(|data| data.book_debit(account, amount))
+            self.transact(|data| data.book_debit(account, amount))
         }
         #[ink(message)]
         pub fn book_credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
-            self.change(|data| data.book_credit(account, amount))
+            self.transact(|data| data.book_credit(account, amount))
         }
         #[ink(message)]
         pub fn set_project_identities(&mut self, layout: ProjectIdentities) -> Result<()> {
-            self.change(|data| data.set_project_identities(layout))
+            self.transact(|data| data.set_project_identities(layout))
         }
         #[ink(message)]
         pub fn set_project_submissions(&mut self, submissions: Vec<Id>) -> Result<()> {
-            self.change(|data| data.set_project_submissions(submissions))
+            self.transact(|data| data.set_project_submissions(submissions))
         }
         #[ink(message)]
         pub fn register_dispute(&mut self, id: Id) -> Result<()> {
-            self.change(|data| data.register_dispute(id))
+            self.transact(|data| data.register_dispute(id))
         }
         #[ink(message)]
         pub fn dispute_project(&self, id: Id) -> Option<Id> {
@@ -1505,11 +1454,11 @@ pub mod directory {
             &mut self,
             votes: Vec<(AccountId, WorkerMode, u16, u32)>,
         ) -> Result<()> {
-            self.change(|data| data.apply_legacy_reputation(votes))
+            self.transact(|data| data.apply_legacy_reputation(votes))
         }
         #[ink(message)]
         pub fn next_task_key(&mut self) -> Result<u32> {
-            self.change(|data| data.next_task_key())
+            self.transact(|data| data.next_task_key())
         }
         #[ink(message)]
         pub fn score_policy(&self) -> ScorePolicy {
@@ -1517,7 +1466,7 @@ pub mod directory {
         }
         #[ink(message)]
         pub fn set_score_policy(&mut self, policy: ScorePolicy) -> Result<Effect> {
-            self.change(|data| data.set_score_policy(policy))
+            self.transact(|data| data.set_score_policy(policy))
         }
         #[ink(message)]
         pub fn apply_reputation(
@@ -1526,7 +1475,7 @@ pub mod directory {
             author: AccountId,
             votes: Vec<Contribution>,
         ) -> Result<()> {
-            self.change(|data| data.apply_reputation(project_id, author, votes))
+            self.transact(|data| data.apply_reputation(project_id, author, votes))
         }
         #[ink(message)]
         pub fn select_coordinator(
@@ -1545,7 +1494,7 @@ pub mod directory {
             minutes: u32,
             reference: ReservationView,
         ) -> Result<()> {
-            self.change(|data| data.reserve_calendar(worker, window, minutes, reference))
+            self.transact(|data| data.reserve_calendar(worker, window, minutes, reference))
         }
         #[ink(message)]
         pub fn assign_team(
@@ -1556,7 +1505,9 @@ pub mod directory {
             milestones: Vec<Milestone>,
             seed: [u8; 32],
         ) -> Result<Vec<Vec<(u32, AccountId)>>> {
-            self.change(|data| data.assign_team(project_id, client, coordinator, milestones, seed))
+            self.transact(|data| {
+                data.assign_team(project_id, client, coordinator, milestones, seed)
+            })
         }
         #[ink(message)]
         pub fn catalog(&self) -> CatalogSeed {
@@ -1584,23 +1535,23 @@ pub mod directory {
             request: RegisterWorkerCoreRequest,
             calendar_id: Id,
         ) -> Result<Effect> {
-            self.change(|data| data.register_worker_core(request, calendar_id))
+            self.transact(|data| data.register_worker_core(request, calendar_id))
         }
         #[ink(message)]
         pub fn update_qualifications(&mut self, qualifications: Qualifications) -> Result<Effect> {
-            self.change(|data| data.update_qualifications(qualifications))
+            self.transact(|data| data.update_qualifications(qualifications))
         }
         #[ink(message)]
         pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<Effect> {
-            self.change(|data| data.set_calendar(definition))
+            self.transact(|data| data.set_calendar(definition))
         }
         #[ink(message)]
         pub fn set_worker_mode(&mut self, mode: WorkerMode) -> Result<Effect> {
-            self.change(|data| data.set_worker_mode(mode))
+            self.transact(|data| data.set_worker_mode(mode))
         }
         #[ink(message)]
         pub fn promote_coordinator(&mut self, account: AccountId) -> Result<Effect> {
-            self.change(|data| data.promote_coordinator(account))
+            self.transact(|data| data.promote_coordinator(account))
         }
         #[ink(message)]
         pub fn upsert_catalog_entry_core(
@@ -1609,11 +1560,11 @@ pub mod directory {
             id: u32,
             content: MetadataCommitmentV1,
         ) -> Result<Effect> {
-            self.change(|data| data.upsert_catalog_entry_core(kind, id, content))
+            self.transact(|data| data.upsert_catalog_entry_core(kind, id, content))
         }
         #[ink(message)]
         pub fn delete_catalog_entry(&mut self, kind: CatalogKind, id: u32) -> Result<Effect> {
-            self.change(|data| data.delete_catalog_entry(kind, id))
+            self.transact(|data| data.delete_catalog_entry(kind, id))
         }
         #[ink(message)]
         pub fn create_skill_request_core(
@@ -1622,7 +1573,7 @@ pub mod directory {
             content: MetadataCommitmentV1,
             request_id: Id,
         ) -> Result<Effect> {
-            self.change(|data| data.create_skill_request_core(role_ids, content, request_id))
+            self.transact(|data| data.create_skill_request_core(role_ids, content, request_id))
         }
         #[ink(message)]
         pub fn decide_skill_request(
@@ -1630,7 +1581,7 @@ pub mod directory {
             request_id: Id,
             decision: SkillRequestDecision,
         ) -> Result<Effect> {
-            self.change(|data| data.decide_skill_request(request_id, decision))
+            self.transact(|data| data.decide_skill_request(request_id, decision))
         }
         #[ink(message)]
         pub fn set_proposal_references(
@@ -1638,7 +1589,7 @@ pub mod directory {
             proposal_id: Id,
             qualifications: Option<Qualifications>,
         ) -> Result<()> {
-            self.change(|data| data.set_proposal_references(proposal_id, qualifications))
+            self.transact(|data| data.set_proposal_references(proposal_id, qualifications))
         }
     }
 }

@@ -320,7 +320,7 @@ mod tests {
                 roles: ink::prelude::vec![CatalogEntry {
                     id: 1,
                     fixed: true,
-                    content: CatalogReferenceV1::Migration([1; 32])
+                    content: CatalogReferenceV1::Seed([1; 32])
                 }],
                 skills: Vec::new(),
                 skill_roles: Vec::new(),
@@ -436,6 +436,65 @@ mod tests {
             .encode()
             .len(),
             20
+        );
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    use ink::primitives::Hash;
+    fn fresh() -> DirectoryData {
+        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+        let mut data = DirectoryData::new(
+            Hash::from([1; 32]),
+            accounts.alice,
+            accounts.alice,
+            CatalogSeed {
+                roles: ink::prelude::vec![CatalogEntry {
+                    id: 1,
+                    fixed: true,
+                    content: CatalogReferenceV1::Seed([0; 32])
+                }],
+                skills: Vec::new(),
+                skill_roles: Vec::new(),
+            },
+        )
+        .unwrap();
+        data.project_code = Some(Hash::from([2; 32]));
+        data.bank.configure(false).unwrap();
+        data
+    }
+    #[ink::test]
+    fn catalog_rename_retains_origin_and_recreation_selects_new_origin() {
+        let mut data = fresh();
+        let first = MetadataCommitmentV1 {
+            operation_id: [3; 16],
+            hash: [4; 32],
+        };
+        let renamed = MetadataCommitmentV1 {
+            operation_id: [5; 16],
+            hash: [6; 32],
+        };
+        data.upsert_catalog_entry_core(CatalogKind::Skill, 42, first.clone())
+            .unwrap();
+        data.upsert_catalog_entry_core(CatalogKind::Skill, 42, renamed.clone())
+            .unwrap();
+        assert_eq!(
+            data.skills.get(42).unwrap().content,
+            CatalogReferenceV1::Write(renamed.clone())
+        );
+        assert_eq!(data.origins.get(42), Some(CatalogReferenceV1::Write(first)));
+        assert_eq!(
+            data.upsert_catalog_entry_core(CatalogKind::Role, 1, renamed.clone()),
+            Err(String::from("fixed_coordinator_role"))
+        );
+        data.delete_catalog_entry(CatalogKind::Skill, 42).unwrap();
+        data.upsert_catalog_entry_core(CatalogKind::Skill, 42, renamed.clone())
+            .unwrap();
+        assert_eq!(
+            data.origins.get(42),
+            Some(CatalogReferenceV1::Write(renamed))
         );
     }
 }
