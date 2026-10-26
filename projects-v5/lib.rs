@@ -166,7 +166,7 @@ pub mod projects_v5 {
                         .task_storage
                         .tasks
                         .iter()
-                        .flat_map(|t| t.task.assignees.iter())
+                        .flat_map(|t| t.assignees.iter())
                         .copied(),
                 );
             }
@@ -174,6 +174,7 @@ pub mod projects_v5 {
                 kind,
                 entity_id: Some(id),
                 recipients: recipients.into_iter().collect(),
+                allocated_task_id: None,
             }
         }
         pub(crate) fn proposal_index(&self, id: Id) -> Result<usize> {
@@ -523,77 +524,43 @@ pub mod projects_v5 {
             self.guard()?;
             Err("separate_planning_price_removed".into())
         }
-        pub fn create_task(&mut self, storage_id: Id, task: TaskDefinition) -> Result<Effect> {
-            task.validate()?;
+        pub fn create_task_core(
+            &mut self,
+            storage_id: Id,
+            assignees: Vec<AccountId>,
+        ) -> Result<Effect> {
+            require(unique(&assignees), "invalid_contract")?;
             self.guard()?;
             self.coordinator()?;
-            self.registry()
-                .validate_task_assignees(task.assignees.clone())?;
+            self.registry().validate_task_assignees(assignees.clone())?;
             let task_id = self.registry().next_task_key()?;
-            let reporter = self.env().caller();
             let (pi, mi) = self.storage_index(storage_id)?;
-            let now = self.now();
             self.project.proposals[pi].milestones[mi]
                 .task_storage
                 .tasks
-                .push(TaskView {
-                    task_id,
-                    reporter,
-                    created_at: now,
-                    updated_at: now,
-                    task,
-                });
-            Ok(self.effect(20, storage_id))
+                .push(TaskCore { task_id, assignees });
+            let mut effect = self.effect(20, storage_id);
+            effect.allocated_task_id = Some(task_id);
+            Ok(effect)
         }
-        pub fn edit_task(
+        pub fn set_task_assignees_core(
             &mut self,
             storage_id: Id,
             task_id: u32,
-            task: TaskDefinition,
+            assignees: Vec<AccountId>,
         ) -> Result<Effect> {
-            task.validate()?;
+            require(unique(&assignees), "invalid_contract")?;
             self.guard()?;
             self.coordinator()?;
-            self.registry()
-                .validate_task_assignees(task.assignees.clone())?;
+            self.registry().validate_task_assignees(assignees.clone())?;
             let (pi, mi) = self.storage_index(storage_id)?;
-            let now = self.now();
             let current = self.project.proposals[pi].milestones[mi]
                 .task_storage
                 .tasks
                 .iter_mut()
                 .find(|t| t.task_id == task_id)
                 .ok_or_else(|| String::from("task_not_found"))?;
-            current.task = task;
-            current.updated_at = now;
-            Ok(self.effect(21, storage_id))
-        }
-        pub fn update_task_progress(
-            &mut self,
-            storage_id: Id,
-            task_id: u32,
-            status: TaskStatus,
-            logged_minutes: u32,
-        ) -> Result<Effect> {
-            self.guard()?;
-            let origin = self.env().caller();
-            require(origin != self.project.client, "client_read_only")?;
-            let coordinator = self.project.coordinator;
-            let (pi, mi) = self.storage_index(storage_id)?;
-            let now = self.now();
-            let current = self.project.proposals[pi].milestones[mi]
-                .task_storage
-                .tasks
-                .iter_mut()
-                .find(|t| t.task_id == task_id)
-                .ok_or_else(|| String::from("task_not_found"))?;
-            require(
-                origin == coordinator || current.task.assignees.contains(&origin),
-                "task_assignee_required",
-            )?;
-            current.task.status = status;
-            current.task.logged_minutes = logged_minutes;
-            current.updated_at = now;
+            current.assignees = assignees;
             Ok(self.effect(21, storage_id))
         }
         pub fn delete_task(
@@ -701,7 +668,7 @@ pub mod projects_v5 {
                     status: None,
                     assignments: Vec::new(),
                     worker_ratings: Vec::new(),
-                    task_storage: TaskStorageView {
+                    task_storage: TaskStorageCore {
                         task_storage_id: storage_id,
                         milestone_id,
                         tasks: Vec::new(),
@@ -1041,29 +1008,21 @@ pub mod projects_v5 {
             self.read_state(|data| data.removed_planning_price())
         }
         #[ink(message)]
-        pub fn create_task(&mut self, storage_id: Id, task: TaskDefinition) -> Result<Effect> {
-            self.change(|data| data.create_task(storage_id, task))
+        pub fn create_task_core(
+            &mut self,
+            storage_id: Id,
+            assignees: Vec<AccountId>,
+        ) -> Result<Effect> {
+            self.change(|data| data.create_task_core(storage_id, assignees))
         }
         #[ink(message)]
-        pub fn edit_task(
+        pub fn set_task_assignees_core(
             &mut self,
             storage_id: Id,
             task_id: u32,
-            task: TaskDefinition,
+            assignees: Vec<AccountId>,
         ) -> Result<Effect> {
-            self.change(|data| data.edit_task(storage_id, task_id, task))
-        }
-        #[ink(message)]
-        pub fn update_task_progress(
-            &mut self,
-            storage_id: Id,
-            task_id: u32,
-            status: TaskStatus,
-            logged_minutes: u32,
-        ) -> Result<Effect> {
-            self.change(|data| {
-                data.update_task_progress(storage_id, task_id, status, logged_minutes)
-            })
+            self.change(|data| data.set_task_assignees_core(storage_id, task_id, assignees))
         }
         #[ink(message)]
         pub fn delete_task(

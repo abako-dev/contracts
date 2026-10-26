@@ -43,29 +43,6 @@ enumeration!(MilestoneStatus {
     Disputed,
     ChangesRequested
 });
-enumeration!(TaskType {
-    Feature,
-    Bug,
-    Task,
-    Epic,
-    Story
-});
-enumeration!(TaskPriority {
-    Lowest,
-    Low,
-    Medium,
-    High,
-    Highest,
-    Blocker
-});
-enumeration!(TaskStatus {
-    ToDo,
-    Open,
-    InProgress,
-    InReview,
-    Done,
-    Closed
-});
 /// Fixed proposal-specific references; descriptive preimages stay in the API.
 #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
 #[cfg_attr(
@@ -103,15 +80,8 @@ pub enum DeliveryPreference {
         date: String,
     },
 }
-dto!(TaskDefinition {#[codec(encoded_as="storage_v5::Text")] title:String,#[codec(encoded_as="storage_v5::Text")] description:String,task_type:TaskType,priority:TaskPriority,status:TaskStatus,assignees:Vec<AccountId>,estimated_minutes:u32,logged_minutes:u32,due_at:Option<u64>});
-dto!(TaskView {
-    task_id: u32,
-    reporter: AccountId,
-    created_at: u64,
-    updated_at: u64,
-    task: TaskDefinition
-});
-dto!(TaskStorageView {task_storage_id:Id,milestone_id:Id,tasks:Vec<TaskView>});
+dto!(TaskCore { task_id:u32, assignees:Vec<AccountId> });
+dto!(TaskStorageCore {task_storage_id:Id,milestone_id:Id,tasks:Vec<TaskCore>});
 dto!(AssignmentView {
     requirement_key: u32,
     worker: AccountId
@@ -167,7 +137,7 @@ pub enum SubmissionReview {
     },
 }
 dto!(CompletionSubmission {submission_id:Id,version:u64,deliverable:Option<EvidenceReference>,submitted_by:AccountId,submitted_at:u64,worker_ratings:Vec<WorkerRating>,review:SubmissionReview});
-dto!(MilestoneCore {milestone_id:Id,definition:MilestoneTerms,status:Option<MilestoneStatus>,assignments:Vec<AssignmentView>,worker_ratings:Vec<WorkerRating>,task_storage:TaskStorageView,frozen:bool,submissions:Vec<CompletionSubmission>});
+dto!(MilestoneCore {milestone_id:Id,definition:MilestoneTerms,status:Option<MilestoneStatus>,assignments:Vec<AssignmentView>,worker_ratings:Vec<WorkerRating>,task_storage:TaskStorageCore,frozen:bool,submissions:Vec<CompletionSubmission>});
 dto!(ProposalCore {proposal_id:Id,revision:u64,content:ProposalContentReferenceV1,status:ProposalStatus,milestones:Vec<MilestoneCore>,change_request:Option<ProposalContentReferenceV1>,delivery:Option<DeliveryPreference>,compensation_policy:Option<CompensationPolicy>});
 dto!(PlanningQuote {
     fee: u64,
@@ -203,15 +173,6 @@ pub(crate) fn require(condition: bool, code: &str) -> Result<()> {
 }
 pub(crate) fn unique<T: Ord>(values: &[T]) -> bool {
     values.iter().collect::<BTreeSet<_>>().len() == values.len()
-}
-pub(crate) fn nonempty(value: &str) -> Result<()> {
-    require(!value.trim().is_empty(), "invalid_contract")
-}
-impl TaskDefinition {
-    pub fn validate(&self) -> Result<()> {
-        nonempty(&self.title)?;
-        require(unique(&self.assignees), "invalid_contract")
-    }
 }
 impl ProposalTerms {
     pub fn validate(&self) -> Result<()> {
