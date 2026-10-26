@@ -41,8 +41,8 @@ build output when `/tmp` is memory-backed.
 
 The [backend sandbox](https://github.com/abako-project/backend-v2/tree/review/ink-v5-runtime/tools/ink-sandbox)
 pins the source commit, artifacts and build locks. Its rebuild command reproduces
-WASM and ABI; signed tests compare complete state, receipts, events, failures and
-restart against the native engine. Host unit tests alone do not prove VM parity.
+WASM and ABI; signed tests cover lifecycle, money, failed commits and restart
+through ordinary constructors and commands. Host tests alone do not verify the VM.
 Verification of the current change belongs in the paired
 [backend PR](https://github.com/abako-project/backend-v2/pull/24) and
 [contracts PR](https://github.com/abako-dev/contracts/pull/21).
@@ -62,25 +62,19 @@ Directory coordinates atomic nested changes across contracts. Calendar reserves
 integer minutes; approved rules do not release consumed reservations. Milestone
 settlement uses the stored allocation, independently of task progress.
 
-Fresh imports use typed records, with at most 64 entries per call. Directory and
-Project batches also have an 8192-byte bound. Headers declare counts; incomplete,
-duplicate and invalid records fail. Complete archives are compared before imports
-are permanently sealed. Imports restore facts without replaying payments.
+Contracts start through their ordinary constructors, with a small numeric catalog
+seed. There is no archive importer, custom storage layer or import/sealing phase.
 
 ## Compatibility and limits
 
-Names identify components; format versions remain explicit in signed messages,
-content references and migration records. A changed artifact cohort requires an
-explicit export into fresh contracts, full comparison and reopen before switching.
-Never reinterpret an old physical checkpoint. Backups include current provider
-state and API-owned content. Rollback uses current state after accepted writes.
+The development deployment starts with clean data. Existing incompatible provider
+checkpoints must be explicitly discarded; startup never silently resets them.
+Backups still include both provider state and API-owned content.
 
 These sources are not a deployed upgrade. Real-chain integration, SDK security
-remediation, controlled performance acceptance and frontend cutover remain release
-gates. The native engine remains the reference and default in the backend.
-Historical proof source and the former storage helper remain in
-[Git history](https://github.com/abako-dev/contracts/tree/a0c881fba4aee54af5aebd37e75a429838b7e8d0);
-renaming current source does not alter legacy deployed instances.
+remediation and controlled performance acceptance remain release gates. The
+standalone native provider remains the backend default until the SDK dependency
+policy passes; it is not used as a second authority inside the embedded runtime.
 
 Dependencies stay pinned to the reviewed ink/SCALE family. Chrono uses pure
 Gregorian/ISO-week arithmetic with defaults disabled; rand uses the existing

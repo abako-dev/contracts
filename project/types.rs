@@ -53,8 +53,6 @@ enumeration!(MilestoneStatus {
 pub enum ProposalContentReferenceV1 {
     #[codec(index = 0)]
     Signed(MetadataCommitmentV1),
-    #[codec(index = 1)]
-    Migration([u8; 32]),
 }
 dto!(RequirementDefinition {key:u32,role_id:u32,skill_ids:Vec<u32>,minutes:u32,budget:u64});
 dto!(MilestoneTerms {key:u32,window:WeekWindow,coordinator_fee:u64,coordinator_minutes:u32,requirements:Vec<RequirementDefinition>});
@@ -98,8 +96,6 @@ dto!(WorkerRating {
     reason = "Two explicit SCALE variants."
 )]
 pub enum EvidenceReference {
-    #[codec(index = 0)]
-    LegacyReferenceHash([u8; 32]),
     #[codec(index = 1)]
     Committed { record_id: Id, hash: [u8; 32] },
 }
@@ -157,8 +153,6 @@ dto!(ProjectCore {project_id:Id,created_at:Option<u64>,client:AccountId,coordina
 pub enum ReasonReferenceV1 {
     #[codec(index = 0)]
     Write(MetadataCommitmentV1),
-    #[codec(index = 1)]
-    Migration([u8; 32]),
 }
 dto!(ReasonRecord {project_id:Id,milestone_id:Option<Id>,origin:AccountId,content:ReasonReferenceV1,occurred_at:u64,kind:u8});
 pub(crate) fn require(condition: bool, code: &str) -> Result<()> {

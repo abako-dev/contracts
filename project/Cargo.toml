@@ -10,8 +10,8 @@ license = "Apache-2.0 AND Unicode-3.0"
 ink = { version = "=5.1.1", default-features = false }
 scale = { package = "parity-scale-codec", version = "=3.7.5", default-features = false, features = ["derive"] }
 scale-info = { version = "=2.11.6", default-features = false, features = ["derive"], optional = true }
-calendar = { git = "https://github.com/abako-dev/contracts.git", rev = "ce9ed40ffd48c6c25b0f0ca285ac5d4fc6251d64", default-features = false, features = ["ink-as-dependency"] }
-directory = { git = "https://github.com/abako-dev/contracts.git", rev = "a4940db2a7c0d4891254445777d3cc1ab6d3a503", default-features = false, features = ["ink-as-dependency"] }
+calendar = { git = "https://github.com/abako-dev/contracts.git", rev = "4cc83cd7bb12d32c6e3adca74d78d90e09476a83", default-features = false, features = ["ink-as-dependency"] }
+directory = { git = "https://github.com/abako-dev/contracts.git", rev = "a98a5328613f877bd5faa7b9ea1bd2551d4b4a0c", default-features = false, features = ["ink-as-dependency"] }
 rand = { version = "=0.10.2", default-features = false, features = ["std_rng"] }
 chrono = { version = "=0.4.45", default-features = false }
 

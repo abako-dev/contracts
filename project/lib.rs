@@ -1,7 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 mod disputes;
 mod execution;
-mod migration;
 mod records;
 mod state;
 mod types;
@@ -35,17 +34,8 @@ pub mod project {
         pub(crate) project: ProjectCore,
         pub(crate) reasons: Vec<ReasonRecord>,
         pub(crate) disputes: Vec<DisputeRecord>,
-        pub(crate) live: bool,
     }
     impl ProjectData {
-        pub(crate) fn ensure_live(&self) -> Result<()> {
-            if self.live {
-                Ok(())
-            } else {
-                Err(String::from("migration_in_progress"))
-            }
-        }
-
         #[allow(
             clippy::too_many_arguments,
             reason = "Explicit constructor ABI shared with the Directory factory."
@@ -64,7 +54,6 @@ pub mod project {
                 "directory_required",
             )?;
             Ok(Self {
-                live: true,
                 directory,
                 project: ProjectCore {
                     project_id,
@@ -271,7 +260,7 @@ pub mod project {
         ) -> Result<Effect> {
             crate::execution::submit(self, milestone_id, deliverable, None, seed)
         }
-        pub fn submit_legacy_milestone(
+        pub fn submit_rated_milestone(
             &mut self,
             milestone_id: Id,
             deliverable: Option<EvidenceReference>,
@@ -283,7 +272,7 @@ pub mod project {
         pub fn accept_milestone(&mut self, milestone_id: Id, submission_id: Id) -> Result<Effect> {
             crate::execution::accept(self, milestone_id, submission_id, None)
         }
-        pub fn accept_legacy_milestone(
+        pub fn accept_rated_milestone(
             &mut self,
             milestone_id: Id,
             submission_id: Id,
@@ -742,35 +731,10 @@ pub mod project {
             read(self.data.load().expect("complete Project storage"))
         }
         fn change<T>(&mut self, change: impl FnOnce(&mut ProjectData) -> Result<T>) -> Result<T> {
-            require(self.data.phase == 2, "migration_in_progress")?;
             let mut data = self.data.load()?;
-            data.ensure_live()?;
             let result = change(&mut data)?;
             self.data.save(&data)?;
             Ok(result)
-        }
-        /// Only the creating Directory can populate a fresh dormant Project.
-        #[ink(constructor)]
-        pub fn from_archive(directory: AccountId, id: Id) -> Result<Self> {
-            require(
-                Self::env().caller() == directory && Self::env().is_contract(&directory),
-                "directory_required",
-            )?;
-            Ok(Self {
-                data: crate::state::ProjectStorage::new(directory, id, 0),
-            })
-        }
-        #[ink(message)]
-        pub fn import_records(&mut self, bytes: Vec<u8>) -> Result<()> {
-            self.data.import_records(&bytes)
-        }
-        #[ink(message)]
-        pub fn finish_import(&mut self) -> Result<()> {
-            self.data.finish_import()
-        }
-        #[ink(message)]
-        pub fn seal_import(&mut self) -> Result<()> {
-            self.data.seal_import()
         }
         #[ink(constructor)]
         #[allow(
@@ -786,7 +750,7 @@ pub mod project {
             now: u64,
         ) -> Result<Self> {
             let data = ProjectData::new(directory, project_id, client, coordinator, content, now)?;
-            let mut stored = crate::state::ProjectStorage::new(directory, project_id, 2);
+            let mut stored = crate::state::ProjectStorage::new(directory, project_id);
             stored.save(&data)?;
             Ok(Self { data: stored })
         }
@@ -857,7 +821,7 @@ pub mod project {
             self.change(|data| data.submit_milestone(milestone_id, deliverable, seed))
         }
         #[ink(message)]
-        pub fn submit_legacy_milestone(
+        pub fn submit_rated_milestone(
             &mut self,
             milestone_id: Id,
             deliverable: Option<EvidenceReference>,
@@ -865,7 +829,7 @@ pub mod project {
             seed: [u8; 32],
         ) -> Result<Effect> {
             self.change(|data| {
-                data.submit_legacy_milestone(milestone_id, deliverable, ratings, seed)
+                data.submit_rated_milestone(milestone_id, deliverable, ratings, seed)
             })
         }
         #[ink(message)]
@@ -873,7 +837,7 @@ pub mod project {
             self.change(|data| data.accept_milestone(milestone_id, submission_id))
         }
         #[ink(message)]
-        pub fn accept_legacy_milestone(
+        pub fn accept_rated_milestone(
             &mut self,
             milestone_id: Id,
             submission_id: Id,
@@ -881,7 +845,7 @@ pub mod project {
             team_rating: TeamRating,
         ) -> Result<Effect> {
             self.change(|data| {
-                data.accept_legacy_milestone(
+                data.accept_rated_milestone(
                     milestone_id,
                     submission_id,
                     coordinator_score,

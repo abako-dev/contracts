@@ -15,8 +15,6 @@ pub type NestedPosition = (ChildPosition, u32);
 pub struct ProjectStorage {
     pub directory: AccountId,
     pub project_id: Id,
-    // 0: accepting typed records, 1: complete/dormant, 2: live.
-    pub phase: u8,
     pub header: Lazy<ProjectRecord, ManualKey<1>>,
     pub proposals: Mapping<u32, ProposalRecord, ManualKey<10>>,
     pub milestones: Mapping<MilestonePosition, MilestoneRecord, ManualKey<11>>,
@@ -34,11 +32,10 @@ pub struct ProjectStorage {
     pub disputes: Mapping<u32, DisputeRecord, ManualKey<23>>,
 }
 impl ProjectStorage {
-    pub fn new(directory: AccountId, project_id: Id, phase: u8) -> Self {
+    pub fn new(directory: AccountId, project_id: Id) -> Self {
         Self {
             directory,
             project_id,
-            phase,
             header: Lazy::new(),
             proposals: Mapping::default(),
             milestones: Mapping::default(),
@@ -64,7 +61,6 @@ impl ProjectStorage {
         )?;
         Ok(ProjectData {
             directory: self.directory,
-            live: self.phase == 2,
             project: ProjectCore {
                 project_id: header.project_id,
                 created_at: header.created_at,
@@ -557,7 +553,6 @@ mod tests {
         second.submissions[1].submission_id = [10; 16];
         ProjectData {
             directory: account,
-            live: true,
             project: ProjectCore {
                 project_id: [1; 16],
                 created_at: Some(1),
@@ -577,7 +572,10 @@ mod tests {
                 proposals: vec![ProposalCore {
                     proposal_id: [2; 16],
                     revision: 1,
-                    content: ProposalContentReferenceV1::Migration([1; 32]),
+                    content: ProposalContentReferenceV1::Signed(MetadataCommitmentV1 {
+                        operation_id: [1; 16],
+                        hash: [1; 32],
+                    }),
                     status: ProposalStatus::Draft,
                     milestones: vec![milestone, second],
                     change_request: None,
@@ -604,7 +602,10 @@ mod tests {
                     project_id: [1; 16],
                     milestone_id: None,
                     origin: account,
-                    content: ReasonReferenceV1::Migration([3; 32]),
+                    content: ReasonReferenceV1::Write(MetadataCommitmentV1 {
+                        operation_id: [3; 16],
+                        hash: [3; 32]
+                    }),
                     occurred_at: 1,
                     kind: 1
                 };
@@ -625,11 +626,11 @@ mod tests {
             })
             .collect();
         assert!(tasks.encode().len() > 16 * 1024);
-        let mut storage = ProjectStorage::new(data.directory, data.project.project_id, 2);
+        let mut storage = ProjectStorage::new(data.directory, data.project.project_id);
         storage.save(&data).unwrap();
         assert_eq!(storage.load().unwrap().project, data.project);
         assert_eq!(storage.load().unwrap().reasons, data.reasons);
-        assert_eq!(ink::storage::traits::Storable::encoded_size(&storage), 49);
+        assert_eq!(ink::storage::traits::Storable::encoded_size(&storage), 48);
         assert_eq!(storage.tasks.get(((0, 0), 5000)).unwrap().encode().len(), 8);
         assert_eq!(
             storage
@@ -647,7 +648,7 @@ mod tests {
     #[ink::test]
     fn replacement_shrink_removal_and_position_reuse_clear_old_children() {
         let mut data = fixture();
-        let mut storage = ProjectStorage::new(data.directory, data.project.project_id, 2);
+        let mut storage = ProjectStorage::new(data.directory, data.project.project_id);
         storage.save(&data).unwrap();
         let proposal = &mut data.project.proposals[0];
         proposal.proposal_id = [9; 16];
@@ -750,7 +751,7 @@ mod tests {
             proposal_revision: u64::MAX,
             context_event_cursor: u64::MAX,
         });
-        let mut storage = ProjectStorage::new(data.directory, data.project.project_id, 2);
+        let mut storage = ProjectStorage::new(data.directory, data.project.project_id);
         storage.save(&data).unwrap();
         let sizes = [
             ("project", storage.header.get().unwrap().encode().len()),
