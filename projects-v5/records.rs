@@ -101,5 +101,12 @@ pub(crate) fn missing<T>(value: Option<T>) -> Result<T> {
     value.ok_or_else(|| String::from("incomplete_project_storage"))
 }
 pub(crate) fn list<T>(length: u32, mut read: impl FnMut(u32) -> Result<T>) -> Result<Vec<T>> {
-    (0..length).map(&mut read).collect()
+    // ink!'s bump allocator does not reclaim old Vec allocations during a call.
+    // The declared count lets us allocate once instead of repeatedly growing it.
+    let capacity = usize::try_from(length).map_err(|_| String::from("invalid_archive"))?;
+    let mut values = Vec::with_capacity(capacity);
+    for index in 0..length {
+        values.push(read(index)?);
+    }
+    Ok(values)
 }
