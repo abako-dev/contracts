@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-contract=${1:?Usage: bash build-v5.sh calendar|directory|project [cargo-contract options]}
+contract=${1:?Usage: bash build.sh calendar|directory|project [cargo-contract options]}
 shift
 case "$contract" in
   calendar|directory|project) buffer=294912 ;;
