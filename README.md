@@ -39,7 +39,7 @@ Omit `--offline` to fetch missing locked dependencies. The build script retains
 the existing ink buffer settings. Use an SSD directory for `TMPDIR` and Cargo
 build output when `/tmp` is memory-backed.
 
-The [backend sandbox](https://github.com/abako-project/backend-v2/tree/review/ink-v5-runtime/tools/ink-sandbox)
+The [backend sandbox](https://github.com/abako-project/backend-v2/tree/review/ink-v5-runtime/services/contract-provider)
 pins the source commit, artifacts and build locks. Its rebuild command reproduces
 WASM and ABI; signed tests cover lifecycle, money, failed commits and restart
 through ordinary constructors and commands. Host tests alone do not verify the VM.
