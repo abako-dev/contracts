@@ -24,7 +24,6 @@ pub struct WorkerRecord {
     pub qualifications: QualificationCounts,
     pub mode: WorkerMode,
     pub coordinator_eligible: bool,
-    pub calendar: AccountId,
     pub calendar_id: Id,
     pub worker_score: ReputationView,
     pub coordinator_score: ReputationView,
@@ -85,7 +84,6 @@ impl DaoData {
             },
             mode: record.mode,
             coordinator_eligible: record.coordinator_eligible,
-            calendar: record.calendar,
             calendar_id: record.calendar_id,
             worker_score: record.worker_score,
             coordinator_score: record.coordinator_score,
@@ -116,7 +114,6 @@ impl DaoData {
                 },
                 mode: worker.mode,
                 coordinator_eligible: worker.coordinator_eligible,
-                calendar: worker.calendar,
                 calendar_id: worker.calendar_id,
                 worker_score: worker.worker_score.clone(),
                 coordinator_score: worker.coordinator_score.clone(),
@@ -313,7 +310,6 @@ mod tests {
     fn ordinary_catalog_growth_keeps_header_fixed_and_index_complete() {
         let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
         let mut data = DaoData::new(
-            ink::primitives::Hash::from([1; 32]),
             accounts.alice,
             accounts.alice,
             CatalogSeed {
@@ -398,7 +394,6 @@ mod tests {
             },
             mode: WorkerMode::Coordinator,
             coordinator_eligible: true,
-            calendar: accounts.alice,
             calendar_id: [3; 16],
             worker_score: ReputationView {
                 weighted_score_sum: u128::MAX,
@@ -425,7 +420,7 @@ mod tests {
             u64::MAX,
             u8::MAX,
         );
-        assert_eq!(worker.encode().len(), 155);
+        assert_eq!(worker.encode().len(), 123);
         assert_eq!(request.encode().len(), 107);
         assert_eq!(reason.encode().len(), 123);
         assert_eq!(
@@ -447,7 +442,6 @@ mod catalog_tests {
     fn fresh() -> DaoData {
         let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
         let mut data = DaoData::new(
-            Hash::from([1; 32]),
             accounts.alice,
             accounts.alice,
             CatalogSeed {

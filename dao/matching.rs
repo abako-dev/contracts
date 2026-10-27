@@ -10,14 +10,13 @@
 //! This is the source entry point for DAO-specific assignment changes. Reputation
 //! weights are configured separately through Dao's authorized score policy;
 //! changing this algorithm still requires a reviewed contract-code change.
+use crate::calendar::{ReservationView, Week, WeekWindow};
 use crate::{
     dao::{require, DaoData, Id, Result, WorkerMode},
     indices, reputation,
 };
-use calendar::calendar::{CalendarRef, ReservationView, Week, WeekWindow};
 use core::cmp::Ordering;
 use ink::{
-    env::call::FromAccountId,
     prelude::{collections::BTreeSet, string::String, vec::Vec},
     primitives::AccountId,
 };
@@ -59,7 +58,7 @@ impl DaoData {
             if worker.mode == WorkerMode::Coordinator
                 && worker.coordinator_eligible
                 && *account != client
-                && CalendarRef::from_account_id(worker.calendar).available(week)? != 0
+                && self.calendars.available(*account, week)? != 0
             {
                 candidates.push(*account);
             }
@@ -92,7 +91,8 @@ impl DaoData {
                 week: milestone.window.start(),
                 minutes: 0,
             };
-            CalendarRef::from_account_id(self.worker_record(coordinator)?.calendar).reserve(
+            self.calendars.reserve(
+                coordinator,
                 milestone.window,
                 milestone.coordinator_minutes,
                 reference.clone(),
@@ -128,8 +128,9 @@ impl DaoData {
                     if used.contains(&account) || worker.mode != WorkerMode::Worker {
                         continue;
                     }
-                    match CalendarRef::from_account_id(worker.calendar)
-                        .allocation(milestone.window, minutes)
+                    match self
+                        .calendars
+                        .allocation(account, milestone.window, minutes)
                     {
                         Ok(_) => available.push(account),
                         Err(code) if code == "insufficient_capacity" => {}
@@ -150,7 +151,8 @@ impl DaoData {
                     WorkerMode::Worker,
                     &mut rng,
                 )?;
-                CalendarRef::from_account_id(self.worker_record(chosen)?.calendar).reserve(
+                self.calendars.reserve(
+                    chosen,
                     milestone.window,
                     minutes,
                     ReservationView {

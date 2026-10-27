@@ -2,7 +2,9 @@
 
 DAO entry point and shared authority for catalog IDs, worker qualifications,
 assignment policies, reputation, global IDs, Project creation and accounting.
-Projects own their lifecycle and settlement; Calendars enforce capacity.
+Projects own their lifecycle and settlement. [calendar.rs](calendar.rs) stores
+per-worker capacity and reservations inside Dao, using ordinary account-keyed
+mappings. Calendar IDs remain public identifiers; there are no calendar contracts.
 
 [lib.rs](lib.rs) groups the public API into deployment, members, catalog, policy,
 projects, accounting and restricted Project hooks. `create_project`,

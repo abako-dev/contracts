@@ -2,6 +2,7 @@
 
 pub mod assets;
 pub mod bank;
+pub mod calendar;
 mod factory;
 mod indices;
 pub mod matching;
@@ -11,6 +12,7 @@ pub mod reputation;
 #[ink::contract]
 pub mod dao {
     use crate::bank::{Bank, Deposit, FinancialProjection, Withdrawal};
+    use crate::calendar::{CalendarDefinition, CalendarView, ReservationView, Week, WeekWindow};
     pub(crate) use crate::indices::insert as insert_sorted;
     use crate::{
         indices,
@@ -22,19 +24,12 @@ pub mod dao {
         matching::Milestone,
         reputation::{self, Contribution, ScorePolicy, VoteKind},
     };
-    use calendar::calendar::{
-        CalendarDefinition, CalendarRef, CalendarView, ReservationView, Week, WeekWindow,
-    };
     use chrono::Datelike;
     use ink::codegen::Env as _;
+    use ink::prelude::{collections::BTreeSet, string::String, vec::Vec};
     #[cfg(feature = "std")]
     use ink::storage::traits::StorageLayout;
     use ink::storage::{traits::ManualKey, Mapping, StorageVec};
-    use ink::{
-        env::call::FromAccountId,
-        prelude::{collections::BTreeSet, string::String, vec::Vec},
-        ToAccountId,
-    };
     use rand::{rngs::StdRng, Rng, SeedableRng};
     use scale::DecodeAll;
     use scale::Encode;
@@ -178,7 +173,6 @@ pub mod dao {
         pub(crate) qualifications: Qualifications,
         pub(crate) mode: WorkerMode,
         pub(crate) coordinator_eligible: bool,
-        pub(crate) calendar: AccountId,
         pub(crate) calendar_id: Id,
         pub(crate) worker_score: ReputationView,
         pub(crate) coordinator_score: ReputationView,
@@ -236,7 +230,7 @@ pub mod dao {
     #[derive(Debug)]
     pub(crate) struct DaoData {
         pub(crate) root: AccountId,
-        pub(crate) calendar_code: Hash,
+        pub(crate) calendars: crate::calendar::Calendars,
         pub(crate) reservation_controller: AccountId,
         pub(crate) reference_controller: AccountId,
         pub(crate) roles: Mapping<u32, CatalogEntry, ManualKey<1>>,
@@ -300,7 +294,6 @@ pub mod dao {
         }
 
         pub fn new(
-            calendar_code: Hash,
             reservation_controller: AccountId,
             reference_controller: AccountId,
             seed: CatalogSeed,
@@ -319,7 +312,7 @@ pub mod dao {
                 project_milestones: Mapping::default(),
                 project_submission_values: Mapping::default(),
                 reason_count: 0,
-                calendar_code,
+                calendars: Default::default(),
                 reservation_controller,
                 reference_controller,
                 roles: Mapping::default(),
@@ -796,8 +789,8 @@ pub mod dao {
             reference: ReservationView,
         ) -> Result<()> {
             self.project_controller()?;
-            let worker = self.worker_record(worker)?;
-            CalendarRef::from_account_id(worker.calendar).reserve(window, minutes, reference)
+            self.worker_record(worker)?;
+            self.calendars.reserve(worker, window, minutes, reference)
         }
         pub fn catalog(&self) -> CatalogSeed {
             CatalogSeed {
@@ -819,8 +812,20 @@ pub mod dao {
                     .collect(),
             }
         }
-        pub fn calendar_address(&self, account: AccountId) -> Option<AccountId> {
-            self.workers.get(account).map(|worker| worker.calendar)
+        pub fn calendar(&self, account: AccountId) -> Result<CalendarView> {
+            let worker = self.worker_record(account)?;
+            self.calendars.view(account, worker.calendar_id)
+        }
+        pub fn calendar_available(&self, account: AccountId, week: Week) -> Result<u32> {
+            self.calendars.available(account, week)
+        }
+        pub fn calendar_allocation(
+            &self,
+            account: AccountId,
+            window: WeekWindow,
+            minutes: u32,
+        ) -> Result<Vec<(Week, u32)>> {
+            self.calendars.allocation(account, window, minutes)
         }
         pub fn worker(&self, account: AccountId) -> Option<WorkerCore> {
             self.workers.get(account).map(|_| {
@@ -833,7 +838,10 @@ pub mod dao {
                     qualifications: worker.qualifications,
                     mode: worker.mode,
                     coordinator_eligible: worker.coordinator_eligible,
-                    calendar: CalendarRef::from_account_id(worker.calendar).view(),
+                    calendar: self
+                        .calendars
+                        .view(account, worker.calendar_id)
+                        .expect("registered calendar"),
                     worker_score: worker.worker_score,
                     coordinator_score: worker.coordinator_score,
                 }
@@ -866,20 +874,7 @@ pub mod dao {
                 !self.calendar_ids.contains(calendar_id),
                 "invalid_worker_state",
             )?;
-            // Creation and Dao registration share the parent transaction.
-            // Native storage deposits use the runtime's technical funding, never assets.
-            let calendar = CalendarRef::new(
-                origin,
-                self.env().account_id(),
-                calendar_id,
-                request.calendar,
-            )
-            .code_hash(self.calendar_code)
-            .endowment(0)
-            .salt_bytes(calendar_id)
-            .try_instantiate()
-            .map_err(|_| String::from("calendar_instantiation_failed"))?
-            .map_err(|_| String::from("calendar_instantiation_failed"))??;
+            self.calendars.register(origin, request.calendar)?;
             let skills = request.qualifications.skill_ids.clone();
             self.write_worker(
                 origin,
@@ -888,7 +883,6 @@ pub mod dao {
                     qualifications: request.qualifications,
                     mode: WorkerMode::Worker,
                     coordinator_eligible: false,
-                    calendar: calendar.to_account_id(),
                     calendar_id,
                     worker_score: reputation::empty(),
                     coordinator_score: reputation::empty(),
@@ -926,7 +920,7 @@ pub mod dao {
         pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<Effect> {
             let origin = self.env().caller();
             let worker = self.worker_record(origin)?;
-            CalendarRef::from_account_id(worker.calendar).set_calendar(definition)?;
+            self.calendars.set(origin, definition)?;
             Ok(Effect::new(2, Some(worker.calendar_id), origin))
         }
         pub fn set_worker_mode(&mut self, mode: WorkerMode) -> Result<Effect> {
@@ -1167,17 +1161,11 @@ pub mod dao {
             reason = "Retain the existing constructor ABI."
         )]
         pub fn new(
-            calendar_code: Hash,
             reservation_controller: AccountId,
             reference_controller: AccountId,
             seed: CatalogSeed,
         ) -> Result<Self> {
-            let data = DaoData::new(
-                calendar_code,
-                reservation_controller,
-                reference_controller,
-                seed,
-            )?;
+            let data = DaoData::new(reservation_controller, reference_controller, seed)?;
             Ok(Self { data })
         }
 
@@ -1235,8 +1223,21 @@ pub mod dao {
         }
 
         #[ink(message)]
-        pub fn calendar_address(&self, account: AccountId) -> Option<AccountId> {
-            self.read_state(|data| data.calendar_address(account))
+        pub fn calendar(&self, account: AccountId) -> Result<CalendarView> {
+            self.read_state(|data| data.calendar(account))
+        }
+        #[ink(message)]
+        pub fn calendar_available(&self, account: AccountId, week: Week) -> Result<u32> {
+            self.read_state(|data| data.calendar_available(account, week))
+        }
+        #[ink(message)]
+        pub fn calendar_allocation(
+            &self,
+            account: AccountId,
+            window: WeekWindow,
+            minutes: u32,
+        ) -> Result<Vec<(Week, u32)>> {
+            self.read_state(|data| data.calendar_allocation(account, window, minutes))
         }
 
         // Catalog and skill requests.
