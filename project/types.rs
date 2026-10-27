@@ -1,6 +1,6 @@
 //! Project-owned layouts match the backend v1 SCALE DTOs. No service rows are shared.
 use calendar::calendar::WeekWindow;
-use directory::directory::{MetadataCommitmentV1, MetadataReferenceV1};
+use dao::dao::{MetadataCommitmentV1, MetadataReferenceV1};
 use ink::{
     prelude::{collections::BTreeSet, string::String, vec::Vec},
     primitives::AccountId,

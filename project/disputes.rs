@@ -4,7 +4,7 @@ use crate::{
     project::ProjectData,
     types::*,
 };
-use directory::directory::Effect;
+use dao::dao::Effect;
 use ink::{codegen::Env, prelude::string::String};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 pub fn open(
@@ -52,7 +52,7 @@ pub fn open(
     )?;
     let mut id = [0; 16];
     StdRng::from_seed(seed).fill_bytes(&mut id);
-    state.registry().register_dispute(id)?;
+    state.dao().register_dispute(id)?;
     let origin = state.env().caller();
     state.disputes.push(DisputeRecord {
         dispute_id: id,
@@ -82,7 +82,7 @@ pub fn open(
 pub fn respond(state: &mut ProjectData, id: Id, evidence: EvidenceReference) -> Result<Effect> {
     require(!state.project.cancelled, "project_cancelled")?;
     let project = state
-        .registry()
+        .dao()
         .dispute_project(id)
         .ok_or_else(|| String::from("dispute_not_found"))?;
     require(

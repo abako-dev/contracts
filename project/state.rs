@@ -13,7 +13,7 @@ pub type NestedPosition = (ChildPosition, u32);
 #[ink::storage_item]
 #[derive(Debug)]
 pub struct ProjectStorage {
-    pub directory: AccountId,
+    pub dao: AccountId,
     pub project_id: Id,
     pub header: Lazy<ProjectRecord, ManualKey<1>>,
     pub proposals: Mapping<u32, ProposalRecord, ManualKey<10>>,
@@ -32,9 +32,9 @@ pub struct ProjectStorage {
     pub disputes: Mapping<u32, DisputeRecord, ManualKey<23>>,
 }
 impl ProjectStorage {
-    pub fn new(directory: AccountId, project_id: Id) -> Self {
+    pub fn new(dao: AccountId, project_id: Id) -> Self {
         Self {
-            directory,
+            dao,
             project_id,
             header: Lazy::new(),
             proposals: Mapping::default(),
@@ -60,7 +60,7 @@ impl ProjectStorage {
             "invalid_project_state",
         )?;
         Ok(ProjectData {
-            directory: self.directory,
+            dao: self.dao,
             project: ProjectCore {
                 project_id: header.project_id,
                 created_at: header.created_at,
@@ -172,7 +172,7 @@ impl ProjectStorage {
     /// a second complete Project tree and avoids rewriting unchanged histories.
     pub fn save(&mut self, data: &ProjectData) -> Result<()> {
         require(
-            data.directory == self.directory && data.project.project_id == self.project_id,
+            data.dao == self.dao && data.project.project_id == self.project_id,
             "invalid_project_state",
         )?;
         let old = self.header.get();
@@ -463,7 +463,7 @@ impl ProjectStorage {
 mod tests {
     use super::*;
     use calendar::calendar::{Week, WeekWindow};
-    use directory::directory::{MetadataCommitmentV1, MetadataReferenceV1};
+    use dao::dao::{MetadataCommitmentV1, MetadataReferenceV1};
     use ink::prelude::vec;
     use scale::Encode;
 
@@ -552,7 +552,7 @@ mod tests {
         second.submissions[0].submission_id = [9; 16];
         second.submissions[1].submission_id = [10; 16];
         ProjectData {
-            directory: account,
+            dao: account,
             project: ProjectCore {
                 project_id: [1; 16],
                 created_at: Some(1),
@@ -626,7 +626,7 @@ mod tests {
             })
             .collect();
         assert!(tasks.encode().len() > 16 * 1024);
-        let mut storage = ProjectStorage::new(data.directory, data.project.project_id);
+        let mut storage = ProjectStorage::new(data.dao, data.project.project_id);
         storage.save(&data).unwrap();
         assert_eq!(storage.load().unwrap().project, data.project);
         assert_eq!(storage.load().unwrap().reasons, data.reasons);
@@ -648,7 +648,7 @@ mod tests {
     #[ink::test]
     fn replacement_shrink_removal_and_position_reuse_clear_old_children() {
         let mut data = fixture();
-        let mut storage = ProjectStorage::new(data.directory, data.project.project_id);
+        let mut storage = ProjectStorage::new(data.dao, data.project.project_id);
         storage.save(&data).unwrap();
         let proposal = &mut data.project.proposals[0];
         proposal.proposal_id = [9; 16];
@@ -699,7 +699,7 @@ mod tests {
     #[ink::test]
     fn maximum_fixed_headers_keep_measured_headroom() {
         let mut data = fixture();
-        let account = data.directory;
+        let account = data.dao;
         let window = data.project.proposals[0].milestones[0].definition.window;
         data.project.planning.quote = Some(PlanningQuote {
             fee: u64::MAX,
@@ -751,7 +751,7 @@ mod tests {
             proposal_revision: u64::MAX,
             context_event_cursor: u64::MAX,
         });
-        let mut storage = ProjectStorage::new(data.directory, data.project.project_id);
+        let mut storage = ProjectStorage::new(data.dao, data.project.project_id);
         storage.save(&data).unwrap();
         let sizes = [
             ("project", storage.header.get().unwrap().encode().len()),

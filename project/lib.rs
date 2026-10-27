@@ -10,9 +10,7 @@ pub mod project {
     use crate::types::*;
     use calendar::calendar::Week;
     use chrono::{Datelike, Duration, NaiveDate, Weekday};
-    use directory::directory::{
-        DirectoryRef, Effect, MetadataCommitmentV1, MetadataReferenceV1, Qualifications,
-    };
+    use dao::dao::{DaoRef, Effect, MetadataCommitmentV1, MetadataReferenceV1, Qualifications};
     use ink::codegen::Env as _;
     use ink::{
         env::call::FromAccountId,
@@ -30,7 +28,7 @@ pub mod project {
     }
 
     pub(crate) struct ProjectData {
-        pub(crate) directory: AccountId,
+        pub(crate) dao: AccountId,
         pub(crate) project: ProjectCore,
         pub(crate) reasons: Vec<ReasonRecord>,
         pub(crate) disputes: Vec<DisputeRecord>,
@@ -38,10 +36,10 @@ pub mod project {
     impl ProjectData {
         #[allow(
             clippy::too_many_arguments,
-            reason = "Explicit constructor ABI shared with the Directory factory."
+            reason = "Explicit constructor ABI shared with the Dao factory."
         )]
         pub fn new(
-            directory: AccountId,
+            dao: AccountId,
             project_id: Id,
             client: AccountId,
             coordinator: AccountId,
@@ -49,12 +47,12 @@ pub mod project {
             now: u64,
         ) -> Result<Self> {
             require(
-                <Self as ink::codegen::StaticEnv>::env().caller() == directory
-                    && <Self as ink::codegen::StaticEnv>::env().is_contract(&directory),
-                "directory_required",
+                <Self as ink::codegen::StaticEnv>::env().caller() == dao
+                    && <Self as ink::codegen::StaticEnv>::env().is_contract(&dao),
+                "dao_required",
             )?;
             Ok(Self {
-                directory,
+                dao,
                 project: ProjectCore {
                     project_id,
                     created_at: Some(now),
@@ -101,10 +99,10 @@ pub mod project {
                     )
                 })
                 .collect();
-            self.registry().set_project_identities(layout)
+            self.dao().set_project_identities(layout)
         }
-        pub(crate) fn registry(&self) -> DirectoryRef {
-            DirectoryRef::from_account_id(self.directory)
+        pub(crate) fn dao(&self) -> DaoRef {
+            DaoRef::from_account_id(self.dao)
         }
         pub(crate) fn guard(&self) -> Result<()> {
             require(!self.project.cancelled, "project_cancelled")?;
@@ -190,7 +188,7 @@ pub mod project {
             let mut roles = BTreeSet::new();
             let mut skills = BTreeSet::new();
             for requirement in definition.milestones.iter().flat_map(|m| &m.requirements) {
-                self.registry().validate_qualifications(Qualifications {
+                self.dao().validate_qualifications(Qualifications {
                     role_ids: ink::prelude::vec![requirement.role_id],
                     skill_ids: requirement.skill_ids.clone(),
                 })?;
@@ -316,7 +314,7 @@ pub mod project {
             self.coordinator()?;
             self.planning_active()?;
             let qualifications = self.qualifications(&definition)?;
-            let percent = self.registry().compensation_policy();
+            let percent = self.dao().compensation_policy();
             for milestone in &mut definition.milestones {
                 milestone.allocate(percent)?;
             }
@@ -336,7 +334,7 @@ pub mod project {
                 }),
             });
             self.sync_identities()?;
-            self.registry()
+            self.dao()
                 .set_proposal_references(proposal_id, Some(qualifications))?;
             Ok(self.effect(10, proposal_id))
         }
@@ -352,7 +350,7 @@ pub mod project {
             self.coordinator()?;
             self.planning_active()?;
             let qualifications = self.qualifications(&definition)?;
-            let percent = self.registry().compensation_policy();
+            let percent = self.dao().compensation_policy();
             for milestone in &mut definition.milestones {
                 milestone.allocate(percent)?;
             }
@@ -372,7 +370,7 @@ pub mod project {
             current.content = ProposalContentReferenceV1::Signed(content);
             bump(&mut current.revision)?;
             self.sync_identities()?;
-            self.registry()
+            self.dao()
                 .set_proposal_references(proposal_id, Some(qualifications))?;
             Ok(self.effect(11, proposal_id))
         }
@@ -387,7 +385,7 @@ pub mod project {
             )?;
             self.project.proposals.remove(index);
             self.sync_identities()?;
-            self.registry().set_proposal_references(proposal_id, None)?;
+            self.dao().set_proposal_references(proposal_id, None)?;
             Ok(self.effect(12, proposal_id))
         }
         pub fn set_proposal_delivery(
@@ -492,10 +490,12 @@ pub mod project {
                     && !self.project.planning.frozen,
                 "invalid_planning_state",
             )?;
-            if self.registry().money_enabled() {
-                self.registry()
-                    .book_credit(self.project.coordinator, self.project.planning.escrow)?;
-                directory::assets::transfer(
+            if self.dao().accounting_enabled() {
+                self.dao().record_balance_credit(
+                    self.project.coordinator,
+                    self.project.planning.escrow,
+                )?;
+                dao::assets::transfer(
                     u128::from(self.project.planning.escrow),
                     self.project.coordinator,
                 )?;
@@ -522,8 +522,8 @@ pub mod project {
             require(unique(&assignees), "invalid_contract")?;
             self.guard()?;
             self.coordinator()?;
-            self.registry().validate_task_assignees(assignees.clone())?;
-            let task_id = self.registry().next_task_key()?;
+            self.dao().validate_task_assignees(assignees.clone())?;
+            let task_id = self.dao().allocate_task_id()?;
             let (pi, mi) = self.storage_index(storage_id)?;
             self.project.proposals[pi].milestones[mi]
                 .task_storage
@@ -542,7 +542,7 @@ pub mod project {
             require(unique(&assignees), "invalid_contract")?;
             self.guard()?;
             self.coordinator()?;
-            self.registry().validate_task_assignees(assignees.clone())?;
+            self.dao().validate_task_assignees(assignees.clone())?;
             let (pi, mi) = self.storage_index(storage_id)?;
             let current = self.project.proposals[pi].milestones[mi]
                 .task_storage
@@ -618,7 +618,7 @@ pub mod project {
                 occurred_at: self.now(),
                 kind,
             };
-            self.registry()
+            self.dao()
                 .append_reason(self.project.project_id, scale::Encode::encode(&record))?;
             self.reasons.push(record);
             Ok(())
@@ -739,18 +739,18 @@ pub mod project {
         #[ink(constructor)]
         #[allow(
             clippy::too_many_arguments,
-            reason = "Explicit compact constructor ABI shared with the Directory factory."
+            reason = "Explicit compact constructor ABI shared with the Dao factory."
         )]
         pub fn new(
-            directory: AccountId,
+            dao: AccountId,
             project_id: Id,
             client: AccountId,
             coordinator: AccountId,
             content: MetadataCommitmentV1,
             now: u64,
         ) -> Result<Self> {
-            let data = ProjectData::new(directory, project_id, client, coordinator, content, now)?;
-            let mut stored = crate::state::ProjectStorage::new(directory, project_id);
+            let data = ProjectData::new(dao, project_id, client, coordinator, content, now)?;
+            let mut stored = crate::state::ProjectStorage::new(dao, project_id);
             stored.save(&data)?;
             Ok(Self { data: stored })
         }

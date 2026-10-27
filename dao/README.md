@@ -6,7 +6,7 @@ Projects own their lifecycle and settlement; Calendars enforce capacity.
 
 [lib.rs](lib.rs) groups the public API into deployment, members, catalog, policy,
 projects, accounting and restricted Project hooks. `create_project`,
-`register_worker` and `create_skill_request` are member operations. Policy and
+`register_worker` and `create_skill_request` are user-facing operations. Policy and
 catalog changes require the operator; cross-contract hooks enforce their caller
 capabilities. Balance-recording hooks update accounting, not asset transfers.
 

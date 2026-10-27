@@ -1,8 +1,8 @@
 //! Project-owned execution rules. Every external effect shares the parent transaction.
 use crate::{project::ProjectData, types::*};
-use directory::{
+use dao::{
     assets,
-    directory::{Effect, WorkerMode},
+    dao::{Effect, WorkerMode},
     matching,
     reputation::{Contribution, VoteKind},
 };
@@ -91,8 +91,10 @@ pub fn approve(
             .ok_or_else(arithmetic)
     })?;
     // Project is called directly by the verified client: extension deposit debits
-    // that client. Directory records free balance; it never substitutes as payer.
-    state.registry().book_debit(state.project.client, total)?;
+    // that client. Dao records free balance; it never substitutes as payer.
+    state
+        .dao()
+        .record_balance_debit(state.project.client, total)?;
     assets::deposit(u128::from(total))?;
     let milestones = proposal
         .milestones
@@ -114,7 +116,7 @@ pub fn approve(
                 .collect(),
         })
         .collect();
-    let teams = state.registry().assign_team(
+    let teams = state.dao().assign_team(
         state.project.project_id,
         state.project.client,
         state.project.coordinator,
@@ -203,7 +205,7 @@ pub fn submit(
         .flat_map(|m| &m.submissions)
         .map(|s| s.submission_id)
         .collect();
-    state.registry().set_project_submissions(ids)?;
+    state.dao().set_project_submissions(ids)?;
     Ok(state.effect(22, id))
 }
 pub fn reject(
@@ -265,8 +267,8 @@ pub fn accept(
     pending(&current, submission_id)?;
     if let Some((coordinator, team)) = legacy {
         state
-            .registry()
-            .apply_legacy_reputation(ink::prelude::vec![(
+            .dao()
+            .apply_settlement_reputation(ink::prelude::vec![(
                 state.project.coordinator,
                 WorkerMode::Coordinator,
                 u16::from(coordinator)
@@ -274,7 +276,7 @@ pub fn accept(
                     .ok_or_else(arithmetic)?,
                 current.definition.coordinator_minutes
             )])?;
-        let policy = state.registry().score_policy();
+        let policy = state.dao().score_policy();
         for requirement in &current.definition.requirements {
             let assigned = current
                 .assignments
@@ -293,8 +295,8 @@ pub fn accept(
                     .ok_or_else(arithmetic)?,
             };
             state
-                .registry()
-                .apply_legacy_reputation(ink::prelude::vec![(
+                .dao()
+                .apply_settlement_reputation(ink::prelude::vec![(
                     assigned.worker,
                     WorkerMode::Worker,
                     hundredths,
@@ -303,7 +305,7 @@ pub fn accept(
         }
     }
     let total = current.definition.total()?;
-    state.registry().book_credit(
+    state.dao().record_balance_credit(
         state.project.coordinator,
         current.definition.coordinator_fee,
     )?;
@@ -318,8 +320,8 @@ pub fn accept(
             .find(|a| a.requirement_key == requirement.key)
             .ok_or_else(|| String::from("invalid_assignment_state"))?;
         state
-            .registry()
-            .book_credit(assignment.worker, requirement.budget)?;
+            .dao()
+            .record_balance_credit(assignment.worker, requirement.budget)?;
         assets::transfer(u128::from(requirement.budget), assignment.worker)?;
     }
     let origin = state.env().caller();
@@ -471,7 +473,7 @@ pub fn evaluate(state: &mut ProjectData, ratings: Vec<AccountRating>) -> Result<
         }
     }
     state
-        .registry()
+        .dao()
         .apply_reputation(state.project.project_id, origin, votes)?;
     state.project.evaluations.push(ProjectEvaluation {
         author: origin,
