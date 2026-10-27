@@ -1,12 +1,15 @@
 //! Visible local payment accounting, independent from prefunded inventory/minima.
 //! Dao authorizes callers; Project capabilities record real asset movement.
 use crate::assets;
+use crate::dao::{DaoData, Effect};
 use crate::indices;
+use ink::codegen::Env as _;
 use ink::storage::{traits::ManualKey, Mapping, StorageVec};
 use ink::{
     prelude::{collections::BTreeSet, string::String, vec::Vec},
     primitives::AccountId,
 };
+use rand::{rngs::StdRng, Rng, SeedableRng};
 type Id = [u8; 16];
 pub type FinancialProjection = (Vec<(AccountId, u64)>, u64, Vec<Deposit>, Vec<Withdrawal>);
 type Result<T> = core::result::Result<T, String>;
@@ -276,5 +279,104 @@ impl Bank {
             require(identities.insert(*id), "invalid_withdrawal_state")?;
         }
         Ok(())
+    }
+}
+impl DaoData {
+    pub fn configure_accounting(&mut self, mock_funding: bool) -> Result<()> {
+        self.root()?;
+        require(self.projects.project_code.is_some(), "project_code_missing")?;
+        require(
+            crate::assets::balance(self.env().account_id())? > 1,
+            "invalid_asset_state",
+        )?;
+        self.bank.configure(mock_funding)?;
+        for (_, address) in self.projects() {
+            self.bank.provision(address)?;
+        }
+        Ok(())
+    }
+
+    pub fn accounting_enabled(&self) -> bool {
+        self.bank.enabled()
+    }
+
+    pub fn fund_account(&mut self, account: AccountId, amount: u64) -> Result<Effect> {
+        self.root()?;
+        self.bank.mint(account, amount, true)?;
+        Ok(Effect::new(6, None, account))
+    }
+
+    pub fn create_deposit(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
+        let origin = self.env().caller();
+        let mut id = [0; 16];
+        StdRng::from_seed(seed).fill_bytes(&mut id);
+        self.bank.create_deposit(origin, id, amount, self.now())?;
+        self.validate_public_ids()?;
+        Ok(Effect::new(27, Some(id), origin))
+    }
+
+    pub fn confirm_deposit(&mut self, id: Id) -> Result<Effect> {
+        self.root()?;
+        let destination = self.bank.confirm(id, self.now())?;
+        Ok(Effect::moderated(28, id, destination, self.env().caller()))
+    }
+
+    pub fn create_withdrawal(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
+        let origin = self.env().caller();
+        let mut id = [0; 16];
+        StdRng::from_seed(seed).fill_bytes(&mut id);
+        self.bank
+            .create_withdrawal(origin, id, amount, self.now())?;
+        self.validate_public_ids()?;
+        Ok(Effect::new(29, Some(id), origin))
+    }
+
+    pub fn cancel_withdrawal(&mut self, id: Id) -> Result<Effect> {
+        let owner = self
+            .bank
+            .cancel(id, self.env().caller(), self.config.root, self.now())?;
+        Ok(Effect::moderated(30, id, owner, self.env().caller()))
+    }
+
+    pub fn deposit(&self, id: Id) -> Result<Deposit> {
+        let record = self.bank.deposit(id)?;
+        require(
+            self.env().caller() == record.owner || self.env().caller() == self.config.root,
+            "deposit_owner_or_system_required",
+        )?;
+        Ok(record)
+    }
+
+    pub fn withdrawal(&self, id: Id) -> Result<Withdrawal> {
+        let record = self.bank.withdrawal(id)?;
+        require(
+            self.env().caller() == record.owner || self.env().caller() == self.config.root,
+            "withdrawal_owner_or_system_required",
+        )?;
+        Ok(record)
+    }
+
+    pub fn financial_projection(&self) -> Result<FinancialProjection> {
+        self.root()?;
+        Ok((
+            self.bank.balances(),
+            self.bank.minted(),
+            self.bank.deposits(),
+            self.bank.withdrawals(),
+        ))
+    }
+
+    pub fn record_balance_debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
+        self.registered_project()?;
+        self.bank.debit(account, amount)
+    }
+
+    pub fn record_balance_credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
+        self.registered_project()?;
+        self.bank.credit(account, amount)
+    }
+
+    pub(crate) fn now(&self) -> u64 {
+        self.env().block_timestamp() / 1000
     }
 }

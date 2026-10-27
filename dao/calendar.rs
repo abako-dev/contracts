@@ -1,5 +1,7 @@
 //! DAO-owned capacity and reservations, isolated by worker account.
+use crate::dao::{DaoData, Effect};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
+use ink::codegen::Env as _;
 #[cfg(feature = "std")]
 use ink::storage::traits::StorageLayout;
 use ink::{
@@ -327,6 +329,46 @@ impl Calendars {
         debug_assert_eq!(header.reservations, count);
         self.headers.insert(owner, &header);
         Ok(())
+    }
+}
+
+impl DaoData {
+    /// Internal controller hook also used by explicit reservation fixtures.
+    pub fn reserve_calendar(
+        &mut self,
+        worker: AccountId,
+        window: WeekWindow,
+        minutes: u32,
+        reference: ReservationView,
+    ) -> Result<()> {
+        self.project_controller()?;
+        self.worker_record(worker)?;
+        self.calendars.reserve(worker, window, minutes, reference)
+    }
+
+    pub fn calendar(&self, account: AccountId) -> Result<CalendarView> {
+        let worker = self.worker_record(account)?;
+        self.calendars.view(account, worker.calendar_id)
+    }
+
+    pub fn calendar_available(&self, account: AccountId, week: Week) -> Result<u32> {
+        self.calendars.available(account, week)
+    }
+
+    pub fn calendar_allocation(
+        &self,
+        account: AccountId,
+        window: WeekWindow,
+        minutes: u32,
+    ) -> Result<Vec<(Week, u32)>> {
+        self.calendars.allocation(account, window, minutes)
+    }
+
+    pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<Effect> {
+        let origin = self.env().caller();
+        let worker = self.worker_record(origin)?;
+        self.calendars.set(origin, definition)?;
+        Ok(Effect::new(2, Some(worker.calendar_id), origin))
     }
 }
 

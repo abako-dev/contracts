@@ -53,7 +53,7 @@ impl DaoData {
         seed: [u8; 32],
     ) -> Result<(AccountId, Id)> {
         let mut candidates = Vec::new();
-        for account in &indices::values(&self.accounts) {
+        for account in &indices::values(&self.members.accounts) {
             let worker = self.worker_record(*account)?;
             if worker.mode == WorkerMode::Coordinator
                 && worker.coordinator_eligible
@@ -110,14 +110,15 @@ impl DaoData {
                     .first()
                     .ok_or_else(|| String::from("missing_skills"))?;
                 let mut candidates = BTreeSet::new();
-                for position in 0..self.skill_counts.get(first).unwrap_or(0) {
+                for position in 0..self.members.skill_counts.get(first).unwrap_or(0) {
                     let account = self
+                        .members
                         .skill_members
                         .get((first, position))
                         .ok_or_else(|| String::from("invalid_worker_state"))?;
                     if skill_ids
                         .iter()
-                        .all(|skill| self.skill_positions.contains((skill, account)))
+                        .all(|skill| self.members.skill_positions.contains((skill, account)))
                     {
                         candidates.insert(account);
                     }
@@ -203,5 +204,19 @@ impl DaoData {
             rng.random_range(0..winners.len())
         };
         Ok(winners[index])
+    }
+}
+
+impl DaoData {
+    /// Used by the Project factory. Captured entropy derives the same ID
+    /// after any tied coordinator selection, without a second host RNG.
+    pub fn select_coordinator(
+        &self,
+        client: AccountId,
+        week: Week,
+        seed: [u8; 32],
+    ) -> Result<(AccountId, Id)> {
+        self.project_controller()?;
+        self.coordinator_selection(client, week, seed)
     }
 }

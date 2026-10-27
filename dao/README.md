@@ -12,6 +12,18 @@ projects, accounting and restricted Project hooks. `create_project`,
 catalog changes require the operator; cross-contract hooks enforce their caller
 capabilities. Balance-recording hooks update accounting, not asset transfers.
 
+`DaoData` contains six ordinary ink storage components. Methods live alongside
+the state they use; cross-component operations still run in one Dao transaction.
+
+| Module | State and operations |
+|---|---|
+| [config.rs](config.rs) | Authorities, reputation weights and compensation policy |
+| [catalog.rs](catalog.rs) | Roles, skills, associations and skill requests |
+| [members.rs](members.rs) | Workers, qualifications, selection indexes and reputation updates |
+| [projects.rs](projects.rs) | Project registry, global IDs, references and authenticated Project hooks |
+| [calendar.rs](calendar.rs) | Worker capacity and reservations |
+| [bank.rs](bank.rs) | Shared accounting and deposit/withdrawal operations |
+
 [matching.rs](matching.rs) contains coordinator selection, team assignment and
 seeded tie-breaking. [reputation.rs](reputation.rs) contains score calculation and
 configurable voting weights. Algorithm changes require a reviewed contract-code
