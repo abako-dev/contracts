@@ -1,7 +1,7 @@
 [package]
 name = "sandbox-probe"
 version = "0.1.0"
-authors = ["Abako contributors"]
+authors = ["Digesta contributors"]
 edition = "2021"
 publish = false
 

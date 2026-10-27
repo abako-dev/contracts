@@ -1,4 +1,4 @@
-# Abako contracts
+# Digesta contracts
 
 Three ink! 5.1.1 contracts implement the marketplace's enforceable rules.
 The backend runs their WASM in one embedded runtime for local development,
