@@ -1,4 +1,4 @@
-//! Visible local KVN accounting, independent from prefunded inventory/minima.
+//! Visible local payment accounting, independent from prefunded inventory/minima.
 //! Dao authorizes callers; Project capabilities record real asset movement.
 use crate::assets;
 use crate::indices;
