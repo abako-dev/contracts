@@ -8,8 +8,8 @@ mod types;
 #[ink::contract]
 pub mod project {
     use crate::types::*;
-    use calendar::calendar::Week;
     use chrono::{Datelike, Duration, NaiveDate, Weekday};
+    use dao::calendar::Week;
     use dao::dao::{DaoRef, Effect, MetadataCommitmentV1, MetadataReferenceV1, Qualifications};
     use ink::codegen::Env as _;
     use ink::{

@@ -1156,10 +1156,6 @@ pub mod dao {
         // Deployment and operator configuration.
 
         #[ink(constructor)]
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "Retain the existing constructor ABI."
-        )]
         pub fn new(
             reservation_controller: AccountId,
             reference_controller: AccountId,

@@ -1,13 +1,12 @@
 # Digesta contracts
 
-Three ink! 5.1.1 contracts implement the marketplace's enforceable rules.
+Two ink! 5.1.1 contracts implement the marketplace's enforceable rules.
 The backend runs their WASM in one embedded runtime for local development,
 without parachain nodes or block production. ink! v5 remains the Kreivo target.
 
 | Contract | Responsibility | Start reading |
 |---|---|---|
-| [dao](dao/README.md) | Catalog IDs, qualifications, worker selection, global IDs, Project factory and shared accounting | [lib.rs](dao/lib.rs), [matching.rs](dao/matching.rs) |
-| [calendar](calendar/README.md) | Integer-minute capacity and reservations by ISO week | [lib.rs](calendar/lib.rs) |
+| [dao](dao/README.md) | Catalog IDs, qualifications, worker selection, global IDs, capacity, reservations, Project factory and shared accounting | [lib.rs](dao/lib.rs), [matching.rs](dao/matching.rs) |
 | [project](project/README.md) | Commercial terms, task IDs/assignees, lifecycle, escrow, settlement, disputes and evaluations | [lib.rs](project/lib.rs), [execution.rs](project/execution.rs) |
 | [sandbox-probe](sandbox-probe/README.md) | Private regression fixture for traps, reverts, gas and persistence; not an application contract | [lib.rs](sandbox-probe/lib.rs) |
 
@@ -22,15 +21,13 @@ owns keys and signing. All monetary calculations use checked integer units.
 Use Rust **1.88.0**, its `wasm32-unknown-unknown` target and
 **cargo-contract 5.0.3**. Each contract has a committed lockfile. Shared contract
 interfaces use immutable commits from this repository to preserve reproducible
-WASM builds. Dao pins Calendar; Project pins that same Calendar and Dao.
+WASM builds. Project pins Dao, including its shared calendar types.
 
 ```sh
-bash build.sh calendar --offline
 bash build.sh dao --offline
 bash build.sh project --offline
 bash build.sh sandbox-probe --offline
 
-cargo +1.88.0 test --manifest-path calendar/Cargo.toml --locked
 cargo +1.88.0 test --manifest-path dao/Cargo.toml --locked
 cargo +1.88.0 test --manifest-path project/Cargo.toml --locked
 ```
@@ -51,14 +48,14 @@ Verification of the current change belongs in the paired
 
 Contracts use ordinary ink `Lazy`, `Mapping` and `StorageVec`. Growing lists have
 individually addressed records; no custom paging library or URL parser is used.
-Calendar headers are at most 138 encoded bytes and reservations 47. Dao
-headers are at most 189 bytes. Project's largest measured fixed record is 310
+Calendar headers are 16 encoded bytes and reservations at most 47. Dao
+headers are at most 157 bytes. Project's largest measured fixed record is 310
 bytes. The existing 16 KiB cell and 192 KiB code limits remain unchanged.
 
 Project hydrates one transient business-state tree and writes changed fixed cells,
 clearing obsolete children on removal or reordering. Whole-history scans still
 have finite gas/memory costs. This is not an unbounded-history guarantee.
-Dao coordinates atomic nested changes across contracts. Calendar reserves
+Dao coordinates atomic nested changes across contracts. Its calendar module reserves
 integer minutes; approved rules do not release consumed reservations. Milestone
 settlement uses the stored allocation, independently of task progress.
 

@@ -1,6 +1,6 @@
 //! Fixed Project records. Growing domain collections live in separate ink cells.
 use crate::types::*;
-use calendar::calendar::WeekWindow;
+use dao::calendar::WeekWindow;
 use dao::dao::MetadataReferenceV1;
 use ink::{
     prelude::{string::String, vec::Vec},

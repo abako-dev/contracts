@@ -1,5 +1,5 @@
 //! Project-owned layouts match the backend v1 SCALE DTOs. No service rows are shared.
-use calendar::calendar::WeekWindow;
+use dao::calendar::WeekWindow;
 use dao::dao::{MetadataCommitmentV1, MetadataReferenceV1};
 use ink::{
     prelude::{collections::BTreeSet, string::String, vec::Vec},
@@ -289,7 +289,7 @@ mod tests {
     use super::*;
     use scale::{Decode, Encode};
     fn milestone(total: u64, effort: &[u32]) -> MilestoneTerms {
-        let week = calendar::calendar::Week::new(2026, 1).unwrap();
+        let week = dao::calendar::Week::new(2026, 1).unwrap();
         let window = WeekWindow::decode(&mut &(week, week).encode()[..]).unwrap();
         MilestoneTerms {
             key: 0,

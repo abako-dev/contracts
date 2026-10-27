@@ -462,7 +462,7 @@ impl ProjectStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calendar::calendar::{Week, WeekWindow};
+    use dao::calendar::{Week, WeekWindow};
     use dao::dao::{MetadataCommitmentV1, MetadataReferenceV1};
     use ink::prelude::vec;
     use scale::Encode;
