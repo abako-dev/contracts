@@ -1,5 +1,5 @@
-//! Fixed Directory records; growing domain lists use explicit keyed entries.
-use crate::directory::*;
+//! Fixed Dao records; growing domain lists use explicit keyed entries.
+use crate::dao::*;
 use ink::{
     prelude::{string::String, vec::Vec},
     primitives::AccountId,
@@ -57,7 +57,7 @@ fn count(value: usize) -> u32 {
     u32::try_from(value).expect("domain list exceeds u32")
 }
 
-impl DirectoryData {
+impl DaoData {
     pub(crate) fn worker_record(&self, account: AccountId) -> Result<WorkerRecord> {
         self.workers
             .get(account)
@@ -312,7 +312,7 @@ mod tests {
     #[ink::test]
     fn ordinary_catalog_growth_keeps_header_fixed_and_index_complete() {
         let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
-        let mut data = DirectoryData::new(
+        let mut data = DaoData::new(
             ink::primitives::Hash::from([1; 32]),
             accounts.alice,
             accounts.alice,
@@ -331,7 +331,7 @@ mod tests {
         let mut before = Vec::new();
         ink::storage::traits::Storable::encode(&data, &mut before);
         for id in 2..5002 {
-            data.upsert_catalog_entry_core(
+            data.upsert_catalog_entry(
                 CatalogKind::Role,
                 id,
                 MetadataCommitmentV1 {
@@ -349,7 +349,7 @@ mod tests {
         assert_eq!(ids, (1..5002).collect::<Vec<_>>());
         assert!(ids.encode().len() > 16 * 1024);
         data.delete_catalog_entry(CatalogKind::Role, 2500).unwrap();
-        data.upsert_catalog_entry_core(
+        data.upsert_catalog_entry(
             CatalogKind::Role,
             5001,
             MetadataCommitmentV1 {
@@ -363,7 +363,7 @@ mod tests {
         assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(!ids.contains(&2500));
         assert!(!data.roles.contains(2500));
-        data.upsert_catalog_entry_core(
+        data.upsert_catalog_entry(
             CatalogKind::Role,
             2500,
             MetadataCommitmentV1 {
@@ -377,7 +377,7 @@ mod tests {
             (1..5002).collect::<Vec<_>>()
         );
         println!(
-            "Directory header={} bytes; 5001 ID values={} bytes across individual cells",
+            "Dao header={} bytes; 5001 ID values={} bytes across individual cells",
             after.len(),
             5001 * 4
         );
@@ -444,9 +444,9 @@ mod tests {
 mod catalog_tests {
     use super::*;
     use ink::primitives::Hash;
-    fn fresh() -> DirectoryData {
+    fn fresh() -> DaoData {
         let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
-        let mut data = DirectoryData::new(
+        let mut data = DaoData::new(
             Hash::from([1; 32]),
             accounts.alice,
             accounts.alice,
@@ -476,9 +476,9 @@ mod catalog_tests {
             operation_id: [5; 16],
             hash: [6; 32],
         };
-        data.upsert_catalog_entry_core(CatalogKind::Skill, 42, first.clone())
+        data.upsert_catalog_entry(CatalogKind::Skill, 42, first.clone())
             .unwrap();
-        data.upsert_catalog_entry_core(CatalogKind::Skill, 42, renamed.clone())
+        data.upsert_catalog_entry(CatalogKind::Skill, 42, renamed.clone())
             .unwrap();
         assert_eq!(
             data.skills.get(42).unwrap().content,
@@ -486,11 +486,11 @@ mod catalog_tests {
         );
         assert_eq!(data.origins.get(42), Some(CatalogReferenceV1::Write(first)));
         assert_eq!(
-            data.upsert_catalog_entry_core(CatalogKind::Role, 1, renamed.clone()),
+            data.upsert_catalog_entry(CatalogKind::Role, 1, renamed.clone()),
             Err(String::from("fixed_coordinator_role"))
         );
         data.delete_catalog_entry(CatalogKind::Skill, 42).unwrap();
-        data.upsert_catalog_entry_core(CatalogKind::Skill, 42, renamed.clone())
+        data.upsert_catalog_entry(CatalogKind::Skill, 42, renamed.clone())
             .unwrap();
         assert_eq!(
             data.origins.get(42),

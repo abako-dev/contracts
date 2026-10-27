@@ -8,10 +8,10 @@
 //! within a milestone. One RNG stream covers the entire team assignment.
 //!
 //! This is the source entry point for DAO-specific assignment changes. Reputation
-//! weights are configured separately through Directory's authorized score policy;
+//! weights are configured separately through Dao's authorized score policy;
 //! changing this algorithm still requires a reviewed contract-code change.
 use crate::{
-    directory::{require, DirectoryData, Id, Result, WorkerMode},
+    dao::{require, DaoData, Id, Result, WorkerMode},
     indices, reputation,
 };
 use calendar::calendar::{CalendarRef, ReservationView, Week, WeekWindow};
@@ -46,7 +46,7 @@ pub struct Milestone {
     pub requirements: Vec<Requirement>,
 }
 
-impl DirectoryData {
+impl DaoData {
     pub(crate) fn coordinator_selection(
         &self,
         client: AccountId,

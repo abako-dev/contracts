@@ -123,7 +123,7 @@ pub mod calendar {
     pub struct CalendarHeader {
         pub calendar_id: [u8; 16],
         pub owner: AccountId,
-        pub directory: AccountId,
+        pub dao: AccountId,
         pub reservation_controller: AccountId,
         pub default_weekly_minutes: u32,
         pub overrides: u32,
@@ -209,7 +209,7 @@ pub mod calendar {
             let header = CalendarHeader {
                 calendar_id,
                 owner,
-                directory: Self::env().caller(),
+                dao: Self::env().caller(),
                 reservation_controller,
                 default_weekly_minutes: definition.default_weekly_minutes,
                 overrides,
@@ -262,7 +262,7 @@ pub mod calendar {
         pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<()> {
             let mut header = self.header();
             require(
-                self.env().caller() == header.owner || self.env().caller() == header.directory,
+                self.env().caller() == header.owner || self.env().caller() == header.dao,
                 "calendar_owner_required",
             )?;
             definition.validate()?;

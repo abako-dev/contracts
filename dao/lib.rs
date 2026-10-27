@@ -9,7 +9,7 @@ pub mod records;
 pub mod reputation;
 
 #[ink::contract]
-pub mod directory {
+pub mod dao {
     use crate::bank::{Bank, Deposit, FinancialProjection, Withdrawal};
     pub(crate) use crate::indices::insert as insert_sorted;
     use crate::{
@@ -228,13 +228,13 @@ pub mod directory {
         )
     }
     #[ink(storage)]
-    pub struct Directory {
-        data: DirectoryData,
+    pub struct Dao {
+        data: DaoData,
     }
 
     #[ink::storage_item]
     #[derive(Debug)]
-    pub(crate) struct DirectoryData {
+    pub(crate) struct DaoData {
         pub(crate) root: AccountId,
         pub(crate) calendar_code: Hash,
         pub(crate) reservation_controller: AccountId,
@@ -280,7 +280,7 @@ pub mod directory {
         pub(crate) project_submission_values: Mapping<(Id, u32), Id, ManualKey<28>>,
         pub(crate) reason_count: u64,
     }
-    impl DirectoryData {
+    impl DaoData {
         fn push_reason(&mut self, bytes: Vec<u8>) -> Result<()> {
             let next = self
                 .reason_count
@@ -478,7 +478,7 @@ pub mod directory {
                 .filter_map(|id| self.project_addresses.get(id).map(|address| (*id, address)))
                 .collect()
         }
-        pub fn create_project_core(
+        pub fn create_project(
             &mut self,
             content: MetadataCommitmentV1,
             seed: [u8; 32],
@@ -548,7 +548,7 @@ pub mod directory {
                 "unknown_task_assignee",
             )
         }
-        pub fn configure_money(&mut self, mock_funding: bool) -> Result<()> {
+        pub fn configure_accounting(&mut self, mock_funding: bool) -> Result<()> {
             self.root()?;
             require(self.project_code.is_some(), "project_code_missing")?;
             require(
@@ -561,7 +561,7 @@ pub mod directory {
             }
             Ok(())
         }
-        pub fn money_enabled(&self) -> bool {
+        pub fn accounting_enabled(&self) -> bool {
             self.bank.enabled()
         }
         pub fn fund_account(&mut self, account: AccountId, amount: u64) -> Result<Effect> {
@@ -628,11 +628,11 @@ pub mod directory {
                 "registered_project_required",
             )
         }
-        pub fn book_debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
+        pub fn record_balance_debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
             self.registered_project()?;
             self.bank.debit(account, amount)
         }
-        pub fn book_credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
+        pub fn record_balance_credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
             self.registered_project()?;
             self.bank.credit(account, amount)
         }
@@ -709,7 +709,7 @@ pub mod directory {
                 .collect()
         }
         /// Retained signed settlement variants contribute exact hundredths.
-        pub fn apply_legacy_reputation(
+        pub fn apply_settlement_reputation(
             &mut self,
             votes: Vec<(AccountId, WorkerMode, u16, u32)>,
         ) -> Result<()> {
@@ -725,7 +725,7 @@ pub mod directory {
             }
             Ok(())
         }
-        pub fn next_task_key(&mut self) -> Result<u32> {
+        pub fn allocate_task_id(&mut self) -> Result<u32> {
             self.project_controller()?;
             let id = self.next_task_id;
             self.next_task_id = id
@@ -853,7 +853,7 @@ pub mod directory {
                 .filter(|request| caller == self.root || caller == request.requester)
                 .collect()
         }
-        pub fn register_worker_core(
+        pub fn register_worker(
             &mut self,
             request: RegisterWorkerCoreRequest,
             calendar_id: Id,
@@ -866,7 +866,7 @@ pub mod directory {
                 !self.calendar_ids.contains(calendar_id),
                 "invalid_worker_state",
             )?;
-            // Creation and Directory registration share the parent transaction.
+            // Creation and Dao registration share the parent transaction.
             // Native storage deposits use the runtime's technical funding, never assets.
             let calendar = CalendarRef::new(
                 origin,
@@ -947,7 +947,7 @@ pub mod directory {
             self.workers.insert(account, &worker);
             Ok(Effect::new(4, None, account))
         }
-        pub fn upsert_catalog_entry_core(
+        pub fn upsert_catalog_entry(
             &mut self,
             kind: CatalogKind,
             id: u32,
@@ -1033,7 +1033,7 @@ pub mod directory {
             }
             Ok(Effect::new(3, None, self.env().caller()))
         }
-        pub fn create_skill_request_core(
+        pub fn create_skill_request(
             &mut self,
             role_ids: Vec<u32>,
             content: MetadataCommitmentV1,
@@ -1139,33 +1139,28 @@ pub mod directory {
         }
     }
 
-    impl<'a> ink::codegen::Env for &'a DirectoryData {
+    impl<'a> ink::codegen::Env for &'a DaoData {
         type EnvAccess = ink::EnvAccess<'a, ink::env::DefaultEnvironment>;
         fn env(self) -> Self::EnvAccess {
             Default::default()
         }
     }
-    impl ink::codegen::StaticEnv for DirectoryData {
+    impl ink::codegen::StaticEnv for DaoData {
         type EnvAccess = ink::EnvAccess<'static, ink::env::DefaultEnvironment>;
         fn env() -> Self::EnvAccess {
             Default::default()
         }
     }
 
-    impl Directory {
-        fn read_state<T>(&self, read: impl FnOnce(&DirectoryData) -> T) -> T {
+    impl Dao {
+        fn read_state<T>(&self, read: impl FnOnce(&DaoData) -> T) -> T {
             read(&self.data)
         }
-        fn transact<T>(
-            &mut self,
-            change: impl FnOnce(&mut DirectoryData) -> Result<T>,
-        ) -> Result<T> {
+        fn transact<T>(&mut self, change: impl FnOnce(&mut DaoData) -> Result<T>) -> Result<T> {
             change(&mut self.data)
         }
-        #[ink(message)]
-        pub fn append_reason(&mut self, project_id: Id, bytes: Vec<u8>) -> Result<()> {
-            self.transact(|data| data.append_reason(project_id, bytes))
-        }
+        // Deployment and operator configuration.
+
         #[ink(constructor)]
         #[allow(
             clippy::too_many_arguments,
@@ -1177,7 +1172,7 @@ pub mod directory {
             reference_controller: AccountId,
             seed: CatalogSeed,
         ) -> Result<Self> {
-            let data = DirectoryData::new(
+            let data = DaoData::new(
                 calendar_code,
                 reservation_controller,
                 reference_controller,
@@ -1185,161 +1180,233 @@ pub mod directory {
             )?;
             Ok(Self { data })
         }
+
+        /// Operator-only, one-time Project code selection; closes fixture-controller access.
         #[ink(message)]
         pub fn configure_project_code(&mut self, code: Hash) -> Result<()> {
             self.transact(|data| data.configure_project_code(code))
         }
+
+        /// Operator-only accounting initialization; mock funding is fixed at setup.
         #[ink(message)]
-        pub fn project_address(&self, id: Id) -> Option<AccountId> {
-            self.read_state(|data| data.project_address(id))
+        pub fn configure_accounting(&mut self, mock_funding: bool) -> Result<()> {
+            self.transact(|data| data.configure_accounting(mock_funding))
         }
+
+        // Member registration, qualifications and capacity.
+
         #[ink(message)]
-        pub fn resolve_project(&self, id: Id) -> Result<AccountId> {
-            self.read_state(|data| data.resolve_project(id))
-        }
-        #[ink(message)]
-        pub fn projects(&self) -> Vec<(Id, AccountId)> {
-            self.read_state(|data| data.projects())
-        }
-        #[ink(message)]
-        pub fn create_project_core(
+        pub fn register_worker(
             &mut self,
-            content: MetadataCommitmentV1,
-            seed: [u8; 32],
+            request: RegisterWorkerCoreRequest,
+            calendar_id: Id,
         ) -> Result<Effect> {
-            self.transact(|data| data.create_project_core(content, seed))
+            self.transact(|data| data.register_worker(request, calendar_id))
         }
+
+        #[ink(message)]
+        pub fn update_qualifications(&mut self, qualifications: Qualifications) -> Result<Effect> {
+            self.transact(|data| data.update_qualifications(qualifications))
+        }
+
+        #[ink(message)]
+        pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<Effect> {
+            self.transact(|data| data.set_calendar(definition))
+        }
+
+        #[ink(message)]
+        pub fn set_worker_mode(&mut self, mode: WorkerMode) -> Result<Effect> {
+            self.transact(|data| data.set_worker_mode(mode))
+        }
+
+        #[ink(message)]
+        pub fn promote_coordinator(&mut self, account: AccountId) -> Result<Effect> {
+            self.transact(|data| data.promote_coordinator(account))
+        }
+
+        #[ink(message)]
+        pub fn worker(&self, account: AccountId) -> Option<WorkerCore> {
+            self.read_state(|data| data.worker(account))
+        }
+
+        #[ink(message)]
+        pub fn workers(&self) -> Vec<WorkerCore> {
+            self.read_state(|data| data.workers())
+        }
+
+        #[ink(message)]
+        pub fn calendar_address(&self, account: AccountId) -> Option<AccountId> {
+            self.read_state(|data| data.calendar_address(account))
+        }
+
+        // Catalog and skill requests.
+
+        #[ink(message)]
+        pub fn catalog(&self) -> CatalogSeed {
+            self.read_state(|data| data.catalog())
+        }
+
+        #[ink(message)]
+        pub fn upsert_catalog_entry(
+            &mut self,
+            kind: CatalogKind,
+            id: u32,
+            content: MetadataCommitmentV1,
+        ) -> Result<Effect> {
+            self.transact(|data| data.upsert_catalog_entry(kind, id, content))
+        }
+
+        #[ink(message)]
+        pub fn delete_catalog_entry(&mut self, kind: CatalogKind, id: u32) -> Result<Effect> {
+            self.transact(|data| data.delete_catalog_entry(kind, id))
+        }
+
+        #[ink(message)]
+        pub fn create_skill_request(
+            &mut self,
+            role_ids: Vec<u32>,
+            content: MetadataCommitmentV1,
+            request_id: Id,
+        ) -> Result<Effect> {
+            self.transact(|data| data.create_skill_request(role_ids, content, request_id))
+        }
+
+        #[ink(message)]
+        pub fn decide_skill_request(
+            &mut self,
+            request_id: Id,
+            decision: SkillRequestDecision,
+        ) -> Result<Effect> {
+            self.transact(|data| data.decide_skill_request(request_id, decision))
+        }
+
+        #[ink(message)]
+        pub fn skill_requests(&self) -> Vec<SkillRequestView> {
+            self.read_state(|data| data.skill_requests())
+        }
+
+        // DAO policy.
+
         #[ink(message)]
         pub fn compensation_policy(&self) -> u8 {
             self.read_state(|data| data.compensation_policy())
         }
+
         #[ink(message)]
         pub fn set_compensation_policy(&mut self, percent: u8) -> Result<Effect> {
             self.transact(|data| data.set_compensation_policy(percent))
         }
-        #[ink(message)]
-        pub fn validate_qualifications(&self, qualifications: Qualifications) -> Result<()> {
-            self.read_state(|data| data.validate_qualifications(qualifications))
-        }
-        #[ink(message)]
-        pub fn validate_task_assignees(&self, accounts: Vec<AccountId>) -> Result<()> {
-            self.read_state(|data| data.validate_task_assignees(accounts))
-        }
-        #[ink(message)]
-        pub fn configure_money(&mut self, mock_funding: bool) -> Result<()> {
-            self.transact(|data| data.configure_money(mock_funding))
-        }
-        #[ink(message)]
-        pub fn money_enabled(&self) -> bool {
-            self.read_state(|data| data.money_enabled())
-        }
-        #[ink(message)]
-        pub fn fund_account(&mut self, account: AccountId, amount: u64) -> Result<Effect> {
-            self.transact(|data| data.fund_account(account, amount))
-        }
-        #[ink(message)]
-        pub fn create_deposit(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
-            self.transact(|data| data.create_deposit(amount, seed))
-        }
-        #[ink(message)]
-        pub fn confirm_deposit(&mut self, id: Id) -> Result<Effect> {
-            self.transact(|data| data.confirm_deposit(id))
-        }
-        #[ink(message)]
-        pub fn create_withdrawal(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
-            self.transact(|data| data.create_withdrawal(amount, seed))
-        }
-        #[ink(message)]
-        pub fn cancel_withdrawal(&mut self, id: Id) -> Result<Effect> {
-            self.transact(|data| data.cancel_withdrawal(id))
-        }
-        #[ink(message)]
-        pub fn deposit(&self, id: Id) -> Result<Deposit> {
-            self.read_state(|data| data.deposit(id))
-        }
-        #[ink(message)]
-        pub fn withdrawal(&self, id: Id) -> Result<Withdrawal> {
-            self.read_state(|data| data.withdrawal(id))
-        }
-        #[ink(message)]
-        pub fn financial_projection(&self) -> Result<FinancialProjection> {
-            self.read_state(|data| data.financial_projection())
-        }
-        #[ink(message)]
-        pub fn book_debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
-            self.transact(|data| data.book_debit(account, amount))
-        }
-        #[ink(message)]
-        pub fn book_credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
-            self.transact(|data| data.book_credit(account, amount))
-        }
-        #[ink(message)]
-        pub fn set_project_identities(&mut self, layout: ProjectIdentities) -> Result<()> {
-            self.transact(|data| data.set_project_identities(layout))
-        }
-        #[ink(message)]
-        pub fn set_project_submissions(&mut self, submissions: Vec<Id>) -> Result<()> {
-            self.transact(|data| data.set_project_submissions(submissions))
-        }
-        #[ink(message)]
-        pub fn register_dispute(&mut self, id: Id) -> Result<()> {
-            self.transact(|data| data.register_dispute(id))
-        }
-        #[ink(message)]
-        pub fn dispute_project(&self, id: Id) -> Option<Id> {
-            self.read_state(|data| data.dispute_project(id))
-        }
-        #[ink(message)]
-        pub fn disputes(&self) -> Vec<(Id, Id)> {
-            self.read_state(|data| data.disputes())
-        }
-        #[ink(message)]
-        pub fn apply_legacy_reputation(
-            &mut self,
-            votes: Vec<(AccountId, WorkerMode, u16, u32)>,
-        ) -> Result<()> {
-            self.transact(|data| data.apply_legacy_reputation(votes))
-        }
-        #[ink(message)]
-        pub fn next_task_key(&mut self) -> Result<u32> {
-            self.transact(|data| data.next_task_key())
-        }
+
         #[ink(message)]
         pub fn score_policy(&self) -> ScorePolicy {
             self.read_state(|data| data.score_policy())
         }
+
         #[ink(message)]
         pub fn set_score_policy(&mut self, policy: ScorePolicy) -> Result<Effect> {
             self.transact(|data| data.set_score_policy(policy))
         }
+
+        // Projects and dispute lookup.
+
         #[ink(message)]
-        pub fn apply_reputation(
+        pub fn create_project(
             &mut self,
-            project_id: Id,
-            author: AccountId,
-            votes: Vec<Contribution>,
-        ) -> Result<()> {
-            self.transact(|data| data.apply_reputation(project_id, author, votes))
-        }
-        #[ink(message)]
-        pub fn select_coordinator(
-            &self,
-            client: AccountId,
-            week: Week,
+            content: MetadataCommitmentV1,
             seed: [u8; 32],
-        ) -> Result<(AccountId, Id)> {
-            self.read_state(|data| data.select_coordinator(client, week, seed))
+        ) -> Result<Effect> {
+            self.transact(|data| data.create_project(content, seed))
         }
+
         #[ink(message)]
-        pub fn reserve_calendar(
-            &mut self,
-            worker: AccountId,
-            window: WeekWindow,
-            minutes: u32,
-            reference: ReservationView,
-        ) -> Result<()> {
-            self.transact(|data| data.reserve_calendar(worker, window, minutes, reference))
+        pub fn project_address(&self, id: Id) -> Option<AccountId> {
+            self.read_state(|data| data.project_address(id))
         }
+
+        #[ink(message)]
+        pub fn resolve_project(&self, id: Id) -> Result<AccountId> {
+            self.read_state(|data| data.resolve_project(id))
+        }
+
+        #[ink(message)]
+        pub fn projects(&self) -> Vec<(Id, AccountId)> {
+            self.read_state(|data| data.projects())
+        }
+
+        #[ink(message)]
+        pub fn dispute_project(&self, id: Id) -> Option<Id> {
+            self.read_state(|data| data.dispute_project(id))
+        }
+
+        #[ink(message)]
+        pub fn disputes(&self) -> Vec<(Id, Id)> {
+            self.read_state(|data| data.disputes())
+        }
+
+        // Account funding and withdrawals.
+
+        #[ink(message)]
+        pub fn accounting_enabled(&self) -> bool {
+            self.read_state(|data| data.accounting_enabled())
+        }
+
+        /// Operator-only fixture funding; requires mock funding to be enabled.
+        #[ink(message)]
+        pub fn fund_account(&mut self, account: AccountId, amount: u64) -> Result<Effect> {
+            self.transact(|data| data.fund_account(account, amount))
+        }
+
+        #[ink(message)]
+        pub fn create_deposit(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
+            self.transact(|data| data.create_deposit(amount, seed))
+        }
+
+        #[ink(message)]
+        pub fn confirm_deposit(&mut self, id: Id) -> Result<Effect> {
+            self.transact(|data| data.confirm_deposit(id))
+        }
+
+        #[ink(message)]
+        pub fn deposit(&self, id: Id) -> Result<Deposit> {
+            self.read_state(|data| data.deposit(id))
+        }
+
+        #[ink(message)]
+        pub fn create_withdrawal(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
+            self.transact(|data| data.create_withdrawal(amount, seed))
+        }
+
+        #[ink(message)]
+        pub fn cancel_withdrawal(&mut self, id: Id) -> Result<Effect> {
+            self.transact(|data| data.cancel_withdrawal(id))
+        }
+
+        #[ink(message)]
+        pub fn withdrawal(&self, id: Id) -> Result<Withdrawal> {
+            self.read_state(|data| data.withdrawal(id))
+        }
+
+        /// Operator-only account balances, issuance, deposit and withdrawal records.
+        #[ink(message)]
+        pub fn financial_projection(&self) -> Result<FinancialProjection> {
+            self.read_state(|data| data.financial_projection())
+        }
+
+        // Validation queries.
+
+        #[ink(message)]
+        pub fn validate_qualifications(&self, qualifications: Qualifications) -> Result<()> {
+            self.read_state(|data| data.validate_qualifications(qualifications))
+        }
+
+        #[ink(message)]
+        pub fn validate_task_assignees(&self, accounts: Vec<AccountId>) -> Result<()> {
+            self.read_state(|data| data.validate_task_assignees(accounts))
+        }
+
+        // Project hooks: caller permissions are enforced in the implementation.
+
+        /// Authorized-Project hook: select and reserve a complete team atomically.
         #[ink(message)]
         pub fn assign_team(
             &mut self,
@@ -1353,80 +1420,35 @@ pub mod directory {
                 data.assign_team(project_id, client, coordinator, milestones, seed)
             })
         }
+
+        /// Allocate the next global task ID for an authorized Project controller.
         #[ink(message)]
-        pub fn catalog(&self) -> CatalogSeed {
-            self.read_state(|data| data.catalog())
+        pub fn allocate_task_id(&mut self) -> Result<u32> {
+            self.transact(|data| data.allocate_task_id())
         }
+
+        /// Registered-Project hook: debit accounting only; the Project performs the asset deposit.
         #[ink(message)]
-        pub fn calendar_address(&self, account: AccountId) -> Option<AccountId> {
-            self.read_state(|data| data.calendar_address(account))
+        pub fn record_balance_debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
+            self.transact(|data| data.record_balance_debit(account, amount))
         }
+
+        /// Registered-Project hook: credit accounting only; the Project performs the asset transfer.
         #[ink(message)]
-        pub fn worker(&self, account: AccountId) -> Option<WorkerCore> {
-            self.read_state(|data| data.worker(account))
+        pub fn record_balance_credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
+            self.transact(|data| data.record_balance_credit(account, amount))
         }
+
         #[ink(message)]
-        pub fn workers(&self) -> Vec<WorkerCore> {
-            self.read_state(|data| data.workers())
+        pub fn set_project_identities(&mut self, layout: ProjectIdentities) -> Result<()> {
+            self.transact(|data| data.set_project_identities(layout))
         }
+
         #[ink(message)]
-        pub fn skill_requests(&self) -> Vec<SkillRequestView> {
-            self.read_state(|data| data.skill_requests())
+        pub fn set_project_submissions(&mut self, submissions: Vec<Id>) -> Result<()> {
+            self.transact(|data| data.set_project_submissions(submissions))
         }
-        #[ink(message)]
-        pub fn register_worker_core(
-            &mut self,
-            request: RegisterWorkerCoreRequest,
-            calendar_id: Id,
-        ) -> Result<Effect> {
-            self.transact(|data| data.register_worker_core(request, calendar_id))
-        }
-        #[ink(message)]
-        pub fn update_qualifications(&mut self, qualifications: Qualifications) -> Result<Effect> {
-            self.transact(|data| data.update_qualifications(qualifications))
-        }
-        #[ink(message)]
-        pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<Effect> {
-            self.transact(|data| data.set_calendar(definition))
-        }
-        #[ink(message)]
-        pub fn set_worker_mode(&mut self, mode: WorkerMode) -> Result<Effect> {
-            self.transact(|data| data.set_worker_mode(mode))
-        }
-        #[ink(message)]
-        pub fn promote_coordinator(&mut self, account: AccountId) -> Result<Effect> {
-            self.transact(|data| data.promote_coordinator(account))
-        }
-        #[ink(message)]
-        pub fn upsert_catalog_entry_core(
-            &mut self,
-            kind: CatalogKind,
-            id: u32,
-            content: MetadataCommitmentV1,
-        ) -> Result<Effect> {
-            self.transact(|data| data.upsert_catalog_entry_core(kind, id, content))
-        }
-        #[ink(message)]
-        pub fn delete_catalog_entry(&mut self, kind: CatalogKind, id: u32) -> Result<Effect> {
-            self.transact(|data| data.delete_catalog_entry(kind, id))
-        }
-        #[ink(message)]
-        pub fn create_skill_request_core(
-            &mut self,
-            role_ids: Vec<u32>,
-            content: MetadataCommitmentV1,
-            request_id: Id,
-        ) -> Result<Effect> {
-            self.transact(|data| data.create_skill_request_core(role_ids, content, request_id))
-        }
-        #[ink(message)]
-        pub fn decide_skill_request(
-            &mut self,
-            request_id: Id,
-            decision: SkillRequestDecision,
-        ) -> Result<Effect> {
-            self.transact(|data| data.decide_skill_request(request_id, decision))
-        }
+
         #[ink(message)]
         pub fn set_proposal_references(
             &mut self,
@@ -1434,6 +1456,61 @@ pub mod directory {
             qualifications: Option<Qualifications>,
         ) -> Result<()> {
             self.transact(|data| data.set_proposal_references(proposal_id, qualifications))
+        }
+
+        #[ink(message)]
+        pub fn register_dispute(&mut self, id: Id) -> Result<()> {
+            self.transact(|data| data.register_dispute(id))
+        }
+
+        /// Record a reason only for the calling registered Project.
+        #[ink(message)]
+        pub fn append_reason(&mut self, project_id: Id, bytes: Vec<u8>) -> Result<()> {
+            self.transact(|data| data.append_reason(project_id, bytes))
+        }
+
+        /// Authorized-Project hook for replay-protected final evaluation contributions.
+        #[ink(message)]
+        pub fn apply_reputation(
+            &mut self,
+            project_id: Id,
+            author: AccountId,
+            votes: Vec<Contribution>,
+        ) -> Result<()> {
+            self.transact(|data| data.apply_reputation(project_id, author, votes))
+        }
+
+        /// Registered-Project hook for rated settlement contributions, in score hundredths.
+        #[ink(message)]
+        pub fn apply_settlement_reputation(
+            &mut self,
+            votes: Vec<(AccountId, WorkerMode, u16, u32)>,
+        ) -> Result<()> {
+            self.transact(|data| data.apply_settlement_reputation(votes))
+        }
+
+        // Component hooks: fixture controller before factory setup, registered Projects afterward.
+
+        /// Authorized-controller query returning the selected coordinator and generated project ID.
+        #[ink(message)]
+        pub fn select_coordinator(
+            &self,
+            client: AccountId,
+            week: Week,
+            seed: [u8; 32],
+        ) -> Result<(AccountId, Id)> {
+            self.read_state(|data| data.select_coordinator(client, week, seed))
+        }
+
+        #[ink(message)]
+        pub fn reserve_calendar(
+            &mut self,
+            worker: AccountId,
+            window: WeekWindow,
+            minutes: u32,
+            reference: ReservationView,
+        ) -> Result<()> {
+            self.transact(|data| data.reserve_calendar(worker, window, minutes, reference))
         }
     }
 }

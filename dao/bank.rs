@@ -1,5 +1,5 @@
 //! Visible local KVN accounting, independent from prefunded inventory/minima.
-//! Directory authorizes callers; Project capabilities record real asset movement.
+//! Dao authorizes callers; Project capabilities record real asset movement.
 use crate::assets;
 use crate::indices;
 use ink::storage::{traits::ManualKey, Mapping, StorageVec};

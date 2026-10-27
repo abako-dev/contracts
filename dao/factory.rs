@@ -1,5 +1,5 @@
-//! Explicit constructor ABIs avoid source cycles between Directory and Project.
-use crate::directory::MetadataCommitmentV1;
+//! Explicit constructor ABIs avoid source cycles between Dao and Project.
+use crate::dao::MetadataCommitmentV1;
 use ink::{
     env::{
         call::{build_create, ExecutionInput, FromAccountId, Selector},
@@ -23,7 +23,7 @@ impl FromAccountId<DefaultEnvironment> for ContractHandle {
 )]
 pub(crate) fn instantiate(
     code: Hash,
-    directory: AccountId,
+    dao: AccountId,
     project_id: [u8; 16],
     client: AccountId,
     coordinator: AccountId,
@@ -35,7 +35,7 @@ pub(crate) fn instantiate(
         .endowment(0)
         .exec_input(
             ExecutionInput::new(Selector::new(ink::selector_bytes!("new")))
-                .push_arg(directory)
+                .push_arg(dao)
                 .push_arg(project_id)
                 .push_arg(client)
                 .push_arg(coordinator)
