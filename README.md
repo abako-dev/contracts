@@ -8,7 +8,9 @@ without parachain nodes or block production. ink! v5 remains the Kreivo target.
 |---|---|---|
 | [dao](dao/README.md) | Catalog IDs, qualifications, worker selection, global IDs, capacity, reservations, Project factory and shared accounting | [lib.rs](dao/lib.rs), [matching.rs](dao/matching.rs) |
 | [project](project/README.md) | Commercial terms, task IDs/assignees, lifecycle, escrow, settlement, disputes and evaluations | [lib.rs](project/lib.rs), [execution.rs](project/execution.rs) |
-| [sandbox-probe](sandbox-probe/README.md) | Private regression fixture for traps, reverts, gas and persistence; not an application contract | [lib.rs](sandbox-probe/lib.rs) |
+
+The private [sandbox probe](tests/fixtures/sandbox-probe/README.md) lives under
+`tests/fixtures/` and is excluded from normal provider builds.
 
 The API owns names, descriptions, profiles, task text/progress, evidence and
 notifications in PostgreSQL. Contracts retain fixed content commitments where
