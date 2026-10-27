@@ -6,7 +6,7 @@ without parachain nodes or block production. ink! v5 remains the Kreivo target.
 
 | Directory | Responsibility | Start reading |
 |---|---|---|
-| [directory](directory/README.md) | Catalog IDs, qualifications, worker selection, global IDs, Project factory and shared accounting | [lib.rs](directory/lib.rs) |
+| [directory](directory/README.md) | Catalog IDs, qualifications, worker selection, global IDs, Project factory and shared accounting | [lib.rs](directory/lib.rs), [matching.rs](directory/matching.rs) |
 | [calendar](calendar/README.md) | Integer-minute capacity and reservations by ISO week | [lib.rs](calendar/lib.rs) |
 | [project](project/README.md) | Commercial terms, task IDs/assignees, lifecycle, escrow, settlement, disputes and evaluations | [lib.rs](project/lib.rs), [execution.rs](project/execution.rs) |
 | [sandbox-probe](sandbox-probe/README.md) | Private regression fixture for traps, reverts, gas and persistence; not an application contract | [lib.rs](sandbox-probe/lib.rs) |
