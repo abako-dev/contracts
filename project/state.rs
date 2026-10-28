@@ -1,38 +1,21 @@
 //! Ordinary ink storage for Project's fixed records and ordered child entries.
 //! The hydrated ProjectData is transient input to the existing business rules.
-use crate::{project::ProjectData, records::*, types::*};
+use crate::{
+    project::{Project, ProjectData},
+    records::*,
+    types::*,
+};
 use ink::{
     primitives::AccountId,
-    storage::{traits::ManualKey, Lazy, Mapping},
+    storage::{Lazy, Mapping},
 };
 
 pub type MilestonePosition = (u32, u32);
 pub type ChildPosition = (MilestonePosition, u32);
 pub type NestedPosition = (ChildPosition, u32);
 
-#[ink::storage_item]
-#[derive(Debug)]
-pub struct ProjectStorage {
-    pub dao: AccountId,
-    pub project_id: Id,
-    pub header: Lazy<ProjectRecord, ManualKey<1>>,
-    pub proposals: Mapping<u32, ProposalRecord, ManualKey<10>>,
-    pub milestones: Mapping<MilestonePosition, MilestoneRecord, ManualKey<11>>,
-    pub requirements: Mapping<ChildPosition, RequirementRecord, ManualKey<12>>,
-    pub skills: Mapping<NestedPosition, u32, ManualKey<13>>,
-    pub assignments: Mapping<ChildPosition, AssignmentView, ManualKey<14>>,
-    pub milestone_ratings: Mapping<ChildPosition, WorkerRating, ManualKey<15>>,
-    pub tasks: Mapping<ChildPosition, TaskRecord, ManualKey<16>>,
-    pub assignees: Mapping<NestedPosition, AccountId, ManualKey<17>>,
-    pub submissions: Mapping<ChildPosition, SubmissionRecord, ManualKey<18>>,
-    pub submission_ratings: Mapping<NestedPosition, WorkerRating, ManualKey<19>>,
-    pub evaluations: Mapping<u32, EvaluationRecord, ManualKey<20>>,
-    pub evaluation_ratings: Mapping<(u32, u32), AccountRating, ManualKey<21>>,
-    pub reasons: Mapping<u32, ReasonRecord, ManualKey<22>>,
-    pub disputes: Mapping<u32, DisputeRecord, ManualKey<23>>,
-}
-impl ProjectStorage {
-    pub fn new(dao: AccountId, project_id: Id) -> Self {
+impl Project {
+    pub(crate) fn empty(dao: AccountId, project_id: Id) -> Self {
         Self {
             dao,
             project_id,
@@ -53,7 +36,7 @@ impl ProjectStorage {
             disputes: Mapping::default(),
         }
     }
-    pub fn load(&self) -> Result<ProjectData> {
+    pub(crate) fn load(&self) -> Result<ProjectData> {
         let header = missing(self.header.get())?;
         require(
             header.project_id == self.project_id,
@@ -167,10 +150,10 @@ impl ProjectStorage {
     }
 }
 
-impl ProjectStorage {
+impl Project {
     /// Persist domain records individually. Comparing fixed cells avoids cloning
     /// a second complete Project tree and avoids rewriting unchanged histories.
-    pub fn save(&mut self, data: &ProjectData) -> Result<()> {
+    pub(crate) fn save(&mut self, data: &ProjectData) -> Result<()> {
         require(
             data.dao == self.dao && data.project.project_id == self.project_id,
             "invalid_project_state",
@@ -626,7 +609,7 @@ mod tests {
             })
             .collect();
         assert!(tasks.encode().len() > 16 * 1024);
-        let mut storage = ProjectStorage::new(data.dao, data.project.project_id);
+        let mut storage = Project::empty(data.dao, data.project.project_id);
         storage.save(&data).unwrap();
         assert_eq!(storage.load().unwrap().project, data.project);
         assert_eq!(storage.load().unwrap().reasons, data.reasons);
@@ -648,7 +631,7 @@ mod tests {
     #[ink::test]
     fn replacement_shrink_removal_and_position_reuse_clear_old_children() {
         let mut data = fixture();
-        let mut storage = ProjectStorage::new(data.dao, data.project.project_id);
+        let mut storage = Project::empty(data.dao, data.project.project_id);
         storage.save(&data).unwrap();
         let proposal = &mut data.project.proposals[0];
         proposal.proposal_id = [9; 16];
@@ -751,7 +734,7 @@ mod tests {
             proposal_revision: u64::MAX,
             context_event_cursor: u64::MAX,
         });
-        let mut storage = ProjectStorage::new(data.dao, data.project.project_id);
+        let mut storage = Project::empty(data.dao, data.project.project_id);
         storage.save(&data).unwrap();
         let sizes = [
             ("project", storage.header.get().unwrap().encode().len()),

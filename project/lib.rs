@@ -8,10 +8,15 @@ mod types;
 #[ink::contract]
 pub mod project {
     use crate::types::*;
+    use crate::{
+        records::*,
+        state::{ChildPosition, MilestonePosition, NestedPosition},
+    };
     use chrono::{Datelike, Duration, NaiveDate, Weekday};
     use dao::calendar::Week;
     use dao::dao::{DaoRef, Effect, MetadataCommitmentV1, MetadataReferenceV1, Qualifications};
     use ink::codegen::Env as _;
+    use ink::storage::{traits::ManualKey, Lazy, Mapping};
     use ink::{
         env::call::FromAccountId,
         prelude::{
@@ -24,7 +29,23 @@ pub mod project {
 
     #[ink(storage)]
     pub struct Project {
-        data: crate::state::ProjectStorage,
+        pub(crate) dao: AccountId,
+        pub(crate) project_id: Id,
+        pub(crate) header: Lazy<ProjectRecord, ManualKey<1>>,
+        pub(crate) proposals: Mapping<u32, ProposalRecord, ManualKey<10>>,
+        pub(crate) milestones: Mapping<MilestonePosition, MilestoneRecord, ManualKey<11>>,
+        pub(crate) requirements: Mapping<ChildPosition, RequirementRecord, ManualKey<12>>,
+        pub(crate) skills: Mapping<NestedPosition, u32, ManualKey<13>>,
+        pub(crate) assignments: Mapping<ChildPosition, AssignmentView, ManualKey<14>>,
+        pub(crate) milestone_ratings: Mapping<ChildPosition, WorkerRating, ManualKey<15>>,
+        pub(crate) tasks: Mapping<ChildPosition, TaskRecord, ManualKey<16>>,
+        pub(crate) assignees: Mapping<NestedPosition, AccountId, ManualKey<17>>,
+        pub(crate) submissions: Mapping<ChildPosition, SubmissionRecord, ManualKey<18>>,
+        pub(crate) submission_ratings: Mapping<NestedPosition, WorkerRating, ManualKey<19>>,
+        pub(crate) evaluations: Mapping<u32, EvaluationRecord, ManualKey<20>>,
+        pub(crate) evaluation_ratings: Mapping<(u32, u32), AccountRating, ManualKey<21>>,
+        pub(crate) reasons: Mapping<u32, ReasonRecord, ManualKey<22>>,
+        pub(crate) disputes: Mapping<u32, DisputeRecord, ManualKey<23>>,
     }
 
     pub(crate) struct ProjectData {
@@ -728,12 +749,12 @@ pub mod project {
 
     impl Project {
         fn read_state<T>(&self, read: impl FnOnce(ProjectData) -> T) -> T {
-            read(self.data.load().expect("complete Project storage"))
+            read(self.load().expect("complete Project storage"))
         }
         fn change<T>(&mut self, change: impl FnOnce(&mut ProjectData) -> Result<T>) -> Result<T> {
-            let mut data = self.data.load()?;
+            let mut data = self.load()?;
             let result = change(&mut data)?;
-            self.data.save(&data)?;
+            self.save(&data)?;
             Ok(result)
         }
         #[ink(constructor)]
@@ -750,9 +771,9 @@ pub mod project {
             now: u64,
         ) -> Result<Self> {
             let data = ProjectData::new(dao, project_id, client, coordinator, content, now)?;
-            let mut stored = crate::state::ProjectStorage::new(dao, project_id);
+            let mut stored = Self::empty(dao, project_id);
             stored.save(&data)?;
-            Ok(Self { data: stored })
+            Ok(stored)
         }
         #[ink(message)]
         pub fn view(&self) -> ProjectCore {
