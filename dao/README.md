@@ -1,32 +1,55 @@
-# DAO
+# Dao: the organization’s shared rules
 
-DAO entry point and shared authority for catalog IDs, worker qualifications,
-assignment policies, reputation, global IDs, Project creation and accounting.
-Projects own their lifecycle and settlement. [calendar.rs](calendar.rs) stores
-per-worker capacity and reservations inside Dao, using ordinary account-keyed
-mappings. Calendar IDs remain public identifiers; there are no calendar contracts.
+The Dao contract is the entry point for an organization using Digesta. A smart
+contract is a program that checks agreed rules before allowing an action. Dao
+keeps the rules and records shared across the organization’s projects, while each
+[Project contract](../project/README.md) manages one piece of work.
 
-[lib.rs](lib.rs) groups the public API into deployment, members, catalog, policy,
-projects, accounting and restricted Project hooks. `create_project`,
-`register_worker` and `create_skill_request` are user-facing operations. Policy and
-catalog changes require the operator; cross-contract hooks enforce their caller
-capabilities. Balance-recording hooks update accounting, not asset transfers.
+Dao brings together:
 
-`Dao` directly owns six ordinary ink storage components. Public ink messages
-delegate to functions in these modules; internal helpers operate on the same Dao.
-Cross-component operations still run in one contract call.
+- **People and qualifications.** It records members’ skills, working roles,
+  eligibility to coordinate projects, and reputation from previous work.
+- **Availability.** It tracks how much time members can offer each week and
+  reserves that time when a team is assigned, keeping commitments within their
+  recorded capacity.
+- **Assignment.** It selects eligible coordinators and workers using availability,
+  required skills and reputation. The current team policy also favors continuity
+  with earlier milestones and uses a reproducible draw to break ties.
+- **Shared policies.** It holds the compensation percentage and reputation
+  weights. Changes to these settings require the authorized DAO operator.
+- **Projects and accounting.** It creates Project contracts, keeps their registry,
+  and maintains shared financial records, including balances, deposits and
+  withdrawals.
 
-| Module | State and operations |
+For example, when a client creates a project, Dao selects an available,
+eligible coordinator and creates its Project contract. Later, when the client
+approves a work proposal, Project asks Dao to assign a suitable team and reserve
+their time. Approval succeeds only if all the required assignments and
+reservations succeed together.
+
+The app’s database holds names, profiles, descriptions and other presentation
+content. Dao stores the facts needed to enforce the rules, along with compact
+references that bind relevant content to a recorded action.
+
+The assignment algorithm is deliberately kept in its own visible module so a DAO
+can review and adapt it. Changing the algorithm requires a contract code change;
+changing the supported policy settings uses the existing authorized operations.
+An on-chain governance voting system is not implemented here.
+
+## Reading the code
+
+[lib.rs](lib.rs) lists the public operations and the six groups of shared data.
+The implementation is organized by responsibility:
+
+| File | What it handles |
 |---|---|
-| [config.rs](config.rs) | Authorities, reputation weights and compensation policy |
-| [catalog.rs](catalog.rs) | Roles, skills, associations and skill requests |
-| [members.rs](members.rs) | Workers, qualifications, selection indexes and reputation updates |
-| [projects.rs](projects.rs) | Project registry, global IDs, references and authenticated Project hooks |
-| [calendar.rs](calendar.rs) | Worker capacity and reservations |
-| [bank.rs](bank.rs) | Shared accounting and deposit/withdrawal operations |
+| [config.rs](config.rs) | Who can change settings, compensation and reputation policies |
+| [catalog.rs](catalog.rs) | Roles, skills and requests to add skills |
+| [members.rs](members.rs) | Member qualifications, eligibility and reputation updates |
+| [matching.rs](matching.rs) | Coordinator and team selection |
+| [calendar.rs](calendar.rs) | Available time and reservations |
+| [projects.rs](projects.rs) | Project creation, registry and checks on requests from Projects |
+| [bank.rs](bank.rs) | Shared financial accounting |
+| [reputation.rs](reputation.rs) | Score calculations |
 
-[matching.rs](matching.rs) contains coordinator selection, team assignment and
-seeded tie-breaking. [reputation.rs](reputation.rs) contains score calculation and
-configurable voting weights. Algorithm changes require a reviewed contract-code
-change; existing score weights use the authorized `set_score_policy` message.
-See [build instructions and boundaries](../README.md).
+See the [repository guide](../README.md) for building, testing and deployment status.
