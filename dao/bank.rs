@@ -1,7 +1,7 @@
 //! Visible local payment accounting, independent from prefunded inventory/minima.
 //! Dao authorizes callers; Project capabilities record real asset movement.
 use crate::assets;
-use crate::dao::{DaoData, Effect};
+use crate::dao::{Dao, Effect};
 use crate::indices;
 use ink::codegen::Env as _;
 use ink::storage::{traits::ManualKey, Mapping, StorageVec};
@@ -281,102 +281,101 @@ impl Bank {
         Ok(())
     }
 }
-impl DaoData {
-    pub fn configure_accounting(&mut self, mock_funding: bool) -> Result<()> {
-        self.root()?;
-        require(self.projects.project_code.is_some(), "project_code_missing")?;
-        require(
-            crate::assets::balance(self.env().account_id())? > 1,
-            "invalid_asset_state",
-        )?;
-        self.bank.configure(mock_funding)?;
-        for (_, address) in self.projects() {
-            self.bank.provision(address)?;
-        }
-        Ok(())
-    }
-
-    pub fn accounting_enabled(&self) -> bool {
-        self.bank.enabled()
-    }
-
-    pub fn fund_account(&mut self, account: AccountId, amount: u64) -> Result<Effect> {
-        self.root()?;
-        self.bank.mint(account, amount, true)?;
-        Ok(Effect::new(6, None, account))
-    }
-
-    pub fn create_deposit(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
-        let origin = self.env().caller();
-        let mut id = [0; 16];
-        StdRng::from_seed(seed).fill_bytes(&mut id);
-        self.bank.create_deposit(origin, id, amount, self.now())?;
-        self.validate_public_ids()?;
-        Ok(Effect::new(27, Some(id), origin))
-    }
-
-    pub fn confirm_deposit(&mut self, id: Id) -> Result<Effect> {
-        self.root()?;
-        let destination = self.bank.confirm(id, self.now())?;
-        Ok(Effect::moderated(28, id, destination, self.env().caller()))
-    }
-
-    pub fn create_withdrawal(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
-        let origin = self.env().caller();
-        let mut id = [0; 16];
-        StdRng::from_seed(seed).fill_bytes(&mut id);
-        self.bank
-            .create_withdrawal(origin, id, amount, self.now())?;
-        self.validate_public_ids()?;
-        Ok(Effect::new(29, Some(id), origin))
-    }
-
-    pub fn cancel_withdrawal(&mut self, id: Id) -> Result<Effect> {
-        let owner = self
-            .bank
-            .cancel(id, self.env().caller(), self.config.root, self.now())?;
-        Ok(Effect::moderated(30, id, owner, self.env().caller()))
-    }
-
-    pub fn deposit(&self, id: Id) -> Result<Deposit> {
-        let record = self.bank.deposit(id)?;
-        require(
-            self.env().caller() == record.owner || self.env().caller() == self.config.root,
-            "deposit_owner_or_system_required",
-        )?;
-        Ok(record)
-    }
-
-    pub fn withdrawal(&self, id: Id) -> Result<Withdrawal> {
-        let record = self.bank.withdrawal(id)?;
-        require(
-            self.env().caller() == record.owner || self.env().caller() == self.config.root,
-            "withdrawal_owner_or_system_required",
-        )?;
-        Ok(record)
-    }
-
-    pub fn financial_projection(&self) -> Result<FinancialProjection> {
-        self.root()?;
-        Ok((
-            self.bank.balances(),
-            self.bank.minted(),
-            self.bank.deposits(),
-            self.bank.withdrawals(),
-        ))
-    }
-
-    pub fn record_balance_debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
-        self.registered_project()?;
-        self.bank.debit(account, amount)
-    }
-
-    pub fn record_balance_credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
-        self.registered_project()?;
-        self.bank.credit(account, amount)
-    }
-
+impl Dao {
     pub(crate) fn now(&self) -> u64 {
         self.env().block_timestamp() / 1000
     }
+}
+
+pub(crate) fn configure_accounting(dao: &mut Dao, mock_funding: bool) -> Result<()> {
+    dao.root()?;
+    require(dao.projects.project_code.is_some(), "project_code_missing")?;
+    require(
+        crate::assets::balance(dao.env().account_id())? > 1,
+        "invalid_asset_state",
+    )?;
+    dao.bank.configure(mock_funding)?;
+    for (_, address) in dao.projects() {
+        dao.bank.provision(address)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn accounting_enabled(dao: &Dao) -> bool {
+    dao.bank.enabled()
+}
+
+pub(crate) fn fund_account(dao: &mut Dao, account: AccountId, amount: u64) -> Result<Effect> {
+    dao.root()?;
+    dao.bank.mint(account, amount, true)?;
+    Ok(Effect::new(6, None, account))
+}
+
+pub(crate) fn create_deposit(dao: &mut Dao, amount: u64, seed: [u8; 32]) -> Result<Effect> {
+    let origin = dao.env().caller();
+    let mut id = [0; 16];
+    StdRng::from_seed(seed).fill_bytes(&mut id);
+    dao.bank.create_deposit(origin, id, amount, dao.now())?;
+    dao.validate_public_ids()?;
+    Ok(Effect::new(27, Some(id), origin))
+}
+
+pub(crate) fn confirm_deposit(dao: &mut Dao, id: Id) -> Result<Effect> {
+    dao.root()?;
+    let destination = dao.bank.confirm(id, dao.now())?;
+    Ok(Effect::moderated(28, id, destination, dao.env().caller()))
+}
+
+pub(crate) fn create_withdrawal(dao: &mut Dao, amount: u64, seed: [u8; 32]) -> Result<Effect> {
+    let origin = dao.env().caller();
+    let mut id = [0; 16];
+    StdRng::from_seed(seed).fill_bytes(&mut id);
+    dao.bank.create_withdrawal(origin, id, amount, dao.now())?;
+    dao.validate_public_ids()?;
+    Ok(Effect::new(29, Some(id), origin))
+}
+
+pub(crate) fn cancel_withdrawal(dao: &mut Dao, id: Id) -> Result<Effect> {
+    let owner = dao
+        .bank
+        .cancel(id, dao.env().caller(), dao.config.root, dao.now())?;
+    Ok(Effect::moderated(30, id, owner, dao.env().caller()))
+}
+
+pub(crate) fn deposit(dao: &Dao, id: Id) -> Result<Deposit> {
+    let record = dao.bank.deposit(id)?;
+    require(
+        dao.env().caller() == record.owner || dao.env().caller() == dao.config.root,
+        "deposit_owner_or_system_required",
+    )?;
+    Ok(record)
+}
+
+pub(crate) fn withdrawal(dao: &Dao, id: Id) -> Result<Withdrawal> {
+    let record = dao.bank.withdrawal(id)?;
+    require(
+        dao.env().caller() == record.owner || dao.env().caller() == dao.config.root,
+        "withdrawal_owner_or_system_required",
+    )?;
+    Ok(record)
+}
+
+pub(crate) fn financial_projection(dao: &Dao) -> Result<FinancialProjection> {
+    dao.root()?;
+    Ok((
+        dao.bank.balances(),
+        dao.bank.minted(),
+        dao.bank.deposits(),
+        dao.bank.withdrawals(),
+    ))
+}
+
+pub(crate) fn record_balance_debit(dao: &mut Dao, account: AccountId, amount: u64) -> Result<()> {
+    dao.registered_project()?;
+    dao.bank.debit(account, amount)
+}
+
+pub(crate) fn record_balance_credit(dao: &mut Dao, account: AccountId, amount: u64) -> Result<()> {
+    dao.registered_project()?;
+    dao.bank.credit(account, amount)
 }

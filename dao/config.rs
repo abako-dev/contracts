@@ -14,32 +14,32 @@ pub(crate) struct Config {
     pub(crate) compensation_percent: u8,
 }
 
-impl DaoData {
+impl Dao {
     pub(crate) fn root(&self) -> Result<()> {
         require(
             self.env().caller() == self.config.root,
             "system_origin_required",
         )
     }
+}
 
-    pub fn compensation_policy(&self) -> u8 {
-        self.config.compensation_percent
-    }
+pub(crate) fn compensation_policy(dao: &Dao) -> u8 {
+    dao.config.compensation_percent
+}
 
-    pub fn set_compensation_policy(&mut self, percent: u8) -> Result<Effect> {
-        self.root()?;
-        require(percent <= 100, "invalid_contract")?;
-        self.config.compensation_percent = percent;
-        Ok(Effect::new(37, None, self.env().caller()))
-    }
+pub(crate) fn set_compensation_policy(dao: &mut Dao, percent: u8) -> Result<Effect> {
+    dao.root()?;
+    require(percent <= 100, "invalid_contract")?;
+    dao.config.compensation_percent = percent;
+    Ok(Effect::new(37, None, dao.env().caller()))
+}
 
-    pub fn score_policy(&self) -> ScorePolicy {
-        self.config.score_policy
-    }
+pub(crate) fn score_policy(dao: &Dao) -> ScorePolicy {
+    dao.config.score_policy
+}
 
-    pub fn set_score_policy(&mut self, policy: ScorePolicy) -> Result<Effect> {
-        self.root()?;
-        self.config.score_policy = policy;
-        Ok(Effect::new(5, None, self.env().caller()))
-    }
+pub(crate) fn set_score_policy(dao: &mut Dao, policy: ScorePolicy) -> Result<Effect> {
+    dao.root()?;
+    dao.config.score_policy = policy;
+    Ok(Effect::new(5, None, dao.env().caller()))
 }

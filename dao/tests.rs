@@ -10,7 +10,7 @@ use scale::Encode;
 #[ink::test]
 fn ordinary_catalog_growth_keeps_header_fixed_and_index_complete() {
     let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
-    let mut data = DaoData::new(
+    let mut data = Dao::new(
         accounts.alice,
         accounts.alice,
         CatalogSeed {
@@ -135,9 +135,9 @@ fn fixed_records_have_headroom_below_the_unchanged_cell_limit() {
     );
 }
 
-fn fresh() -> DaoData {
+fn fresh() -> Dao {
     let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
-    let mut data = DaoData::new(
+    let mut data = Dao::new(
         accounts.alice,
         accounts.alice,
         CatalogSeed {

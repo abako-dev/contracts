@@ -1,5 +1,5 @@
 //! DAO-owned capacity and reservations, isolated by worker account.
-use crate::dao::{DaoData, Effect};
+use crate::dao::{Dao, Effect};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use ink::codegen::Env as _;
 #[cfg(feature = "std")]
@@ -332,44 +332,42 @@ impl Calendars {
     }
 }
 
-impl DaoData {
-    /// Internal controller hook also used by explicit reservation fixtures.
-    pub fn reserve_calendar(
-        &mut self,
-        worker: AccountId,
-        window: WeekWindow,
-        minutes: u32,
-        reference: ReservationView,
-    ) -> Result<()> {
-        self.project_controller()?;
-        self.worker_record(worker)?;
-        self.calendars.reserve(worker, window, minutes, reference)
-    }
+/// Internal controller hook also used by explicit reservation fixtures.
+pub(crate) fn reserve_calendar(
+    dao: &mut Dao,
+    worker: AccountId,
+    window: WeekWindow,
+    minutes: u32,
+    reference: ReservationView,
+) -> Result<()> {
+    dao.project_controller()?;
+    dao.worker_record(worker)?;
+    dao.calendars.reserve(worker, window, minutes, reference)
+}
 
-    pub fn calendar(&self, account: AccountId) -> Result<CalendarView> {
-        let worker = self.worker_record(account)?;
-        self.calendars.view(account, worker.calendar_id)
-    }
+pub(crate) fn calendar(dao: &Dao, account: AccountId) -> Result<CalendarView> {
+    let worker = dao.worker_record(account)?;
+    dao.calendars.view(account, worker.calendar_id)
+}
 
-    pub fn calendar_available(&self, account: AccountId, week: Week) -> Result<u32> {
-        self.calendars.available(account, week)
-    }
+pub(crate) fn calendar_available(dao: &Dao, account: AccountId, week: Week) -> Result<u32> {
+    dao.calendars.available(account, week)
+}
 
-    pub fn calendar_allocation(
-        &self,
-        account: AccountId,
-        window: WeekWindow,
-        minutes: u32,
-    ) -> Result<Vec<(Week, u32)>> {
-        self.calendars.allocation(account, window, minutes)
-    }
+pub(crate) fn calendar_allocation(
+    dao: &Dao,
+    account: AccountId,
+    window: WeekWindow,
+    minutes: u32,
+) -> Result<Vec<(Week, u32)>> {
+    dao.calendars.allocation(account, window, minutes)
+}
 
-    pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<Effect> {
-        let origin = self.env().caller();
-        let worker = self.worker_record(origin)?;
-        self.calendars.set(origin, definition)?;
-        Ok(Effect::new(2, Some(worker.calendar_id), origin))
-    }
+pub(crate) fn set_calendar(dao: &mut Dao, definition: CalendarDefinition) -> Result<Effect> {
+    let origin = dao.env().caller();
+    let worker = dao.worker_record(origin)?;
+    dao.calendars.set(origin, definition)?;
+    Ok(Effect::new(2, Some(worker.calendar_id), origin))
 }
 
 #[cfg(test)]

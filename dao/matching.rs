@@ -12,7 +12,7 @@
 //! changing this algorithm still requires a reviewed contract-code change.
 use crate::calendar::{ReservationView, Week, WeekWindow};
 use crate::{
-    dao::{require, DaoData, Id, Result, WorkerMode},
+    dao::{require, Dao, Id, Result, WorkerMode},
     indices, reputation,
 };
 use core::cmp::Ordering;
@@ -45,7 +45,7 @@ pub struct Milestone {
     pub requirements: Vec<Requirement>,
 }
 
-impl DaoData {
+impl Dao {
     pub(crate) fn coordinator_selection(
         &self,
         client: AccountId,
@@ -69,106 +69,7 @@ impl DaoData {
         rng.fill_bytes(&mut id);
         Ok((chosen, id))
     }
-    /// All milestones share one RNG and transaction. Returning Err reverts
-    /// every nested Calendar reservation, including earlier slots/milestones.
-    pub fn assign_team(
-        &mut self,
-        project_id: Id,
-        client: AccountId,
-        coordinator: AccountId,
-        milestones: Vec<Milestone>,
-        seed: [u8; 32],
-    ) -> Result<Vec<Vec<(u32, AccountId)>>> {
-        self.project_controller()?;
-        let mut rng = StdRng::from_seed(seed);
-        let mut earlier = BTreeSet::new();
-        let mut result = Vec::new();
-        for milestone in milestones {
-            let reference = ReservationView {
-                project_id,
-                milestone_id: Some(milestone.id),
-                requirement_key: None,
-                week: milestone.window.start(),
-                minutes: 0,
-            };
-            self.calendars.reserve(
-                coordinator,
-                milestone.window,
-                milestone.coordinator_minutes,
-                reference.clone(),
-            )?;
-            let mut used = BTreeSet::from([client, coordinator]);
-            let mut assignments = Vec::new();
-            for Requirement {
-                key,
-                skill_ids,
-                minutes,
-                ..
-            } in milestone.requirements
-            {
-                let first = skill_ids
-                    .first()
-                    .ok_or_else(|| String::from("missing_skills"))?;
-                let mut candidates = BTreeSet::new();
-                for position in 0..self.members.skill_counts.get(first).unwrap_or(0) {
-                    let account = self
-                        .members
-                        .skill_members
-                        .get((first, position))
-                        .ok_or_else(|| String::from("invalid_worker_state"))?;
-                    if skill_ids
-                        .iter()
-                        .all(|skill| self.members.skill_positions.contains((skill, account)))
-                    {
-                        candidates.insert(account);
-                    }
-                }
-                let mut available = Vec::new();
-                for account in candidates {
-                    let worker = self.worker_record(account)?;
-                    if used.contains(&account) || worker.mode != WorkerMode::Worker {
-                        continue;
-                    }
-                    match self
-                        .calendars
-                        .allocation(account, milestone.window, minutes)
-                    {
-                        Ok(_) => available.push(account),
-                        Err(code) if code == "insufficient_capacity" => {}
-                        Err(code) => return Err(code),
-                    }
-                }
-                let previous: Vec<_> = available
-                    .iter()
-                    .copied()
-                    .filter(|account| earlier.contains(account))
-                    .collect();
-                let chosen = self.choose(
-                    if previous.is_empty() {
-                        &available
-                    } else {
-                        &previous
-                    },
-                    WorkerMode::Worker,
-                    &mut rng,
-                )?;
-                self.calendars.reserve(
-                    chosen,
-                    milestone.window,
-                    minutes,
-                    ReservationView {
-                        requirement_key: Some(key),
-                        ..reference.clone()
-                    },
-                )?;
-                assignments.push((key, chosen));
-                used.insert(chosen);
-            }
-            earlier.extend(assignments.iter().map(|(_, account)| *account));
-            result.push(assignments);
-        }
-        Ok(result)
-    }
+
     fn choose(
         &self,
         candidates: &[AccountId],
@@ -207,16 +108,112 @@ impl DaoData {
     }
 }
 
-impl DaoData {
-    /// Used by the Project factory. Captured entropy derives the same ID
-    /// after any tied coordinator selection, without a second host RNG.
-    pub fn select_coordinator(
-        &self,
-        client: AccountId,
-        week: Week,
-        seed: [u8; 32],
-    ) -> Result<(AccountId, Id)> {
-        self.project_controller()?;
-        self.coordinator_selection(client, week, seed)
+/// All milestones share one RNG and transaction. Returning Err reverts
+/// every nested Calendar reservation, including earlier slots/milestones.
+pub(crate) fn assign_team(
+    dao: &mut Dao,
+    project_id: Id,
+    client: AccountId,
+    coordinator: AccountId,
+    milestones: Vec<Milestone>,
+    seed: [u8; 32],
+) -> Result<Vec<Vec<(u32, AccountId)>>> {
+    dao.project_controller()?;
+    let mut rng = StdRng::from_seed(seed);
+    let mut earlier = BTreeSet::new();
+    let mut result = Vec::new();
+    for milestone in milestones {
+        let reference = ReservationView {
+            project_id,
+            milestone_id: Some(milestone.id),
+            requirement_key: None,
+            week: milestone.window.start(),
+            minutes: 0,
+        };
+        dao.calendars.reserve(
+            coordinator,
+            milestone.window,
+            milestone.coordinator_minutes,
+            reference.clone(),
+        )?;
+        let mut used = BTreeSet::from([client, coordinator]);
+        let mut assignments = Vec::new();
+        for Requirement {
+            key,
+            skill_ids,
+            minutes,
+            ..
+        } in milestone.requirements
+        {
+            let first = skill_ids
+                .first()
+                .ok_or_else(|| String::from("missing_skills"))?;
+            let mut candidates = BTreeSet::new();
+            for position in 0..dao.members.skill_counts.get(first).unwrap_or(0) {
+                let account = dao
+                    .members
+                    .skill_members
+                    .get((first, position))
+                    .ok_or_else(|| String::from("invalid_worker_state"))?;
+                if skill_ids
+                    .iter()
+                    .all(|skill| dao.members.skill_positions.contains((skill, account)))
+                {
+                    candidates.insert(account);
+                }
+            }
+            let mut available = Vec::new();
+            for account in candidates {
+                let worker = dao.worker_record(account)?;
+                if used.contains(&account) || worker.mode != WorkerMode::Worker {
+                    continue;
+                }
+                match dao.calendars.allocation(account, milestone.window, minutes) {
+                    Ok(_) => available.push(account),
+                    Err(code) if code == "insufficient_capacity" => {}
+                    Err(code) => return Err(code),
+                }
+            }
+            let previous: Vec<_> = available
+                .iter()
+                .copied()
+                .filter(|account| earlier.contains(account))
+                .collect();
+            let chosen = dao.choose(
+                if previous.is_empty() {
+                    &available
+                } else {
+                    &previous
+                },
+                WorkerMode::Worker,
+                &mut rng,
+            )?;
+            dao.calendars.reserve(
+                chosen,
+                milestone.window,
+                minutes,
+                ReservationView {
+                    requirement_key: Some(key),
+                    ..reference.clone()
+                },
+            )?;
+            assignments.push((key, chosen));
+            used.insert(chosen);
+        }
+        earlier.extend(assignments.iter().map(|(_, account)| *account));
+        result.push(assignments);
     }
+    Ok(result)
+}
+
+/// Used by the Project factory. Captured entropy derives the same ID
+/// after any tied coordinator selection, without a second host RNG.
+pub(crate) fn select_coordinator(
+    dao: &Dao,
+    client: AccountId,
+    week: Week,
+    seed: [u8; 32],
+) -> Result<(AccountId, Id)> {
+    dao.project_controller()?;
+    dao.coordinator_selection(client, week, seed)
 }

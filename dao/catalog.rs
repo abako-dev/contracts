@@ -35,7 +35,7 @@ pub(crate) struct Catalog {
     pub(crate) request_roles: Mapping<(Id, u32), u32, ManualKey<23>>,
 }
 
-impl DaoData {
+impl Dao {
     pub(crate) fn qualifications(&self, qualifications: &Qualifications) -> Result<()> {
         qualifications.validate()?;
         require(
@@ -49,224 +49,6 @@ impl DaoData {
                     .all(|id| self.catalog.skills.contains(id)),
             "unknown_qualification",
         )
-    }
-
-    pub fn validate_qualifications(&self, qualifications: Qualifications) -> Result<()> {
-        self.qualifications(&qualifications)
-    }
-
-    pub fn catalog(&self) -> CatalogSeed {
-        CatalogSeed {
-            roles: indices::values(&self.catalog.role_ids)
-                .iter()
-                .filter_map(|id| self.catalog.roles.get(id))
-                .collect(),
-            skills: indices::values(&self.catalog.skill_ids)
-                .iter()
-                .filter_map(|id| self.catalog.skills.get(id))
-                .collect(),
-            skill_roles: indices::values(&self.catalog.skill_ids)
-                .iter()
-                .map(|id| SkillRoleAssociation {
-                    skill_id: *id,
-                    role_ids: self.skill_role_ids(*id),
-                    origin: self.catalog.origins.get(id).expect("skill origin missing"),
-                })
-                .collect(),
-        }
-    }
-
-    pub fn skill_requests(&self) -> Vec<SkillRequestView> {
-        let caller = self.env().caller();
-        indices::values(&self.catalog.request_ids)
-            .iter()
-            .filter_map(|id| self.request_record(*id))
-            .filter(|request| caller == self.config.root || caller == request.requester)
-            .collect()
-    }
-
-    pub fn upsert_catalog_entry(
-        &mut self,
-        kind: CatalogKind,
-        id: u32,
-        content: MetadataCommitmentV1,
-    ) -> Result<Effect> {
-        require(id != 0, "invalid_contract")?;
-        self.root()?;
-        require(
-            !(kind == CatalogKind::Role && id == 1),
-            "fixed_coordinator_role",
-        )?;
-        let entry = CatalogEntry {
-            id,
-            fixed: false,
-            content: CatalogReferenceV1::Write(content),
-        };
-        match kind {
-            CatalogKind::Role => {
-                self.catalog.roles.insert(id, &entry);
-                insert_sorted(&mut self.catalog.role_ids, id);
-            }
-            CatalogKind::Skill => {
-                self.catalog.skills.insert(id, &entry);
-                insert_sorted(&mut self.catalog.skill_ids, id);
-                if !self.catalog.skill_roles.contains(id) {
-                    self.write_skill_roles(id, &[]);
-                    self.catalog.origins.insert(id, &entry.content);
-                }
-            }
-        }
-        Ok(Effect::new(3, None, self.env().caller()))
-    }
-
-    pub fn delete_catalog_entry(&mut self, kind: CatalogKind, id: u32) -> Result<Effect> {
-        require(id != 0, "invalid_contract")?;
-        self.root()?;
-        require(
-            !(kind == CatalogKind::Role && id == 1),
-            "fixed_coordinator_role",
-        )?;
-        let references = |qualifications: &Qualifications| match kind {
-            CatalogKind::Role => qualifications.role_ids.contains(&id),
-            CatalogKind::Skill => qualifications.skill_ids.contains(&id),
-        };
-        require(
-            !indices::values(&self.members.accounts)
-                .iter()
-                .any(|account| {
-                    self.members
-                        .workers
-                        .get(account)
-                        .map(|_| {
-                            references(
-                                &self
-                                    .worker_with_qualifications(*account)
-                                    .expect("invalid worker record")
-                                    .qualifications,
-                            )
-                        })
-                        .unwrap_or(false)
-                })
-                && !indices::values(&self.projects.proposal_ids)
-                    .iter()
-                    .any(|proposal| {
-                        self.proposal_qualifications(*proposal)
-                            .map(|q| references(&q))
-                            .unwrap_or(false)
-                    }),
-            "catalog_entry_in_use",
-        )?;
-        match kind {
-            CatalogKind::Role => {
-                require(
-                    !indices::values(&self.catalog.skill_ids)
-                        .iter()
-                        .any(|skill| self.skill_role_ids(*skill).contains(&id)),
-                    "catalog_entry_in_use",
-                )?;
-                require(self.catalog.roles.contains(id), "catalog_entry_not_found")?;
-                self.catalog.roles.remove(id);
-                indices::remove(&mut self.catalog.role_ids, &id);
-            }
-            CatalogKind::Skill => {
-                require(self.catalog.skills.contains(id), "catalog_entry_not_found")?;
-                self.catalog.skills.remove(id);
-                self.remove_skill_roles(id);
-                self.catalog.origins.remove(id);
-                indices::remove(&mut self.catalog.skill_ids, &id);
-            }
-        }
-        Ok(Effect::new(3, None, self.env().caller()))
-    }
-
-    pub fn create_skill_request(
-        &mut self,
-        role_ids: Vec<u32>,
-        content: MetadataCommitmentV1,
-        request_id: Id,
-    ) -> Result<Effect> {
-        require(!role_ids.is_empty(), "invalid_contract")?;
-        valid_ids(&role_ids)?;
-        let origin = self.env().caller();
-        self.worker_record(origin)?;
-        require(
-            role_ids.iter().all(|id| self.catalog.roles.contains(id)),
-            "unknown_role",
-        )?;
-        require(
-            !self.catalog.requests.contains(request_id),
-            "request_id_collision",
-        )?;
-        self.write_request(
-            request_id,
-            &SkillRequestView {
-                request_id,
-                requester: origin,
-                content: CatalogReferenceV1::Write(content),
-                role_ids,
-                status: SkillRequestStatus::Pending,
-                skill_id: None,
-            },
-        );
-        insert_sorted(&mut self.catalog.request_ids, request_id);
-        Ok(Effect::moderated(31, request_id, origin, self.config.root))
-    }
-
-    pub fn decide_skill_request(
-        &mut self,
-        request_id: Id,
-        decision: SkillRequestDecision,
-    ) -> Result<Effect> {
-        self.root()?;
-        let mut request = self
-            .request_record(request_id)
-            .ok_or_else(|| String::from("skill_request_not_found"))?;
-        require(
-            request.status == SkillRequestStatus::Pending,
-            "skill_request_decided",
-        )?;
-        let kind = match decision {
-            SkillRequestDecision::Approve => {
-                require(
-                    request
-                        .role_ids
-                        .iter()
-                        .all(|id| self.catalog.roles.contains(id)),
-                    "unknown_role",
-                )?;
-                let id = self
-                    .catalog
-                    .skill_ids
-                    .peek()
-                    .map_or(Some(1), |id| id.checked_add(1))
-                    .ok_or_else(|| String::from("catalog_id_exhausted"))?;
-                self.catalog.skills.insert(
-                    id,
-                    &CatalogEntry {
-                        id,
-                        fixed: false,
-                        content: request.content.clone(),
-                    },
-                );
-                insert_sorted(&mut self.catalog.skill_ids, id);
-                self.write_skill_roles(id, &request.role_ids);
-                self.catalog.origins.insert(id, &request.content);
-                request.status = SkillRequestStatus::Approved;
-                request.skill_id = Some(id);
-                32
-            }
-            SkillRequestDecision::Reject => {
-                request.status = SkillRequestStatus::Rejected;
-                33
-            }
-        };
-        self.write_request_header(request_id, &request);
-        Ok(Effect::moderated(
-            kind,
-            request_id,
-            request.requester,
-            self.config.root,
-        ))
     }
 
     pub(crate) fn skill_role_ids(&self, skill: u32) -> Vec<u32> {
@@ -345,7 +127,224 @@ impl DaoData {
     }
 }
 
-impl DaoData {
+pub(crate) fn validate_qualifications(dao: &Dao, qualifications: Qualifications) -> Result<()> {
+    dao.qualifications(&qualifications)
+}
+
+pub(crate) fn catalog(dao: &Dao) -> CatalogSeed {
+    CatalogSeed {
+        roles: indices::values(&dao.catalog.role_ids)
+            .iter()
+            .filter_map(|id| dao.catalog.roles.get(id))
+            .collect(),
+        skills: indices::values(&dao.catalog.skill_ids)
+            .iter()
+            .filter_map(|id| dao.catalog.skills.get(id))
+            .collect(),
+        skill_roles: indices::values(&dao.catalog.skill_ids)
+            .iter()
+            .map(|id| SkillRoleAssociation {
+                skill_id: *id,
+                role_ids: dao.skill_role_ids(*id),
+                origin: dao.catalog.origins.get(id).expect("skill origin missing"),
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn skill_requests(dao: &Dao) -> Vec<SkillRequestView> {
+    let caller = dao.env().caller();
+    indices::values(&dao.catalog.request_ids)
+        .iter()
+        .filter_map(|id| dao.request_record(*id))
+        .filter(|request| caller == dao.config.root || caller == request.requester)
+        .collect()
+}
+
+pub(crate) fn upsert_catalog_entry(
+    dao: &mut Dao,
+    kind: CatalogKind,
+    id: u32,
+    content: MetadataCommitmentV1,
+) -> Result<Effect> {
+    require(id != 0, "invalid_contract")?;
+    dao.root()?;
+    require(
+        !(kind == CatalogKind::Role && id == 1),
+        "fixed_coordinator_role",
+    )?;
+    let entry = CatalogEntry {
+        id,
+        fixed: false,
+        content: CatalogReferenceV1::Write(content),
+    };
+    match kind {
+        CatalogKind::Role => {
+            dao.catalog.roles.insert(id, &entry);
+            insert_sorted(&mut dao.catalog.role_ids, id);
+        }
+        CatalogKind::Skill => {
+            dao.catalog.skills.insert(id, &entry);
+            insert_sorted(&mut dao.catalog.skill_ids, id);
+            if !dao.catalog.skill_roles.contains(id) {
+                dao.write_skill_roles(id, &[]);
+                dao.catalog.origins.insert(id, &entry.content);
+            }
+        }
+    }
+    Ok(Effect::new(3, None, dao.env().caller()))
+}
+
+pub(crate) fn delete_catalog_entry(dao: &mut Dao, kind: CatalogKind, id: u32) -> Result<Effect> {
+    require(id != 0, "invalid_contract")?;
+    dao.root()?;
+    require(
+        !(kind == CatalogKind::Role && id == 1),
+        "fixed_coordinator_role",
+    )?;
+    let references = |qualifications: &Qualifications| match kind {
+        CatalogKind::Role => qualifications.role_ids.contains(&id),
+        CatalogKind::Skill => qualifications.skill_ids.contains(&id),
+    };
+    require(
+        !indices::values(&dao.members.accounts)
+            .iter()
+            .any(|account| {
+                dao.members
+                    .workers
+                    .get(account)
+                    .map(|_| {
+                        references(
+                            &dao.worker_with_qualifications(*account)
+                                .expect("invalid worker record")
+                                .qualifications,
+                        )
+                    })
+                    .unwrap_or(false)
+            })
+            && !indices::values(&dao.projects.proposal_ids)
+                .iter()
+                .any(|proposal| {
+                    dao.proposal_qualifications(*proposal)
+                        .map(|q| references(&q))
+                        .unwrap_or(false)
+                }),
+        "catalog_entry_in_use",
+    )?;
+    match kind {
+        CatalogKind::Role => {
+            require(
+                !indices::values(&dao.catalog.skill_ids)
+                    .iter()
+                    .any(|skill| dao.skill_role_ids(*skill).contains(&id)),
+                "catalog_entry_in_use",
+            )?;
+            require(dao.catalog.roles.contains(id), "catalog_entry_not_found")?;
+            dao.catalog.roles.remove(id);
+            indices::remove(&mut dao.catalog.role_ids, &id);
+        }
+        CatalogKind::Skill => {
+            require(dao.catalog.skills.contains(id), "catalog_entry_not_found")?;
+            dao.catalog.skills.remove(id);
+            dao.remove_skill_roles(id);
+            dao.catalog.origins.remove(id);
+            indices::remove(&mut dao.catalog.skill_ids, &id);
+        }
+    }
+    Ok(Effect::new(3, None, dao.env().caller()))
+}
+
+pub(crate) fn create_skill_request(
+    dao: &mut Dao,
+    role_ids: Vec<u32>,
+    content: MetadataCommitmentV1,
+    request_id: Id,
+) -> Result<Effect> {
+    require(!role_ids.is_empty(), "invalid_contract")?;
+    valid_ids(&role_ids)?;
+    let origin = dao.env().caller();
+    dao.worker_record(origin)?;
+    require(
+        role_ids.iter().all(|id| dao.catalog.roles.contains(id)),
+        "unknown_role",
+    )?;
+    require(
+        !dao.catalog.requests.contains(request_id),
+        "request_id_collision",
+    )?;
+    dao.write_request(
+        request_id,
+        &SkillRequestView {
+            request_id,
+            requester: origin,
+            content: CatalogReferenceV1::Write(content),
+            role_ids,
+            status: SkillRequestStatus::Pending,
+            skill_id: None,
+        },
+    );
+    insert_sorted(&mut dao.catalog.request_ids, request_id);
+    Ok(Effect::moderated(31, request_id, origin, dao.config.root))
+}
+
+pub(crate) fn decide_skill_request(
+    dao: &mut Dao,
+    request_id: Id,
+    decision: SkillRequestDecision,
+) -> Result<Effect> {
+    dao.root()?;
+    let mut request = dao
+        .request_record(request_id)
+        .ok_or_else(|| String::from("skill_request_not_found"))?;
+    require(
+        request.status == SkillRequestStatus::Pending,
+        "skill_request_decided",
+    )?;
+    let kind = match decision {
+        SkillRequestDecision::Approve => {
+            require(
+                request
+                    .role_ids
+                    .iter()
+                    .all(|id| dao.catalog.roles.contains(id)),
+                "unknown_role",
+            )?;
+            let id = dao
+                .catalog
+                .skill_ids
+                .peek()
+                .map_or(Some(1), |id| id.checked_add(1))
+                .ok_or_else(|| String::from("catalog_id_exhausted"))?;
+            dao.catalog.skills.insert(
+                id,
+                &CatalogEntry {
+                    id,
+                    fixed: false,
+                    content: request.content.clone(),
+                },
+            );
+            insert_sorted(&mut dao.catalog.skill_ids, id);
+            dao.write_skill_roles(id, &request.role_ids);
+            dao.catalog.origins.insert(id, &request.content);
+            request.status = SkillRequestStatus::Approved;
+            request.skill_id = Some(id);
+            32
+        }
+        SkillRequestDecision::Reject => {
+            request.status = SkillRequestStatus::Rejected;
+            33
+        }
+    };
+    dao.write_request_header(request_id, &request);
+    Ok(Effect::moderated(
+        kind,
+        request_id,
+        request.requester,
+        dao.config.root,
+    ))
+}
+
+impl Dao {
     pub(crate) fn seed_catalog(&mut self, seed: CatalogSeed) -> Result<()> {
         for role in seed.roles {
             require(

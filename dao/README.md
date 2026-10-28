@@ -12,8 +12,9 @@ projects, accounting and restricted Project hooks. `create_project`,
 catalog changes require the operator; cross-contract hooks enforce their caller
 capabilities. Balance-recording hooks update accounting, not asset transfers.
 
-`DaoData` contains six ordinary ink storage components. Methods live alongside
-the state they use; cross-component operations still run in one Dao transaction.
+`Dao` directly owns six ordinary ink storage components. Public ink messages
+delegate to functions in these modules; internal helpers operate on the same Dao.
+Cross-component operations still run in one contract call.
 
 | Module | State and operations |
 |---|---|

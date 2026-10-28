@@ -218,12 +218,6 @@ pub mod dao {
     }
     #[ink(storage)]
     pub struct Dao {
-        data: DaoData,
-    }
-
-    #[ink::storage_item]
-    #[derive(Debug)]
-    pub(crate) struct DaoData {
         pub(crate) config: crate::config::Config,
         pub(crate) catalog: crate::catalog::Catalog,
         pub(crate) members: crate::members::Members,
@@ -231,7 +225,11 @@ pub mod dao {
         pub(crate) calendars: crate::calendar::Calendars,
         pub(crate) bank: Bank,
     }
-    impl DaoData {
+
+    impl Dao {
+        // Deployment and operator configuration.
+
+        #[ink(constructor)]
         pub fn new(
             reservation_controller: AccountId,
             reference_controller: AccountId,
@@ -254,50 +252,17 @@ pub mod dao {
             result.seed_catalog(seed)?;
             Ok(result)
         }
-    }
-
-    impl<'a> ink::codegen::Env for &'a DaoData {
-        type EnvAccess = ink::EnvAccess<'a, ink::env::DefaultEnvironment>;
-        fn env(self) -> Self::EnvAccess {
-            Default::default()
-        }
-    }
-    impl ink::codegen::StaticEnv for DaoData {
-        type EnvAccess = ink::EnvAccess<'static, ink::env::DefaultEnvironment>;
-        fn env() -> Self::EnvAccess {
-            Default::default()
-        }
-    }
-
-    impl Dao {
-        fn read_state<T>(&self, read: impl FnOnce(&DaoData) -> T) -> T {
-            read(&self.data)
-        }
-        fn transact<T>(&mut self, change: impl FnOnce(&mut DaoData) -> Result<T>) -> Result<T> {
-            change(&mut self.data)
-        }
-        // Deployment and operator configuration.
-
-        #[ink(constructor)]
-        pub fn new(
-            reservation_controller: AccountId,
-            reference_controller: AccountId,
-            seed: CatalogSeed,
-        ) -> Result<Self> {
-            let data = DaoData::new(reservation_controller, reference_controller, seed)?;
-            Ok(Self { data })
-        }
 
         /// Operator-only, one-time Project code selection; closes fixture-controller access.
         #[ink(message)]
         pub fn configure_project_code(&mut self, code: Hash) -> Result<()> {
-            self.transact(|data| data.configure_project_code(code))
+            crate::projects::configure_project_code(self, code)
         }
 
         /// Operator-only accounting initialization; mock funding is fixed at setup.
         #[ink(message)]
         pub fn configure_accounting(&mut self, mock_funding: bool) -> Result<()> {
-            self.transact(|data| data.configure_accounting(mock_funding))
+            crate::bank::configure_accounting(self, mock_funding)
         }
 
         // Member registration, qualifications and capacity.
@@ -308,46 +273,46 @@ pub mod dao {
             request: RegisterWorkerCoreRequest,
             calendar_id: Id,
         ) -> Result<Effect> {
-            self.transact(|data| data.register_worker(request, calendar_id))
+            crate::members::register_worker(self, request, calendar_id)
         }
 
         #[ink(message)]
         pub fn update_qualifications(&mut self, qualifications: Qualifications) -> Result<Effect> {
-            self.transact(|data| data.update_qualifications(qualifications))
+            crate::members::update_qualifications(self, qualifications)
         }
 
         #[ink(message)]
         pub fn set_calendar(&mut self, definition: CalendarDefinition) -> Result<Effect> {
-            self.transact(|data| data.set_calendar(definition))
+            crate::calendar::set_calendar(self, definition)
         }
 
         #[ink(message)]
         pub fn set_worker_mode(&mut self, mode: WorkerMode) -> Result<Effect> {
-            self.transact(|data| data.set_worker_mode(mode))
+            crate::members::set_worker_mode(self, mode)
         }
 
         #[ink(message)]
         pub fn promote_coordinator(&mut self, account: AccountId) -> Result<Effect> {
-            self.transact(|data| data.promote_coordinator(account))
+            crate::members::promote_coordinator(self, account)
         }
 
         #[ink(message)]
         pub fn worker(&self, account: AccountId) -> Option<WorkerCore> {
-            self.read_state(|data| data.worker(account))
+            crate::members::worker(self, account)
         }
 
         #[ink(message)]
         pub fn workers(&self) -> Vec<WorkerCore> {
-            self.read_state(|data| data.workers())
+            crate::members::workers(self)
         }
 
         #[ink(message)]
         pub fn calendar(&self, account: AccountId) -> Result<CalendarView> {
-            self.read_state(|data| data.calendar(account))
+            crate::calendar::calendar(self, account)
         }
         #[ink(message)]
         pub fn calendar_available(&self, account: AccountId, week: Week) -> Result<u32> {
-            self.read_state(|data| data.calendar_available(account, week))
+            crate::calendar::calendar_available(self, account, week)
         }
         #[ink(message)]
         pub fn calendar_allocation(
@@ -356,14 +321,14 @@ pub mod dao {
             window: WeekWindow,
             minutes: u32,
         ) -> Result<Vec<(Week, u32)>> {
-            self.read_state(|data| data.calendar_allocation(account, window, minutes))
+            crate::calendar::calendar_allocation(self, account, window, minutes)
         }
 
         // Catalog and skill requests.
 
         #[ink(message)]
         pub fn catalog(&self) -> CatalogSeed {
-            self.read_state(|data| data.catalog())
+            crate::catalog::catalog(self)
         }
 
         #[ink(message)]
@@ -373,12 +338,12 @@ pub mod dao {
             id: u32,
             content: MetadataCommitmentV1,
         ) -> Result<Effect> {
-            self.transact(|data| data.upsert_catalog_entry(kind, id, content))
+            crate::catalog::upsert_catalog_entry(self, kind, id, content)
         }
 
         #[ink(message)]
         pub fn delete_catalog_entry(&mut self, kind: CatalogKind, id: u32) -> Result<Effect> {
-            self.transact(|data| data.delete_catalog_entry(kind, id))
+            crate::catalog::delete_catalog_entry(self, kind, id)
         }
 
         #[ink(message)]
@@ -388,7 +353,7 @@ pub mod dao {
             content: MetadataCommitmentV1,
             request_id: Id,
         ) -> Result<Effect> {
-            self.transact(|data| data.create_skill_request(role_ids, content, request_id))
+            crate::catalog::create_skill_request(self, role_ids, content, request_id)
         }
 
         #[ink(message)]
@@ -397,34 +362,34 @@ pub mod dao {
             request_id: Id,
             decision: SkillRequestDecision,
         ) -> Result<Effect> {
-            self.transact(|data| data.decide_skill_request(request_id, decision))
+            crate::catalog::decide_skill_request(self, request_id, decision)
         }
 
         #[ink(message)]
         pub fn skill_requests(&self) -> Vec<SkillRequestView> {
-            self.read_state(|data| data.skill_requests())
+            crate::catalog::skill_requests(self)
         }
 
         // DAO policy.
 
         #[ink(message)]
         pub fn compensation_policy(&self) -> u8 {
-            self.read_state(|data| data.compensation_policy())
+            crate::config::compensation_policy(self)
         }
 
         #[ink(message)]
         pub fn set_compensation_policy(&mut self, percent: u8) -> Result<Effect> {
-            self.transact(|data| data.set_compensation_policy(percent))
+            crate::config::set_compensation_policy(self, percent)
         }
 
         #[ink(message)]
         pub fn score_policy(&self) -> ScorePolicy {
-            self.read_state(|data| data.score_policy())
+            crate::config::score_policy(self)
         }
 
         #[ink(message)]
         pub fn set_score_policy(&mut self, policy: ScorePolicy) -> Result<Effect> {
-            self.transact(|data| data.set_score_policy(policy))
+            crate::config::set_score_policy(self, policy)
         }
 
         // Projects and dispute lookup.
@@ -435,93 +400,93 @@ pub mod dao {
             content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
-            self.transact(|data| data.create_project(content, seed))
+            crate::projects::create_project(self, content, seed)
         }
 
         #[ink(message)]
         pub fn project_address(&self, id: Id) -> Option<AccountId> {
-            self.read_state(|data| data.project_address(id))
+            crate::projects::project_address(self, id)
         }
 
         #[ink(message)]
         pub fn resolve_project(&self, id: Id) -> Result<AccountId> {
-            self.read_state(|data| data.resolve_project(id))
+            crate::projects::resolve_project(self, id)
         }
 
         #[ink(message)]
         pub fn projects(&self) -> Vec<(Id, AccountId)> {
-            self.read_state(|data| data.projects())
+            crate::projects::projects(self)
         }
 
         #[ink(message)]
         pub fn dispute_project(&self, id: Id) -> Option<Id> {
-            self.read_state(|data| data.dispute_project(id))
+            crate::projects::dispute_project(self, id)
         }
 
         #[ink(message)]
         pub fn disputes(&self) -> Vec<(Id, Id)> {
-            self.read_state(|data| data.disputes())
+            crate::projects::disputes(self)
         }
 
         // Account funding and withdrawals.
 
         #[ink(message)]
         pub fn accounting_enabled(&self) -> bool {
-            self.read_state(|data| data.accounting_enabled())
+            crate::bank::accounting_enabled(self)
         }
 
         /// Operator-only fixture funding; requires mock funding to be enabled.
         #[ink(message)]
         pub fn fund_account(&mut self, account: AccountId, amount: u64) -> Result<Effect> {
-            self.transact(|data| data.fund_account(account, amount))
+            crate::bank::fund_account(self, account, amount)
         }
 
         #[ink(message)]
         pub fn create_deposit(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
-            self.transact(|data| data.create_deposit(amount, seed))
+            crate::bank::create_deposit(self, amount, seed)
         }
 
         #[ink(message)]
         pub fn confirm_deposit(&mut self, id: Id) -> Result<Effect> {
-            self.transact(|data| data.confirm_deposit(id))
+            crate::bank::confirm_deposit(self, id)
         }
 
         #[ink(message)]
         pub fn deposit(&self, id: Id) -> Result<Deposit> {
-            self.read_state(|data| data.deposit(id))
+            crate::bank::deposit(self, id)
         }
 
         #[ink(message)]
         pub fn create_withdrawal(&mut self, amount: u64, seed: [u8; 32]) -> Result<Effect> {
-            self.transact(|data| data.create_withdrawal(amount, seed))
+            crate::bank::create_withdrawal(self, amount, seed)
         }
 
         #[ink(message)]
         pub fn cancel_withdrawal(&mut self, id: Id) -> Result<Effect> {
-            self.transact(|data| data.cancel_withdrawal(id))
+            crate::bank::cancel_withdrawal(self, id)
         }
 
         #[ink(message)]
         pub fn withdrawal(&self, id: Id) -> Result<Withdrawal> {
-            self.read_state(|data| data.withdrawal(id))
+            crate::bank::withdrawal(self, id)
         }
 
         /// Operator-only account balances, issuance, deposit and withdrawal records.
         #[ink(message)]
         pub fn financial_projection(&self) -> Result<FinancialProjection> {
-            self.read_state(|data| data.financial_projection())
+            crate::bank::financial_projection(self)
         }
 
         // Validation queries.
 
         #[ink(message)]
         pub fn validate_qualifications(&self, qualifications: Qualifications) -> Result<()> {
-            self.read_state(|data| data.validate_qualifications(qualifications))
+            crate::catalog::validate_qualifications(self, qualifications)
         }
 
         #[ink(message)]
         pub fn validate_task_assignees(&self, accounts: Vec<AccountId>) -> Result<()> {
-            self.read_state(|data| data.validate_task_assignees(accounts))
+            crate::members::validate_task_assignees(self, accounts)
         }
 
         // Project hooks: caller permissions are enforced in the implementation.
@@ -536,37 +501,35 @@ pub mod dao {
             milestones: Vec<Milestone>,
             seed: [u8; 32],
         ) -> Result<Vec<Vec<(u32, AccountId)>>> {
-            self.transact(|data| {
-                data.assign_team(project_id, client, coordinator, milestones, seed)
-            })
+            crate::matching::assign_team(self, project_id, client, coordinator, milestones, seed)
         }
 
         /// Allocate the next global task ID for an authorized Project controller.
         #[ink(message)]
         pub fn allocate_task_id(&mut self) -> Result<u32> {
-            self.transact(|data| data.allocate_task_id())
+            crate::projects::allocate_task_id(self)
         }
 
         /// Registered-Project hook: debit accounting only; the Project performs the asset deposit.
         #[ink(message)]
         pub fn record_balance_debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
-            self.transact(|data| data.record_balance_debit(account, amount))
+            crate::bank::record_balance_debit(self, account, amount)
         }
 
         /// Registered-Project hook: credit accounting only; the Project performs the asset transfer.
         #[ink(message)]
         pub fn record_balance_credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
-            self.transact(|data| data.record_balance_credit(account, amount))
+            crate::bank::record_balance_credit(self, account, amount)
         }
 
         #[ink(message)]
         pub fn set_project_identities(&mut self, layout: ProjectIdentities) -> Result<()> {
-            self.transact(|data| data.set_project_identities(layout))
+            crate::projects::set_project_identities(self, layout)
         }
 
         #[ink(message)]
         pub fn set_project_submissions(&mut self, submissions: Vec<Id>) -> Result<()> {
-            self.transact(|data| data.set_project_submissions(submissions))
+            crate::projects::set_project_submissions(self, submissions)
         }
 
         #[ink(message)]
@@ -575,18 +538,18 @@ pub mod dao {
             proposal_id: Id,
             qualifications: Option<Qualifications>,
         ) -> Result<()> {
-            self.transact(|data| data.set_proposal_references(proposal_id, qualifications))
+            crate::projects::set_proposal_references(self, proposal_id, qualifications)
         }
 
         #[ink(message)]
         pub fn register_dispute(&mut self, id: Id) -> Result<()> {
-            self.transact(|data| data.register_dispute(id))
+            crate::projects::register_dispute(self, id)
         }
 
         /// Record a reason only for the calling registered Project.
         #[ink(message)]
         pub fn append_reason(&mut self, project_id: Id, bytes: Vec<u8>) -> Result<()> {
-            self.transact(|data| data.append_reason(project_id, bytes))
+            crate::projects::append_reason(self, project_id, bytes)
         }
 
         /// Authorized-Project hook for replay-protected final evaluation contributions.
@@ -597,7 +560,7 @@ pub mod dao {
             author: AccountId,
             votes: Vec<Contribution>,
         ) -> Result<()> {
-            self.transact(|data| data.apply_reputation(project_id, author, votes))
+            crate::members::apply_reputation(self, project_id, author, votes)
         }
 
         /// Registered-Project hook for rated settlement contributions, in score hundredths.
@@ -606,7 +569,7 @@ pub mod dao {
             &mut self,
             votes: Vec<(AccountId, WorkerMode, u16, u32)>,
         ) -> Result<()> {
-            self.transact(|data| data.apply_settlement_reputation(votes))
+            crate::members::apply_settlement_reputation(self, votes)
         }
 
         // Component hooks: fixture controller before factory setup, registered Projects afterward.
@@ -619,7 +582,7 @@ pub mod dao {
             week: Week,
             seed: [u8; 32],
         ) -> Result<(AccountId, Id)> {
-            self.read_state(|data| data.select_coordinator(client, week, seed))
+            crate::matching::select_coordinator(self, client, week, seed)
         }
 
         #[ink(message)]
@@ -630,7 +593,7 @@ pub mod dao {
             minutes: u32,
             reference: ReservationView,
         ) -> Result<()> {
-            self.transact(|data| data.reserve_calendar(worker, window, minutes, reference))
+            crate::calendar::reserve_calendar(self, worker, window, minutes, reference)
         }
     }
 }

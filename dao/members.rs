@@ -47,7 +47,7 @@ pub(crate) struct Members {
     pub(crate) worker_skills: Mapping<(AccountId, u32), u32, ManualKey<22>>,
 }
 
-impl DaoData {
+impl Dao {
     // Dense per-skill entries avoid packing a whole index into ink's 16 KiB
     // storage buffer. Candidate iteration has no fixed search/truncation limit.
     pub(crate) fn index_add(&mut self, account: AccountId, skills: &[u32]) -> Result<()> {
@@ -92,174 +92,6 @@ impl DaoData {
             self.members.skill_counts.insert(skill, &last);
         }
         Ok(())
-    }
-
-    pub fn validate_task_assignees(&self, accounts: Vec<AccountId>) -> Result<()> {
-        require(
-            accounts
-                .iter()
-                .all(|account| self.members.workers.contains(account)),
-            "unknown_task_assignee",
-        )
-    }
-
-    /// Retained signed settlement variants contribute exact hundredths.
-    pub fn apply_settlement_reputation(
-        &mut self,
-        votes: Vec<(AccountId, WorkerMode, u16, u32)>,
-    ) -> Result<()> {
-        self.registered_project()?;
-        for (account, mode, score, minutes) in votes {
-            let mut worker = self.worker_record(account)?;
-            let target = match mode {
-                WorkerMode::Coordinator => &mut worker.coordinator_score,
-                WorkerMode::Worker => &mut worker.worker_score,
-            };
-            *target = reputation::add_hundredths(target, score, minutes, 1)?;
-            self.members.workers.insert(account, &worker);
-        }
-        Ok(())
-    }
-
-    /// Project authorization/required targets are checked by the Project
-    /// controller (M6). This narrow hook applies only verified contributions.
-    pub fn apply_reputation(
-        &mut self,
-        project_id: Id,
-        author: AccountId,
-        votes: Vec<Contribution>,
-    ) -> Result<()> {
-        self.project_controller()?;
-        let mut hash = <ink::env::hash::Blake2x256 as ink::env::hash::HashOutput>::Type::default();
-        ink::env::hash_bytes::<ink::env::hash::Blake2x256>(&votes.encode(), &mut hash);
-        let hash = Hash::from(hash);
-        let key = (project_id, author);
-        if let Some(prior) = self.projects.evaluations.get(key) {
-            return require(prior == hash, "evaluation_conflict");
-        }
-        for vote in votes {
-            let mut worker = self.worker_record(vote.account)?;
-            let score = if vote.kind == VoteKind::CoordinatorToWorker {
-                &mut worker.worker_score
-            } else {
-                &mut worker.coordinator_score
-            };
-            *score = reputation::add(
-                score,
-                vote.stars,
-                vote.minutes,
-                self.config.score_policy.weight(vote.kind),
-            )?;
-            self.members.workers.insert(vote.account, &worker);
-        }
-        self.projects.evaluations.insert(key, &hash);
-        Ok(())
-    }
-
-    pub fn worker(&self, account: AccountId) -> Option<WorkerCore> {
-        self.members.workers.get(account).map(|_| {
-            let worker = self
-                .worker_with_qualifications(account)
-                .expect("invalid worker record");
-            WorkerCore {
-                account,
-                content: worker.content,
-                qualifications: worker.qualifications,
-                mode: worker.mode,
-                coordinator_eligible: worker.coordinator_eligible,
-                calendar: self
-                    .calendars
-                    .view(account, worker.calendar_id)
-                    .expect("registered calendar"),
-                worker_score: worker.worker_score,
-                coordinator_score: worker.coordinator_score,
-            }
-        })
-    }
-
-    pub fn workers(&self) -> Vec<WorkerCore> {
-        indices::values(&self.members.accounts)
-            .iter()
-            .filter_map(|account| self.worker(*account))
-            .collect()
-    }
-
-    pub fn register_worker(
-        &mut self,
-        request: RegisterWorkerCoreRequest,
-        calendar_id: Id,
-    ) -> Result<Effect> {
-        request.qualifications.validate()?;
-        let origin = self.env().caller();
-        require(!self.members.workers.contains(origin), "worker_exists")?;
-        self.qualifications(&request.qualifications)?;
-        require(
-            !self.members.calendar_ids.contains(calendar_id),
-            "invalid_worker_state",
-        )?;
-        self.calendars.register(origin, request.calendar)?;
-        let skills = request.qualifications.skill_ids.clone();
-        self.write_worker(
-            origin,
-            &Worker {
-                content: MetadataReferenceV1::Creation(request.content),
-                qualifications: request.qualifications,
-                mode: WorkerMode::Worker,
-                coordinator_eligible: false,
-                calendar_id,
-                worker_score: reputation::empty(),
-                coordinator_score: reputation::empty(),
-            },
-        );
-        self.index_add(origin, &skills)?;
-        insert_sorted(&mut self.members.accounts, origin);
-        self.members.calendar_ids.insert(calendar_id, &true);
-        self.validate_public_ids()?;
-        Ok(Effect::new(0, Some(calendar_id), origin))
-    }
-
-    pub fn update_qualifications(&mut self, qualifications: Qualifications) -> Result<Effect> {
-        self.qualifications(&qualifications)?;
-        let origin = self.env().caller();
-        let mut worker = self.worker_with_qualifications(origin)?;
-        let removed: Vec<_> = worker
-            .qualifications
-            .skill_ids
-            .iter()
-            .copied()
-            .filter(|id| !qualifications.skill_ids.contains(id))
-            .collect();
-        let added: Vec<_> = qualifications
-            .skill_ids
-            .iter()
-            .copied()
-            .filter(|id| !worker.qualifications.skill_ids.contains(id))
-            .collect();
-        self.index_remove(origin, &removed)?;
-        self.index_add(origin, &added)?;
-        worker.qualifications = qualifications;
-        self.write_worker(origin, &worker);
-        Ok(Effect::new(1, None, origin))
-    }
-
-    pub fn set_worker_mode(&mut self, mode: WorkerMode) -> Result<Effect> {
-        let origin = self.env().caller();
-        let mut worker = self.worker_record(origin)?;
-        require(
-            mode != WorkerMode::Coordinator || worker.coordinator_eligible,
-            "coordinator_not_eligible",
-        )?;
-        worker.mode = mode;
-        self.members.workers.insert(origin, &worker);
-        Ok(Effect::new(1, None, origin))
-    }
-
-    pub fn promote_coordinator(&mut self, account: AccountId) -> Result<Effect> {
-        self.root()?;
-        let mut worker = self.worker_record(account)?;
-        worker.coordinator_eligible = true;
-        self.members.workers.insert(account, &worker);
-        Ok(Effect::new(4, None, account))
     }
 
     pub(crate) fn worker_record(&self, account: AccountId) -> Result<WorkerRecord> {
@@ -332,4 +164,175 @@ impl DaoData {
             },
         );
     }
+}
+
+pub(crate) fn validate_task_assignees(dao: &Dao, accounts: Vec<AccountId>) -> Result<()> {
+    require(
+        accounts
+            .iter()
+            .all(|account| dao.members.workers.contains(account)),
+        "unknown_task_assignee",
+    )
+}
+
+/// Retained signed settlement variants contribute exact hundredths.
+pub(crate) fn apply_settlement_reputation(
+    dao: &mut Dao,
+    votes: Vec<(AccountId, WorkerMode, u16, u32)>,
+) -> Result<()> {
+    dao.registered_project()?;
+    for (account, mode, score, minutes) in votes {
+        let mut worker = dao.worker_record(account)?;
+        let target = match mode {
+            WorkerMode::Coordinator => &mut worker.coordinator_score,
+            WorkerMode::Worker => &mut worker.worker_score,
+        };
+        *target = reputation::add_hundredths(target, score, minutes, 1)?;
+        dao.members.workers.insert(account, &worker);
+    }
+    Ok(())
+}
+
+/// Project authorization/required targets are checked by the Project
+/// controller (M6). This narrow hook applies only verified contributions.
+pub(crate) fn apply_reputation(
+    dao: &mut Dao,
+    project_id: Id,
+    author: AccountId,
+    votes: Vec<Contribution>,
+) -> Result<()> {
+    dao.project_controller()?;
+    let mut hash = <ink::env::hash::Blake2x256 as ink::env::hash::HashOutput>::Type::default();
+    ink::env::hash_bytes::<ink::env::hash::Blake2x256>(&votes.encode(), &mut hash);
+    let hash = Hash::from(hash);
+    let key = (project_id, author);
+    if let Some(prior) = dao.projects.evaluations.get(key) {
+        return require(prior == hash, "evaluation_conflict");
+    }
+    for vote in votes {
+        let mut worker = dao.worker_record(vote.account)?;
+        let score = if vote.kind == VoteKind::CoordinatorToWorker {
+            &mut worker.worker_score
+        } else {
+            &mut worker.coordinator_score
+        };
+        *score = reputation::add(
+            score,
+            vote.stars,
+            vote.minutes,
+            dao.config.score_policy.weight(vote.kind),
+        )?;
+        dao.members.workers.insert(vote.account, &worker);
+    }
+    dao.projects.evaluations.insert(key, &hash);
+    Ok(())
+}
+
+pub(crate) fn worker(dao: &Dao, account: AccountId) -> Option<WorkerCore> {
+    dao.members.workers.get(account).map(|_| {
+        let worker = dao
+            .worker_with_qualifications(account)
+            .expect("invalid worker record");
+        WorkerCore {
+            account,
+            content: worker.content,
+            qualifications: worker.qualifications,
+            mode: worker.mode,
+            coordinator_eligible: worker.coordinator_eligible,
+            calendar: dao
+                .calendars
+                .view(account, worker.calendar_id)
+                .expect("registered calendar"),
+            worker_score: worker.worker_score,
+            coordinator_score: worker.coordinator_score,
+        }
+    })
+}
+
+pub(crate) fn workers(dao: &Dao) -> Vec<WorkerCore> {
+    indices::values(&dao.members.accounts)
+        .iter()
+        .filter_map(|account| dao.worker(*account))
+        .collect()
+}
+
+pub(crate) fn register_worker(
+    dao: &mut Dao,
+    request: RegisterWorkerCoreRequest,
+    calendar_id: Id,
+) -> Result<Effect> {
+    request.qualifications.validate()?;
+    let origin = dao.env().caller();
+    require(!dao.members.workers.contains(origin), "worker_exists")?;
+    dao.qualifications(&request.qualifications)?;
+    require(
+        !dao.members.calendar_ids.contains(calendar_id),
+        "invalid_worker_state",
+    )?;
+    dao.calendars.register(origin, request.calendar)?;
+    let skills = request.qualifications.skill_ids.clone();
+    dao.write_worker(
+        origin,
+        &Worker {
+            content: MetadataReferenceV1::Creation(request.content),
+            qualifications: request.qualifications,
+            mode: WorkerMode::Worker,
+            coordinator_eligible: false,
+            calendar_id,
+            worker_score: reputation::empty(),
+            coordinator_score: reputation::empty(),
+        },
+    );
+    dao.index_add(origin, &skills)?;
+    insert_sorted(&mut dao.members.accounts, origin);
+    dao.members.calendar_ids.insert(calendar_id, &true);
+    dao.validate_public_ids()?;
+    Ok(Effect::new(0, Some(calendar_id), origin))
+}
+
+pub(crate) fn update_qualifications(
+    dao: &mut Dao,
+    qualifications: Qualifications,
+) -> Result<Effect> {
+    dao.qualifications(&qualifications)?;
+    let origin = dao.env().caller();
+    let mut worker = dao.worker_with_qualifications(origin)?;
+    let removed: Vec<_> = worker
+        .qualifications
+        .skill_ids
+        .iter()
+        .copied()
+        .filter(|id| !qualifications.skill_ids.contains(id))
+        .collect();
+    let added: Vec<_> = qualifications
+        .skill_ids
+        .iter()
+        .copied()
+        .filter(|id| !worker.qualifications.skill_ids.contains(id))
+        .collect();
+    dao.index_remove(origin, &removed)?;
+    dao.index_add(origin, &added)?;
+    worker.qualifications = qualifications;
+    dao.write_worker(origin, &worker);
+    Ok(Effect::new(1, None, origin))
+}
+
+pub(crate) fn set_worker_mode(dao: &mut Dao, mode: WorkerMode) -> Result<Effect> {
+    let origin = dao.env().caller();
+    let mut worker = dao.worker_record(origin)?;
+    require(
+        mode != WorkerMode::Coordinator || worker.coordinator_eligible,
+        "coordinator_not_eligible",
+    )?;
+    worker.mode = mode;
+    dao.members.workers.insert(origin, &worker);
+    Ok(Effect::new(1, None, origin))
+}
+
+pub(crate) fn promote_coordinator(dao: &mut Dao, account: AccountId) -> Result<Effect> {
+    dao.root()?;
+    let mut worker = dao.worker_record(account)?;
+    worker.coordinator_eligible = true;
+    dao.members.workers.insert(account, &worker);
+    Ok(Effect::new(4, None, account))
 }
