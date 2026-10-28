@@ -358,3 +358,20 @@ dto!(DisputeResponse {
     occurred_at: u64
 });
 dto!(DisputeRecord {dispute_id:Id,project_id:Id,milestone_id:Id,rejected_submission_id:Id,status:DisputeStatus,opened_by:AccountId,counterparty:AccountId,opened_at:u64,evidence:Option<EvidenceReference>,opening_comment_id:Option<Id>,response:Option<DisputeResponse>,proposal_revision:u64,context_event_cursor:u64});
+
+/// Evidence committed off-chain or an existing off-chain comment identifying a reason.
+#[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
+#[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SCALE indexes two declared variants."
+)]
+pub enum ReviewReason {
+    Evidence(EvidenceReference),
+    Comment(Id),
+}
+
+dto!(AcceptanceRating {
+    coordinator_score: u8,
+    team_rating: TeamRating
+});

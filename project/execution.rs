@@ -172,12 +172,12 @@ pub fn submit(
         ) && !milestone.frozen,
         "invalid_milestone_state",
     )?;
-    let legacy = ratings.is_some();
+    let ratings_required = ratings.is_some();
     let ratings = ratings.unwrap_or_default();
     let assigned: BTreeSet<_> = milestone.assignments.iter().map(|a| a.worker).collect();
     let rated: BTreeSet<_> = ratings.iter().map(|r| r.worker).collect();
     require(
-        !legacy || (assigned == rated && rated.len() == ratings.len()),
+        !ratings_required || (assigned == rated && rated.len() == ratings.len()),
         "worker_ratings_mismatch",
     )?;
     let version = u64::try_from(milestone.submissions.len())
@@ -249,9 +249,9 @@ pub fn accept(
     state: &mut ProjectData,
     milestone_id: Id,
     submission_id: Id,
-    legacy: Option<(u8, TeamRating)>,
+    ratings: Option<(u8, TeamRating)>,
 ) -> Result<Effect> {
-    if let Some((coordinator, team)) = &legacy {
+    if let Some((coordinator, team)) = &ratings {
         require((1..=5).contains(coordinator), "invalid_contract")?;
         if let TeamRating::Client(score) = team {
             require((1..=5).contains(score), "invalid_contract")?;
@@ -265,7 +265,7 @@ pub fn accept(
         "invalid_milestone_state",
     )?;
     pending(&current, submission_id)?;
-    if let Some((coordinator, team)) = legacy {
+    if let Some((coordinator, team)) = ratings {
         state
             .dao()
             .apply_settlement_reputation(ink::prelude::vec![(

@@ -225,39 +225,29 @@ pub mod project {
             &mut self,
             milestone_id: Id,
             submission_id: Id,
-            evidence: EvidenceReference,
+            reason: ReviewReason,
             seed: [u8; 32],
             event_cursor: u64,
         ) -> Result<Effect> {
+            let (evidence, comment) = match reason {
+                ReviewReason::Evidence(reference) => (Some(reference), None),
+                ReviewReason::Comment(id) => (None, Some(id)),
+            };
             crate::disputes::open(
                 self,
                 milestone_id,
                 submission_id,
-                Some(evidence),
-                None,
+                evidence,
+                comment,
                 seed,
                 event_cursor,
             )
         }
-        pub fn open_dispute_comment(
+        pub fn respond_to_dispute(
             &mut self,
-            milestone_id: Id,
-            submission_id: Id,
-            comment_id: Id,
-            seed: [u8; 32],
-            event_cursor: u64,
+            id: Id,
+            evidence: EvidenceReference,
         ) -> Result<Effect> {
-            crate::disputes::open(
-                self,
-                milestone_id,
-                submission_id,
-                None,
-                Some(comment_id),
-                seed,
-                event_cursor,
-            )
-        }
-        pub fn respond_dispute(&mut self, id: Id, evidence: EvidenceReference) -> Result<Effect> {
             crate::disputes::respond(self, id, evidence)
         }
         pub fn dispute(&self, id: Id) -> Result<(DisputeRecord, MilestoneCore)> {
@@ -275,73 +265,57 @@ pub mod project {
             &mut self,
             milestone_id: Id,
             deliverable: Option<EvidenceReference>,
+            worker_ratings: Option<Vec<WorkerRating>>,
             seed: [u8; 32],
         ) -> Result<Effect> {
-            crate::execution::submit(self, milestone_id, deliverable, None, seed)
+            crate::execution::submit(self, milestone_id, deliverable, worker_ratings, seed)
         }
-        pub fn submit_rated_milestone(
-            &mut self,
-            milestone_id: Id,
-            deliverable: Option<EvidenceReference>,
-            ratings: Vec<WorkerRating>,
-            seed: [u8; 32],
-        ) -> Result<Effect> {
-            crate::execution::submit(self, milestone_id, deliverable, Some(ratings), seed)
-        }
-        pub fn accept_milestone(&mut self, milestone_id: Id, submission_id: Id) -> Result<Effect> {
-            crate::execution::accept(self, milestone_id, submission_id, None)
-        }
-        pub fn accept_rated_milestone(
+        pub fn accept_milestone(
             &mut self,
             milestone_id: Id,
             submission_id: Id,
-            coordinator_score: u8,
-            team_rating: TeamRating,
+            ratings: Option<AcceptanceRating>,
         ) -> Result<Effect> {
             crate::execution::accept(
                 self,
                 milestone_id,
                 submission_id,
-                Some((coordinator_score, team_rating)),
+                ratings.map(|rating| (rating.coordinator_score, rating.team_rating)),
             )
         }
         pub fn reject_milestone(
             &mut self,
             milestone_id: Id,
             submission_id: Id,
-            reason: EvidenceReference,
+            reason: ReviewReason,
         ) -> Result<Effect> {
-            crate::execution::reject(self, milestone_id, submission_id, Some(reason), None)
-        }
-        pub fn reject_milestone_comment(
-            &mut self,
-            milestone_id: Id,
-            submission_id: Id,
-            comment_id: Id,
-        ) -> Result<Effect> {
-            crate::execution::reject(self, milestone_id, submission_id, None, Some(comment_id))
+            let (evidence, comment) = match reason {
+                ReviewReason::Evidence(reference) => (Some(reference), None),
+                ReviewReason::Comment(id) => (None, Some(id)),
+            };
+            crate::execution::reject(self, milestone_id, submission_id, evidence, comment)
         }
         pub fn evaluate_project(&mut self, ratings: Vec<AccountRating>) -> Result<Effect> {
             crate::execution::evaluate(self, ratings)
         }
-        pub fn create_proposal_core(
+        pub fn create_proposal(
             &mut self,
-            mut definition: ProposalTerms,
+            mut terms: ProposalTerms,
             content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
-            definition.validate()?;
+            terms.validate()?;
             self.guard()?;
             self.coordinator()?;
             self.planning_active()?;
-            let qualifications = self.qualifications(&definition)?;
+            let qualifications = self.qualifications(&terms)?;
             let percent = self.dao().compensation_policy();
-            for milestone in &mut definition.milestones {
+            for milestone in &mut terms.milestones {
                 milestone.allocate(percent)?;
             }
             let mut rng = StdRng::from_seed(seed);
             let proposal_id = random_id(&mut rng);
-            let milestones = make_milestones(&definition, &[], &mut rng);
+            let milestones = make_milestones(&terms, &[], &mut rng);
             self.project.proposals.push(ProposalCore {
                 proposal_id,
                 revision: 0,
@@ -359,20 +333,20 @@ pub mod project {
                 .set_proposal_references(proposal_id, Some(qualifications))?;
             Ok(self.effect(10, proposal_id))
         }
-        pub fn update_proposal_core(
+        pub fn update_proposal(
             &mut self,
             proposal_id: Id,
-            mut definition: ProposalTerms,
+            mut terms: ProposalTerms,
             content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
-            definition.validate()?;
+            terms.validate()?;
             self.guard()?;
             self.coordinator()?;
             self.planning_active()?;
-            let qualifications = self.qualifications(&definition)?;
+            let qualifications = self.qualifications(&terms)?;
             let percent = self.dao().compensation_policy();
-            for milestone in &mut definition.milestones {
+            for milestone in &mut terms.milestones {
                 milestone.allocate(percent)?;
             }
             let index = self.proposal_index(proposal_id)?;
@@ -382,7 +356,7 @@ pub mod project {
             )?;
             let previous = &self.project.proposals[index].milestones;
             let mut rng = StdRng::from_seed(seed);
-            let milestones = make_milestones(&definition, previous, &mut rng);
+            let milestones = make_milestones(&terms, previous, &mut rng);
             let current = &mut self.project.proposals[index];
             current.milestones = milestones;
             current.compensation_policy = Some(CompensationPolicy {
@@ -449,7 +423,7 @@ pub mod project {
             bump(&mut self.project.planning.revision)?;
             Ok(self.effect(13, proposal_id))
         }
-        pub fn request_proposal_changes_core(
+        pub fn request_proposal_changes(
             &mut self,
             proposal_id: Id,
             content: MetadataCommitmentV1,
@@ -531,13 +505,9 @@ pub mod project {
             bump(&mut self.project.planning.revision)?;
             Ok(self.effect(14, self.project.project_id))
         }
-        pub fn removed_planning_price(&self) -> Result<Effect> {
-            self.guard()?;
-            Err("separate_planning_price_removed".into())
-        }
-        pub fn create_task_core(
+        pub fn create_task(
             &mut self,
-            storage_id: Id,
+            task_storage_id: Id,
             assignees: Vec<AccountId>,
         ) -> Result<Effect> {
             require(unique(&assignees), "invalid_contract")?;
@@ -545,18 +515,18 @@ pub mod project {
             self.coordinator()?;
             self.dao().validate_task_assignees(assignees.clone())?;
             let task_id = self.dao().allocate_task_id()?;
-            let (pi, mi) = self.storage_index(storage_id)?;
+            let (pi, mi) = self.storage_index(task_storage_id)?;
             self.project.proposals[pi].milestones[mi]
                 .task_storage
                 .tasks
                 .push(TaskCore { task_id, assignees });
-            let mut effect = self.effect(20, storage_id);
+            let mut effect = self.effect(20, task_storage_id);
             effect.allocated_task_id = Some(task_id);
             Ok(effect)
         }
-        pub fn set_task_assignees_core(
+        pub fn set_task_assignees(
             &mut self,
-            storage_id: Id,
+            task_storage_id: Id,
             task_id: u32,
             assignees: Vec<AccountId>,
         ) -> Result<Effect> {
@@ -564,7 +534,7 @@ pub mod project {
             self.guard()?;
             self.coordinator()?;
             self.dao().validate_task_assignees(assignees.clone())?;
-            let (pi, mi) = self.storage_index(storage_id)?;
+            let (pi, mi) = self.storage_index(task_storage_id)?;
             let current = self.project.proposals[pi].milestones[mi]
                 .task_storage
                 .tasks
@@ -572,17 +542,17 @@ pub mod project {
                 .find(|t| t.task_id == task_id)
                 .ok_or_else(|| String::from("task_not_found"))?;
             current.assignees = assignees;
-            Ok(self.effect(21, storage_id))
+            Ok(self.effect(21, task_storage_id))
         }
         pub fn delete_task(
             &mut self,
-            storage_id: Id,
+            task_storage_id: Id,
             task_id: u32,
             expected_revision: u64,
         ) -> Result<Effect> {
             self.guard()?;
             self.coordinator()?;
-            let (pi, mi) = self.storage_index(storage_id)?;
+            let (pi, mi) = self.storage_index(task_storage_id)?;
             let proposal = &mut self.project.proposals[pi];
             require(
                 proposal.status == ProposalStatus::Draft,
@@ -595,9 +565,9 @@ pub mod project {
                 "task_not_found",
             )?;
             storage.tasks.retain(|t| t.task_id != task_id);
-            Ok(self.effect(34, storage_id))
+            Ok(self.effect(34, task_storage_id))
         }
-        pub fn cancel_project_core(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
+        pub fn cancel_project(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
             self.guard()?;
             self.party()?;
             require(!self.project.completed, "project_completed")?;
@@ -614,7 +584,7 @@ pub mod project {
             }
             Ok(self.effect(17, self.project.project_id))
         }
-        pub fn dispute_planning_core(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
+        pub fn dispute_planning(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
             self.guard()?;
             self.party()?;
             require(
@@ -672,7 +642,7 @@ pub mod project {
                 milestones.push(milestone);
             } else {
                 let milestone_id = random_id(rng);
-                let storage_id = random_id(rng);
+                let task_storage_id = random_id(rng);
                 milestones.push(MilestoneCore {
                     milestone_id,
                     definition: definition.clone(),
@@ -680,7 +650,7 @@ pub mod project {
                     assignments: Vec::new(),
                     worker_ratings: Vec::new(),
                     task_storage: TaskStorageCore {
-                        task_storage_id: storage_id,
+                        task_storage_id,
                         milestone_id,
                         tasks: Vec::new(),
                     },
@@ -775,152 +745,72 @@ pub mod project {
             stored.save(&data)?;
             Ok(stored)
         }
+        // Queries.
+
+        /// Read the complete project, including its current terms and progress.
         #[ink(message)]
         pub fn view(&self) -> ProjectCore {
             self.read_state(|data| data.view())
         }
+
+        /// Read recorded reasons for project actions; written content stays off-chain.
         #[ink(message)]
         pub fn reasons(&self) -> Vec<ReasonRecord> {
             self.read_state(|data| data.reasons())
         }
-        #[ink(message)]
-        pub fn open_dispute(
-            &mut self,
-            milestone_id: Id,
-            submission_id: Id,
-            evidence: EvidenceReference,
-            seed: [u8; 32],
-            event_cursor: u64,
-        ) -> Result<Effect> {
-            self.change(|data| {
-                data.open_dispute(milestone_id, submission_id, evidence, seed, event_cursor)
-            })
-        }
-        #[ink(message)]
-        pub fn open_dispute_comment(
-            &mut self,
-            milestone_id: Id,
-            submission_id: Id,
-            comment_id: Id,
-            seed: [u8; 32],
-            event_cursor: u64,
-        ) -> Result<Effect> {
-            self.change(|data| {
-                data.open_dispute_comment(
-                    milestone_id,
-                    submission_id,
-                    comment_id,
-                    seed,
-                    event_cursor,
-                )
-            })
-        }
-        #[ink(message)]
-        pub fn respond_dispute(&mut self, id: Id, evidence: EvidenceReference) -> Result<Effect> {
-            self.change(|data| data.respond_dispute(id, evidence))
-        }
+
+        /// Read a dispute record and the milestone it concerns.
         #[ink(message)]
         pub fn dispute(&self, id: Id) -> Result<(DisputeRecord, MilestoneCore)> {
             self.read_state(|data| data.dispute(id))
         }
+
+        // Planning.
+
+        /// Client: accept the current planning revision and release any planning escrow.
         #[ink(message)]
-        pub fn approve_execution(
+        pub fn accept_planning_delivery(&mut self, expected_revision: u64) -> Result<Effect> {
+            self.change(|data| data.accept_planning_delivery(expected_revision))
+        }
+
+        /// Client or coordinator: record a reason and freeze planning; no payout is made.
+        #[ink(message)]
+        pub fn dispute_planning(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
+            self.change(|data| data.dispute_planning(content))
+        }
+
+        // Proposals.
+
+        /// Coordinator: create draft terms with captured compensation shares; no funds move.
+        #[ink(message)]
+        pub fn create_proposal(
             &mut self,
-            proposal_id: Id,
-            expected_revision: u64,
-            seed: [u8; 32],
-        ) -> Result<Effect> {
-            self.change(|data| data.approve_execution(proposal_id, expected_revision, seed))
-        }
-        #[ink(message)]
-        pub fn submit_milestone(
-            &mut self,
-            milestone_id: Id,
-            deliverable: Option<EvidenceReference>,
-            seed: [u8; 32],
-        ) -> Result<Effect> {
-            self.change(|data| data.submit_milestone(milestone_id, deliverable, seed))
-        }
-        #[ink(message)]
-        pub fn submit_rated_milestone(
-            &mut self,
-            milestone_id: Id,
-            deliverable: Option<EvidenceReference>,
-            ratings: Vec<WorkerRating>,
-            seed: [u8; 32],
-        ) -> Result<Effect> {
-            self.change(|data| {
-                data.submit_rated_milestone(milestone_id, deliverable, ratings, seed)
-            })
-        }
-        #[ink(message)]
-        pub fn accept_milestone(&mut self, milestone_id: Id, submission_id: Id) -> Result<Effect> {
-            self.change(|data| data.accept_milestone(milestone_id, submission_id))
-        }
-        #[ink(message)]
-        pub fn accept_rated_milestone(
-            &mut self,
-            milestone_id: Id,
-            submission_id: Id,
-            coordinator_score: u8,
-            team_rating: TeamRating,
-        ) -> Result<Effect> {
-            self.change(|data| {
-                data.accept_rated_milestone(
-                    milestone_id,
-                    submission_id,
-                    coordinator_score,
-                    team_rating,
-                )
-            })
-        }
-        #[ink(message)]
-        pub fn reject_milestone(
-            &mut self,
-            milestone_id: Id,
-            submission_id: Id,
-            reason: EvidenceReference,
-        ) -> Result<Effect> {
-            self.change(|data| data.reject_milestone(milestone_id, submission_id, reason))
-        }
-        #[ink(message)]
-        pub fn reject_milestone_comment(
-            &mut self,
-            milestone_id: Id,
-            submission_id: Id,
-            comment_id: Id,
-        ) -> Result<Effect> {
-            self.change(|data| {
-                data.reject_milestone_comment(milestone_id, submission_id, comment_id)
-            })
-        }
-        #[ink(message)]
-        pub fn evaluate_project(&mut self, ratings: Vec<AccountRating>) -> Result<Effect> {
-            self.change(|data| data.evaluate_project(ratings))
-        }
-        #[ink(message)]
-        pub fn create_proposal_core(
-            &mut self,
-            definition: ProposalTerms,
+            terms: ProposalTerms,
             content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
-            self.change(|data| data.create_proposal_core(definition, content, seed))
+            self.change(|data| data.create_proposal(terms, content, seed))
         }
+
+        /// Coordinator: replace draft terms and their content commitment; no funds move.
         #[ink(message)]
-        pub fn update_proposal_core(
+        pub fn update_proposal(
             &mut self,
             proposal_id: Id,
-            definition: ProposalTerms,
+            terms: ProposalTerms,
             content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
-            self.change(|data| data.update_proposal_core(proposal_id, definition, content, seed))
+            self.change(|data| data.update_proposal(proposal_id, terms, content, seed))
         }
+
+        /// Coordinator: delete a draft and release its catalog references.
         #[ink(message)]
         pub fn delete_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
             self.change(|data| data.delete_proposal(proposal_id))
         }
+
+        /// Coordinator: set delivery expectations for the expected draft revision.
         #[ink(message)]
         pub fn set_proposal_delivery(
             &mut self,
@@ -930,18 +820,24 @@ pub mod project {
         ) -> Result<Effect> {
             self.change(|data| data.set_proposal_delivery(proposal_id, expected_revision, delivery))
         }
+
+        /// Coordinator: submit a validated draft for client approval; no funds move.
         #[ink(message)]
         pub fn submit_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
             self.change(|data| data.submit_proposal(proposal_id))
         }
+
+        /// Client: return a pending proposal to draft with a committed reason.
         #[ink(message)]
-        pub fn request_proposal_changes_core(
+        pub fn request_proposal_changes(
             &mut self,
             proposal_id: Id,
             content: MetadataCommitmentV1,
         ) -> Result<Effect> {
-            self.change(|data| data.request_proposal_changes_core(proposal_id, content))
+            self.change(|data| data.request_proposal_changes(proposal_id, content))
         }
+
+        /// Coordinator: withdraw the expected pending revision back to draft.
         #[ink(message)]
         pub fn withdraw_proposal(
             &mut self,
@@ -950,47 +846,127 @@ pub mod project {
         ) -> Result<Effect> {
             self.change(|data| data.withdraw_proposal(proposal_id, expected_revision))
         }
+
+        // Execution and feedback.
+
+        /// Client: approve the expected proposal revision, fund escrow and reserve the team atomically.
         #[ink(message)]
-        pub fn accept_planning_delivery(&mut self, expected_revision: u64) -> Result<Effect> {
-            self.change(|data| data.accept_planning_delivery(expected_revision))
-        }
-        #[ink(message)]
-        pub fn removed_planning_price(&self) -> Result<Effect> {
-            self.read_state(|data| data.removed_planning_price())
-        }
-        #[ink(message)]
-        pub fn create_task_core(
+        pub fn approve_execution(
             &mut self,
-            storage_id: Id,
+            proposal_id: Id,
+            expected_revision: u64,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            self.change(|data| data.approve_execution(proposal_id, expected_revision, seed))
+        }
+
+        /// Coordinator: submit a delivery and optionally rate all assigned workers. None skips ratings; Some(empty) still requires an empty team.
+        #[ink(message)]
+        pub fn submit_milestone(
+            &mut self,
+            milestone_id: Id,
+            deliverable: Option<EvidenceReference>,
+            worker_ratings: Option<Vec<WorkerRating>>,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            self.change(|data| {
+                data.submit_milestone(milestone_id, deliverable, worker_ratings, seed)
+            })
+        }
+
+        /// Client: accept the current submission, release its payments and advance execution. Some(ratings) also applies settlement reputation.
+        #[ink(message)]
+        pub fn accept_milestone(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            ratings: Option<AcceptanceRating>,
+        ) -> Result<Effect> {
+            self.change(|data| data.accept_milestone(milestone_id, submission_id, ratings))
+        }
+
+        /// Client: request changes to the current submission using evidence or an existing comment; no funds move.
+        #[ink(message)]
+        pub fn reject_milestone(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            reason: ReviewReason,
+        ) -> Result<Effect> {
+            self.change(|data| data.reject_milestone(milestone_id, submission_id, reason))
+        }
+
+        /// Eligible participant: record final project ratings and update reputation once per author.
+        #[ink(message)]
+        pub fn evaluate_project(&mut self, ratings: Vec<AccountRating>) -> Result<Effect> {
+            self.change(|data| data.evaluate_project(ratings))
+        }
+
+        // Tasks.
+
+        /// Coordinator: allocate a task ID with registered assignees. Text and progress stay off-chain.
+        #[ink(message)]
+        pub fn create_task(
+            &mut self,
+            task_storage_id: Id,
             assignees: Vec<AccountId>,
         ) -> Result<Effect> {
-            self.change(|data| data.create_task_core(storage_id, assignees))
+            self.change(|data| data.create_task(task_storage_id, assignees))
         }
+
+        /// Coordinator: replace task assignees with registered members.
         #[ink(message)]
-        pub fn set_task_assignees_core(
+        pub fn set_task_assignees(
             &mut self,
-            storage_id: Id,
+            task_storage_id: Id,
             task_id: u32,
             assignees: Vec<AccountId>,
         ) -> Result<Effect> {
-            self.change(|data| data.set_task_assignees_core(storage_id, task_id, assignees))
+            self.change(|data| data.set_task_assignees(task_storage_id, task_id, assignees))
         }
+
+        /// Coordinator: delete a task from a draft at the expected proposal revision.
         #[ink(message)]
         pub fn delete_task(
             &mut self,
-            storage_id: Id,
+            task_storage_id: Id,
             task_id: u32,
             expected_revision: u64,
         ) -> Result<Effect> {
-            self.change(|data| data.delete_task(storage_id, task_id, expected_revision))
+            self.change(|data| data.delete_task(task_storage_id, task_id, expected_revision))
         }
+
+        // Disputes and cancellation.
+
+        /// Client or coordinator: open a case for the current rejected submission and freeze it; no dispute payout or resolution is performed.
         #[ink(message)]
-        pub fn cancel_project_core(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
-            self.change(|data| data.cancel_project_core(content))
+        pub fn open_dispute(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            reason: ReviewReason,
+            seed: [u8; 32],
+            event_cursor: u64,
+        ) -> Result<Effect> {
+            self.change(|data| {
+                data.open_dispute(milestone_id, submission_id, reason, seed, event_cursor)
+            })
         }
+
+        /// Counterparty: record one evidence response to the active dispute.
         #[ink(message)]
-        pub fn dispute_planning_core(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
-            self.change(|data| data.dispute_planning_core(content))
+        pub fn respond_to_dispute(
+            &mut self,
+            id: Id,
+            evidence: EvidenceReference,
+        ) -> Result<Effect> {
+            self.change(|data| data.respond_to_dispute(id, evidence))
+        }
+
+        /// Client or coordinator: cancel unfinished work and freeze unsettled stages; no refund is made here.
+        #[ink(message)]
+        pub fn cancel_project(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
+            self.change(|data| data.cancel_project(content))
         }
     }
 }
