@@ -1,0 +1,972 @@
+#![cfg_attr(not(feature = "std"), no_std, no_main)]
+mod disputes;
+mod execution;
+mod records;
+mod state;
+mod types;
+
+#[ink::contract]
+pub mod project {
+    use crate::types::*;
+    use crate::{
+        records::*,
+        state::{ChildPosition, MilestonePosition, NestedPosition},
+    };
+    use chrono::{Datelike, Duration, NaiveDate, Weekday};
+    use dao::calendar::Week;
+    use dao::dao::{DaoRef, Effect, MetadataCommitmentV1, MetadataReferenceV1, Qualifications};
+    use ink::codegen::Env as _;
+    use ink::storage::{traits::ManualKey, Lazy, Mapping};
+    use ink::{
+        env::call::FromAccountId,
+        prelude::{
+            collections::BTreeSet,
+            string::{String, ToString},
+            vec::Vec,
+        },
+    };
+    use rand::{rngs::StdRng, Rng, SeedableRng};
+
+    #[ink(storage)]
+    pub struct Project {
+        pub(crate) dao: AccountId,
+        pub(crate) project_id: Id,
+        pub(crate) header: Lazy<ProjectRecord, ManualKey<1>>,
+        pub(crate) proposals: Mapping<u32, ProposalRecord, ManualKey<10>>,
+        pub(crate) milestones: Mapping<MilestonePosition, MilestoneRecord, ManualKey<11>>,
+        pub(crate) requirements: Mapping<ChildPosition, RequirementRecord, ManualKey<12>>,
+        pub(crate) skills: Mapping<NestedPosition, u32, ManualKey<13>>,
+        pub(crate) assignments: Mapping<ChildPosition, AssignmentView, ManualKey<14>>,
+        pub(crate) milestone_ratings: Mapping<ChildPosition, WorkerRating, ManualKey<15>>,
+        pub(crate) tasks: Mapping<ChildPosition, TaskRecord, ManualKey<16>>,
+        pub(crate) assignees: Mapping<NestedPosition, AccountId, ManualKey<17>>,
+        pub(crate) submissions: Mapping<ChildPosition, SubmissionRecord, ManualKey<18>>,
+        pub(crate) submission_ratings: Mapping<NestedPosition, WorkerRating, ManualKey<19>>,
+        pub(crate) evaluations: Mapping<u32, EvaluationRecord, ManualKey<20>>,
+        pub(crate) evaluation_ratings: Mapping<(u32, u32), AccountRating, ManualKey<21>>,
+        pub(crate) reasons: Mapping<u32, ReasonRecord, ManualKey<22>>,
+        pub(crate) disputes: Mapping<u32, DisputeRecord, ManualKey<23>>,
+    }
+
+    pub(crate) struct ProjectData {
+        pub(crate) dao: AccountId,
+        pub(crate) project: ProjectCore,
+        pub(crate) reasons: Vec<ReasonRecord>,
+        pub(crate) disputes: Vec<DisputeRecord>,
+    }
+    impl ProjectData {
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "Explicit constructor ABI shared with the Dao factory."
+        )]
+        pub fn new(
+            dao: AccountId,
+            project_id: Id,
+            client: AccountId,
+            coordinator: AccountId,
+            content: MetadataCommitmentV1,
+            now: u64,
+        ) -> Result<Self> {
+            require(
+                <Self as ink::codegen::StaticEnv>::env().caller() == dao
+                    && <Self as ink::codegen::StaticEnv>::env().is_contract(&dao),
+                "dao_required",
+            )?;
+            Ok(Self {
+                dao,
+                project: ProjectCore {
+                    project_id,
+                    created_at: Some(now),
+                    client,
+                    coordinator,
+                    content: MetadataReferenceV1::Creation(content),
+                    planning: PlanningView {
+                        revision: 0,
+                        status: PlanningStatus::Accepted,
+                        quote: None,
+                        escrow: 0,
+                        frozen: false,
+                    },
+                    proposals: Vec::new(),
+                    execution_escrow: 0,
+                    cancelled: false,
+                    completed: false,
+                    evaluations: Vec::new(),
+                    active_dispute_id: None,
+                },
+                reasons: Vec::new(),
+                disputes: Vec::new(),
+            })
+        }
+        pub fn view(&self) -> ProjectCore {
+            self.project.clone()
+        }
+        pub fn reasons(&self) -> Vec<ReasonRecord> {
+            self.reasons.clone()
+        }
+        fn sync_identities(&mut self) -> Result<()> {
+            let layout = self
+                .project
+                .proposals
+                .iter()
+                .map(|proposal| {
+                    (
+                        proposal.proposal_id,
+                        proposal
+                            .milestones
+                            .iter()
+                            .map(|m| (m.milestone_id, m.task_storage.task_storage_id))
+                            .collect(),
+                    )
+                })
+                .collect();
+            self.dao().set_project_identities(layout)
+        }
+        pub(crate) fn dao(&self) -> DaoRef {
+            DaoRef::from_account_id(self.dao)
+        }
+        pub(crate) fn guard(&self) -> Result<()> {
+            require(!self.project.cancelled, "project_cancelled")?;
+            require(self.project.active_dispute_id.is_none(), "project_disputed")
+        }
+        pub(crate) fn coordinator(&self) -> Result<()> {
+            require(
+                self.env().caller() == self.project.coordinator,
+                "coordinator_required",
+            )
+        }
+        pub(crate) fn client(&self) -> Result<()> {
+            require(
+                self.env().caller() == self.project.client,
+                "client_required",
+            )
+        }
+        pub(crate) fn party(&self) -> Result<()> {
+            require(
+                self.env().caller() == self.project.client
+                    || self.env().caller() == self.project.coordinator,
+                "project_party_required",
+            )
+        }
+        fn planning_active(&self) -> Result<()> {
+            require(
+                matches!(
+                    self.project.planning.status,
+                    PlanningStatus::Accepted
+                        | PlanningStatus::Delivered
+                        | PlanningStatus::Completed
+                ) && !self.project.planning.frozen,
+                "planning_not_accepted",
+            )
+        }
+        pub(crate) fn now(&self) -> u64 {
+            self.env().block_timestamp().checked_div(1000).unwrap_or(0)
+        }
+        pub(crate) fn effect(&self, kind: u8, id: Id) -> Effect {
+            let mut recipients = BTreeSet::from([
+                self.env().caller(),
+                self.project.client,
+                self.project.coordinator,
+            ]);
+            for milestone in self.project.proposals.iter().flat_map(|p| &p.milestones) {
+                recipients.extend(milestone.assignments.iter().map(|a| a.worker));
+                recipients.extend(
+                    milestone
+                        .task_storage
+                        .tasks
+                        .iter()
+                        .flat_map(|t| t.assignees.iter())
+                        .copied(),
+                );
+            }
+            Effect {
+                kind,
+                entity_id: Some(id),
+                recipients: recipients.into_iter().collect(),
+                allocated_task_id: None,
+            }
+        }
+        pub(crate) fn proposal_index(&self, id: Id) -> Result<usize> {
+            self.project
+                .proposals
+                .iter()
+                .position(|p| p.proposal_id == id)
+                .ok_or_else(|| String::from("proposal_not_found"))
+        }
+        fn storage_index(&self, id: Id) -> Result<(usize, usize)> {
+            for (pi, proposal) in self.project.proposals.iter().enumerate() {
+                if let Some(mi) = proposal
+                    .milestones
+                    .iter()
+                    .position(|m| m.task_storage.task_storage_id == id)
+                {
+                    return Ok((pi, mi));
+                }
+            }
+            Err("task_storage_not_found".into())
+        }
+        fn qualifications(&self, definition: &ProposalTerms) -> Result<Qualifications> {
+            let mut roles = BTreeSet::new();
+            let mut skills = BTreeSet::new();
+            for requirement in definition.milestones.iter().flat_map(|m| &m.requirements) {
+                self.dao().validate_qualifications(Qualifications {
+                    role_ids: ink::prelude::vec![requirement.role_id],
+                    skill_ids: requirement.skill_ids.clone(),
+                })?;
+                roles.insert(requirement.role_id);
+                skills.extend(requirement.skill_ids.iter().copied());
+            }
+            Ok(Qualifications {
+                role_ids: roles.into_iter().collect(),
+                skill_ids: skills.into_iter().collect(),
+            })
+        }
+        pub fn open_dispute(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            reason: ReviewReason,
+            seed: [u8; 32],
+            event_cursor: u64,
+        ) -> Result<Effect> {
+            let (evidence, comment) = match reason {
+                ReviewReason::Evidence(reference) => (Some(reference), None),
+                ReviewReason::Comment(id) => (None, Some(id)),
+            };
+            crate::disputes::open(
+                self,
+                milestone_id,
+                submission_id,
+                evidence,
+                comment,
+                seed,
+                event_cursor,
+            )
+        }
+        pub fn respond_to_dispute(
+            &mut self,
+            id: Id,
+            evidence: EvidenceReference,
+        ) -> Result<Effect> {
+            crate::disputes::respond(self, id, evidence)
+        }
+        pub fn dispute(&self, id: Id) -> Result<(DisputeRecord, MilestoneCore)> {
+            crate::disputes::view(self, id)
+        }
+        pub fn approve_execution(
+            &mut self,
+            proposal_id: Id,
+            expected_revision: u64,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            crate::execution::approve(self, proposal_id, expected_revision, seed)
+        }
+        pub fn submit_milestone(
+            &mut self,
+            milestone_id: Id,
+            deliverable: Option<EvidenceReference>,
+            worker_ratings: Option<Vec<WorkerRating>>,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            crate::execution::submit(self, milestone_id, deliverable, worker_ratings, seed)
+        }
+        pub fn accept_milestone(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            ratings: Option<AcceptanceRating>,
+        ) -> Result<Effect> {
+            crate::execution::accept(
+                self,
+                milestone_id,
+                submission_id,
+                ratings.map(|rating| (rating.coordinator_score, rating.team_rating)),
+            )
+        }
+        pub fn reject_milestone(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            reason: ReviewReason,
+        ) -> Result<Effect> {
+            let (evidence, comment) = match reason {
+                ReviewReason::Evidence(reference) => (Some(reference), None),
+                ReviewReason::Comment(id) => (None, Some(id)),
+            };
+            crate::execution::reject(self, milestone_id, submission_id, evidence, comment)
+        }
+        pub fn evaluate_project(&mut self, ratings: Vec<AccountRating>) -> Result<Effect> {
+            crate::execution::evaluate(self, ratings)
+        }
+        pub fn create_proposal(
+            &mut self,
+            mut terms: ProposalTerms,
+            content: MetadataCommitmentV1,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            terms.validate()?;
+            self.guard()?;
+            self.coordinator()?;
+            self.planning_active()?;
+            let qualifications = self.qualifications(&terms)?;
+            let percent = self.dao().compensation_policy();
+            for milestone in &mut terms.milestones {
+                milestone.allocate(percent)?;
+            }
+            let mut rng = StdRng::from_seed(seed);
+            let proposal_id = random_id(&mut rng);
+            let milestones = make_milestones(&terms, &[], &mut rng);
+            self.project.proposals.push(ProposalCore {
+                proposal_id,
+                revision: 0,
+                content: ProposalContentReferenceV1::Signed(content),
+                status: ProposalStatus::Draft,
+                milestones,
+                change_request: None,
+                delivery: None,
+                compensation_policy: Some(CompensationPolicy {
+                    coordinator_percent: percent,
+                }),
+            });
+            self.sync_identities()?;
+            self.dao()
+                .set_proposal_references(proposal_id, Some(qualifications))?;
+            Ok(self.effect(10, proposal_id))
+        }
+        pub fn update_proposal(
+            &mut self,
+            proposal_id: Id,
+            mut terms: ProposalTerms,
+            content: MetadataCommitmentV1,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            terms.validate()?;
+            self.guard()?;
+            self.coordinator()?;
+            self.planning_active()?;
+            let qualifications = self.qualifications(&terms)?;
+            let percent = self.dao().compensation_policy();
+            for milestone in &mut terms.milestones {
+                milestone.allocate(percent)?;
+            }
+            let index = self.proposal_index(proposal_id)?;
+            require(
+                self.project.proposals[index].status == ProposalStatus::Draft,
+                "proposal_not_draft",
+            )?;
+            let previous = &self.project.proposals[index].milestones;
+            let mut rng = StdRng::from_seed(seed);
+            let milestones = make_milestones(&terms, previous, &mut rng);
+            let current = &mut self.project.proposals[index];
+            current.milestones = milestones;
+            current.compensation_policy = Some(CompensationPolicy {
+                coordinator_percent: percent,
+            });
+            current.content = ProposalContentReferenceV1::Signed(content);
+            bump(&mut current.revision)?;
+            self.sync_identities()?;
+            self.dao()
+                .set_proposal_references(proposal_id, Some(qualifications))?;
+            Ok(self.effect(11, proposal_id))
+        }
+        pub fn delete_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
+            self.guard()?;
+            self.coordinator()?;
+            let index = self.proposal_index(proposal_id)?;
+            let current = &self.project.proposals[index];
+            require(
+                current.status == ProposalStatus::Draft,
+                "proposal_not_draft",
+            )?;
+            self.project.proposals.remove(index);
+            self.sync_identities()?;
+            self.dao().set_proposal_references(proposal_id, None)?;
+            Ok(self.effect(12, proposal_id))
+        }
+        pub fn set_proposal_delivery(
+            &mut self,
+            proposal_id: Id,
+            expected_revision: u64,
+            delivery: DeliveryPreference,
+        ) -> Result<Effect> {
+            validate_delivery(&delivery)?;
+            self.guard()?;
+            self.coordinator()?;
+            self.planning_active()?;
+            let index = self.proposal_index(proposal_id)?;
+            let proposal = &mut self.project.proposals[index];
+            require(
+                proposal.status == ProposalStatus::Draft,
+                "proposal_not_draft",
+            )?;
+            revision(proposal.revision, expected_revision)?;
+            proposal.delivery = Some(delivery);
+            bump(&mut proposal.revision)?;
+            Ok(self.effect(11, proposal_id))
+        }
+        pub fn submit_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
+            self.guard()?;
+            self.coordinator()?;
+            self.planning_active()?;
+            let index = self.proposal_index(proposal_id)?;
+            let proposal = &mut self.project.proposals[index];
+            require(
+                proposal.status == ProposalStatus::Draft,
+                "proposal_not_draft",
+            )?;
+            validate_estimate(proposal)?;
+            proposal.status = ProposalStatus::PendingApproval;
+            bump(&mut proposal.revision)?;
+            if self.project.planning.status != PlanningStatus::Completed {
+                self.project.planning.status = PlanningStatus::Delivered;
+            }
+            bump(&mut self.project.planning.revision)?;
+            Ok(self.effect(13, proposal_id))
+        }
+        pub fn request_proposal_changes(
+            &mut self,
+            proposal_id: Id,
+            content: MetadataCommitmentV1,
+        ) -> Result<Effect> {
+            self.guard()?;
+            self.client()?;
+            let index = self.proposal_index(proposal_id)?;
+            let proposal = &mut self.project.proposals[index];
+            require(
+                proposal.status == ProposalStatus::PendingApproval,
+                "proposal_not_pending",
+            )?;
+            proposal.status = ProposalStatus::Draft;
+            proposal.change_request = Some(ProposalContentReferenceV1::Signed(content));
+            bump(&mut proposal.revision)?;
+            if self.project.planning.status == PlanningStatus::Delivered {
+                self.project.planning.status = PlanningStatus::Accepted;
+            }
+            bump(&mut self.project.planning.revision)?;
+            Ok(self.effect(16, proposal_id))
+        }
+        pub fn withdraw_proposal(
+            &mut self,
+            proposal_id: Id,
+            expected_revision: u64,
+        ) -> Result<Effect> {
+            self.guard()?;
+            self.coordinator()?;
+            self.planning_active()?;
+            require(
+                !self
+                    .project
+                    .proposals
+                    .iter()
+                    .any(|p| p.status == ProposalStatus::Approved),
+                "execution_already_approved",
+            )?;
+            let index = self.proposal_index(proposal_id)?;
+            let proposal = &mut self.project.proposals[index];
+            revision(proposal.revision, expected_revision)?;
+            require(
+                proposal.status == ProposalStatus::PendingApproval,
+                "proposal_not_pending",
+            )?;
+            proposal.status = ProposalStatus::Draft;
+            bump(&mut proposal.revision)?;
+            if self.project.planning.status == PlanningStatus::Delivered {
+                self.project.planning.status = PlanningStatus::Accepted;
+            }
+            bump(&mut self.project.planning.revision)?;
+            Ok(self.effect(35, proposal_id))
+        }
+        pub fn accept_planning_delivery(&mut self, expected_revision: u64) -> Result<Effect> {
+            self.guard()?;
+            self.client()?;
+            revision(self.project.planning.revision, expected_revision)?;
+            require(
+                self.project.planning.status == PlanningStatus::Delivered
+                    && !self.project.planning.frozen,
+                "invalid_planning_state",
+            )?;
+            if self.dao().accounting_enabled() {
+                self.dao().record_balance_credit(
+                    self.project.coordinator,
+                    self.project.planning.escrow,
+                )?;
+                dao::assets::transfer(
+                    u128::from(self.project.planning.escrow),
+                    self.project.coordinator,
+                )?;
+            } else {
+                require(
+                    self.project.planning.escrow == 0,
+                    "incomplete_money_coverage",
+                )?;
+            }
+            self.project.planning.escrow = 0;
+            self.project.planning.status = PlanningStatus::Completed;
+            bump(&mut self.project.planning.revision)?;
+            Ok(self.effect(14, self.project.project_id))
+        }
+        pub fn create_task(
+            &mut self,
+            task_storage_id: Id,
+            assignees: Vec<AccountId>,
+        ) -> Result<Effect> {
+            require(unique(&assignees), "invalid_contract")?;
+            self.guard()?;
+            self.coordinator()?;
+            self.dao().validate_task_assignees(assignees.clone())?;
+            let task_id = self.dao().allocate_task_id()?;
+            let (pi, mi) = self.storage_index(task_storage_id)?;
+            self.project.proposals[pi].milestones[mi]
+                .task_storage
+                .tasks
+                .push(TaskCore { task_id, assignees });
+            let mut effect = self.effect(20, task_storage_id);
+            effect.allocated_task_id = Some(task_id);
+            Ok(effect)
+        }
+        pub fn set_task_assignees(
+            &mut self,
+            task_storage_id: Id,
+            task_id: u32,
+            assignees: Vec<AccountId>,
+        ) -> Result<Effect> {
+            require(unique(&assignees), "invalid_contract")?;
+            self.guard()?;
+            self.coordinator()?;
+            self.dao().validate_task_assignees(assignees.clone())?;
+            let (pi, mi) = self.storage_index(task_storage_id)?;
+            let current = self.project.proposals[pi].milestones[mi]
+                .task_storage
+                .tasks
+                .iter_mut()
+                .find(|t| t.task_id == task_id)
+                .ok_or_else(|| String::from("task_not_found"))?;
+            current.assignees = assignees;
+            Ok(self.effect(21, task_storage_id))
+        }
+        pub fn delete_task(
+            &mut self,
+            task_storage_id: Id,
+            task_id: u32,
+            expected_revision: u64,
+        ) -> Result<Effect> {
+            self.guard()?;
+            self.coordinator()?;
+            let (pi, mi) = self.storage_index(task_storage_id)?;
+            let proposal = &mut self.project.proposals[pi];
+            require(
+                proposal.status == ProposalStatus::Draft,
+                "proposal_not_draft",
+            )?;
+            revision(proposal.revision, expected_revision)?;
+            let storage = &mut proposal.milestones[mi].task_storage;
+            require(
+                storage.tasks.iter().any(|t| t.task_id == task_id),
+                "task_not_found",
+            )?;
+            storage.tasks.retain(|t| t.task_id != task_id);
+            Ok(self.effect(34, task_storage_id))
+        }
+        pub fn cancel_project(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
+            self.guard()?;
+            self.party()?;
+            require(!self.project.completed, "project_completed")?;
+            self.record_reason(content, 17)?;
+            self.project.cancelled = true;
+            self.project.planning.frozen = self.project.planning.escrow != 0;
+            bump(&mut self.project.planning.revision)?;
+            for proposal in &mut self.project.proposals {
+                proposal.status = ProposalStatus::Cancelled;
+                bump(&mut proposal.revision)?;
+                for milestone in &mut proposal.milestones {
+                    milestone.frozen = milestone.status != Some(MilestoneStatus::Completed);
+                }
+            }
+            Ok(self.effect(17, self.project.project_id))
+        }
+        pub fn dispute_planning(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
+            self.guard()?;
+            self.party()?;
+            require(
+                matches!(
+                    self.project.planning.status,
+                    PlanningStatus::Accepted | PlanningStatus::Delivered
+                ),
+                "invalid_planning_state",
+            )?;
+            self.project.planning.status = PlanningStatus::Disputed;
+            self.project.planning.frozen = true;
+            self.record_reason(content, 18)?;
+            bump(&mut self.project.planning.revision)?;
+            Ok(self.effect(18, self.project.project_id))
+        }
+        fn record_reason(&mut self, content: MetadataCommitmentV1, kind: u8) -> Result<()> {
+            let record = ReasonRecord {
+                project_id: self.project.project_id,
+                milestone_id: None,
+                origin: self.env().caller(),
+                content: ReasonReferenceV1::Write(content),
+                occurred_at: self.now(),
+                kind,
+            };
+            self.dao()
+                .append_reason(self.project.project_id, scale::Encode::encode(&record))?;
+            self.reasons.push(record);
+            Ok(())
+        }
+    }
+    fn bump(value: &mut u64) -> Result<()> {
+        *value = value
+            .checked_add(1)
+            .ok_or_else(|| String::from("revision_exhausted"))?;
+        Ok(())
+    }
+    fn revision(current: u64, expected: u64) -> Result<()> {
+        require(current == expected, "revision_conflict")
+    }
+    fn random_id(rng: &mut StdRng) -> Id {
+        let mut id = [0; 16];
+        rng.fill_bytes(&mut id);
+        id
+    }
+    fn make_milestones(
+        definition: &ProposalTerms,
+        previous: &[MilestoneCore],
+        rng: &mut StdRng,
+    ) -> Vec<MilestoneCore> {
+        let mut milestones = Vec::new();
+        for definition in &definition.milestones {
+            if let Some(existing) = previous.iter().find(|m| m.definition.key == definition.key) {
+                let mut milestone = existing.clone();
+                milestone.definition = definition.clone();
+                milestones.push(milestone);
+            } else {
+                let milestone_id = random_id(rng);
+                let task_storage_id = random_id(rng);
+                milestones.push(MilestoneCore {
+                    milestone_id,
+                    definition: definition.clone(),
+                    status: None,
+                    assignments: Vec::new(),
+                    worker_ratings: Vec::new(),
+                    task_storage: TaskStorageCore {
+                        task_storage_id,
+                        milestone_id,
+                        tasks: Vec::new(),
+                    },
+                    frozen: false,
+                    submissions: Vec::new(),
+                });
+            }
+        }
+        milestones
+    }
+    pub(crate) fn validate_delivery(delivery: &DeliveryPreference) -> Result<()> {
+        if let DeliveryPreference::SpecificDate { date } = delivery {
+            let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                .map_err(|_| String::from("invalid_contract"))?;
+            require(
+                date.len() == 10
+                    && (1..=9999).contains(&parsed.year())
+                    && parsed.to_string() == *date,
+                "invalid_contract",
+            )?;
+        }
+        Ok(())
+    }
+    fn monday(week: Week) -> Result<NaiveDate> {
+        NaiveDate::from_isoywd_opt(week.iso_year(), u32::from(week.week()), Weekday::Mon)
+            .ok_or_else(|| String::from("invalid_delivery_schedule"))
+    }
+    fn validate_estimate(proposal: &ProposalCore) -> Result<()> {
+        let Some(DeliveryPreference::SpecificDate { date }) = &proposal.delivery else {
+            return Ok(());
+        };
+        let first = proposal
+            .milestones
+            .first()
+            .ok_or_else(|| String::from("empty_milestones"))?;
+        let start = monday(first.definition.window.start())?;
+        let days = proposal.milestones.iter().try_fold(0i64, |sum, m| {
+            let window = m.definition.window;
+            let duration = monday(window.end())?
+                .signed_duration_since(monday(window.start())?)
+                .num_days();
+            sum.checked_add(duration)
+                .and_then(|n| n.checked_add(7))
+                .ok_or_else(|| String::from("invalid_delivery_schedule"))
+        })?;
+        let minimum = Duration::try_days(days)
+            .and_then(|duration| start.checked_add_signed(duration))
+            .ok_or_else(|| String::from("invalid_delivery_schedule"))?;
+        let estimated = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            .map_err(|_| String::from("invalid_delivery_date"))?;
+        require(estimated >= minimum, "delivery_date_before_milestones")
+    }
+
+    impl<'a> ink::codegen::Env for &'a ProjectData {
+        type EnvAccess = ink::EnvAccess<'a, ink::env::DefaultEnvironment>;
+        fn env(self) -> Self::EnvAccess {
+            Default::default()
+        }
+    }
+    impl ink::codegen::StaticEnv for ProjectData {
+        type EnvAccess = ink::EnvAccess<'static, ink::env::DefaultEnvironment>;
+        fn env() -> Self::EnvAccess {
+            Default::default()
+        }
+    }
+
+    impl Project {
+        fn read_state<T>(&self, read: impl FnOnce(ProjectData) -> T) -> T {
+            read(self.load().expect("complete Project storage"))
+        }
+        fn change<T>(&mut self, change: impl FnOnce(&mut ProjectData) -> Result<T>) -> Result<T> {
+            let mut data = self.load()?;
+            let result = change(&mut data)?;
+            self.save(&data)?;
+            Ok(result)
+        }
+        #[ink(constructor)]
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "Explicit compact constructor ABI shared with the Dao factory."
+        )]
+        pub fn new(
+            dao: AccountId,
+            project_id: Id,
+            client: AccountId,
+            coordinator: AccountId,
+            content: MetadataCommitmentV1,
+            now: u64,
+        ) -> Result<Self> {
+            let data = ProjectData::new(dao, project_id, client, coordinator, content, now)?;
+            let mut stored = Self::empty(dao, project_id);
+            stored.save(&data)?;
+            Ok(stored)
+        }
+        // Queries.
+
+        /// Read the complete project, including its current terms and progress.
+        #[ink(message)]
+        pub fn view(&self) -> ProjectCore {
+            self.read_state(|data| data.view())
+        }
+
+        /// Read recorded reasons for project actions; written content stays off-chain.
+        #[ink(message)]
+        pub fn reasons(&self) -> Vec<ReasonRecord> {
+            self.read_state(|data| data.reasons())
+        }
+
+        /// Read a dispute record and the milestone it concerns.
+        #[ink(message)]
+        pub fn dispute(&self, id: Id) -> Result<(DisputeRecord, MilestoneCore)> {
+            self.read_state(|data| data.dispute(id))
+        }
+
+        // Planning.
+
+        /// Client: accept the current planning revision and release any planning escrow.
+        #[ink(message)]
+        pub fn accept_planning_delivery(&mut self, expected_revision: u64) -> Result<Effect> {
+            self.change(|data| data.accept_planning_delivery(expected_revision))
+        }
+
+        /// Client or coordinator: record a reason and freeze planning; no payout is made.
+        #[ink(message)]
+        pub fn dispute_planning(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
+            self.change(|data| data.dispute_planning(content))
+        }
+
+        // Proposals.
+
+        /// Coordinator: create draft terms with captured compensation shares; no funds move.
+        #[ink(message)]
+        pub fn create_proposal(
+            &mut self,
+            terms: ProposalTerms,
+            content: MetadataCommitmentV1,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            self.change(|data| data.create_proposal(terms, content, seed))
+        }
+
+        /// Coordinator: replace draft terms and their content commitment; no funds move.
+        #[ink(message)]
+        pub fn update_proposal(
+            &mut self,
+            proposal_id: Id,
+            terms: ProposalTerms,
+            content: MetadataCommitmentV1,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            self.change(|data| data.update_proposal(proposal_id, terms, content, seed))
+        }
+
+        /// Coordinator: delete a draft and release its catalog references.
+        #[ink(message)]
+        pub fn delete_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
+            self.change(|data| data.delete_proposal(proposal_id))
+        }
+
+        /// Coordinator: set delivery expectations for the expected draft revision.
+        #[ink(message)]
+        pub fn set_proposal_delivery(
+            &mut self,
+            proposal_id: Id,
+            expected_revision: u64,
+            delivery: DeliveryPreference,
+        ) -> Result<Effect> {
+            self.change(|data| data.set_proposal_delivery(proposal_id, expected_revision, delivery))
+        }
+
+        /// Coordinator: submit a validated draft for client approval; no funds move.
+        #[ink(message)]
+        pub fn submit_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
+            self.change(|data| data.submit_proposal(proposal_id))
+        }
+
+        /// Client: return a pending proposal to draft with a committed reason.
+        #[ink(message)]
+        pub fn request_proposal_changes(
+            &mut self,
+            proposal_id: Id,
+            content: MetadataCommitmentV1,
+        ) -> Result<Effect> {
+            self.change(|data| data.request_proposal_changes(proposal_id, content))
+        }
+
+        /// Coordinator: withdraw the expected pending revision back to draft.
+        #[ink(message)]
+        pub fn withdraw_proposal(
+            &mut self,
+            proposal_id: Id,
+            expected_revision: u64,
+        ) -> Result<Effect> {
+            self.change(|data| data.withdraw_proposal(proposal_id, expected_revision))
+        }
+
+        // Execution and feedback.
+
+        /// Client: approve the expected proposal revision, fund escrow and reserve the team atomically.
+        #[ink(message)]
+        pub fn approve_execution(
+            &mut self,
+            proposal_id: Id,
+            expected_revision: u64,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            self.change(|data| data.approve_execution(proposal_id, expected_revision, seed))
+        }
+
+        /// Coordinator: submit a delivery and optionally rate all assigned workers. None skips ratings; Some(empty) still requires an empty team.
+        #[ink(message)]
+        pub fn submit_milestone(
+            &mut self,
+            milestone_id: Id,
+            deliverable: Option<EvidenceReference>,
+            worker_ratings: Option<Vec<WorkerRating>>,
+            seed: [u8; 32],
+        ) -> Result<Effect> {
+            self.change(|data| {
+                data.submit_milestone(milestone_id, deliverable, worker_ratings, seed)
+            })
+        }
+
+        /// Client: accept the current submission, release its payments and advance execution. Some(ratings) also applies settlement reputation.
+        #[ink(message)]
+        pub fn accept_milestone(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            ratings: Option<AcceptanceRating>,
+        ) -> Result<Effect> {
+            self.change(|data| data.accept_milestone(milestone_id, submission_id, ratings))
+        }
+
+        /// Client: request changes to the current submission using evidence or an existing comment; no funds move.
+        #[ink(message)]
+        pub fn reject_milestone(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            reason: ReviewReason,
+        ) -> Result<Effect> {
+            self.change(|data| data.reject_milestone(milestone_id, submission_id, reason))
+        }
+
+        /// Eligible participant: record final project ratings and update reputation once per author.
+        #[ink(message)]
+        pub fn evaluate_project(&mut self, ratings: Vec<AccountRating>) -> Result<Effect> {
+            self.change(|data| data.evaluate_project(ratings))
+        }
+
+        // Tasks.
+
+        /// Coordinator: allocate a task ID with registered assignees. Text and progress stay off-chain.
+        #[ink(message)]
+        pub fn create_task(
+            &mut self,
+            task_storage_id: Id,
+            assignees: Vec<AccountId>,
+        ) -> Result<Effect> {
+            self.change(|data| data.create_task(task_storage_id, assignees))
+        }
+
+        /// Coordinator: replace task assignees with registered members.
+        #[ink(message)]
+        pub fn set_task_assignees(
+            &mut self,
+            task_storage_id: Id,
+            task_id: u32,
+            assignees: Vec<AccountId>,
+        ) -> Result<Effect> {
+            self.change(|data| data.set_task_assignees(task_storage_id, task_id, assignees))
+        }
+
+        /// Coordinator: delete a task from a draft at the expected proposal revision.
+        #[ink(message)]
+        pub fn delete_task(
+            &mut self,
+            task_storage_id: Id,
+            task_id: u32,
+            expected_revision: u64,
+        ) -> Result<Effect> {
+            self.change(|data| data.delete_task(task_storage_id, task_id, expected_revision))
+        }
+
+        // Disputes and cancellation.
+
+        /// Client or coordinator: open a case for the current rejected submission and freeze it; no dispute payout or resolution is performed.
+        #[ink(message)]
+        pub fn open_dispute(
+            &mut self,
+            milestone_id: Id,
+            submission_id: Id,
+            reason: ReviewReason,
+            seed: [u8; 32],
+            event_cursor: u64,
+        ) -> Result<Effect> {
+            self.change(|data| {
+                data.open_dispute(milestone_id, submission_id, reason, seed, event_cursor)
+            })
+        }
+
+        /// Counterparty: record one evidence response to the active dispute.
+        #[ink(message)]
+        pub fn respond_to_dispute(
+            &mut self,
+            id: Id,
+            evidence: EvidenceReference,
+        ) -> Result<Effect> {
+            self.change(|data| data.respond_to_dispute(id, evidence))
+        }
+
+        /// Client or coordinator: cancel unfinished work and freeze unsettled stages; no refund is made here.
+        #[ink(message)]
+        pub fn cancel_project(&mut self, content: MetadataCommitmentV1) -> Result<Effect> {
+            self.change(|data| data.cancel_project(content))
+        }
+    }
+}
