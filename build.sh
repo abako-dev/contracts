@@ -8,5 +8,7 @@ case "$contract" in
   sandbox-probe) buffer=16384; manifest="$root/tests/fixtures/$contract/Cargo.toml" ;;
   *) echo "Unknown contract: $contract" >&2; exit 2 ;;
 esac
-# Decode a complete v1 signed payload while retaining Kreivo's 16 KiB value limit.
-env INK_STATIC_BUFFER_SIZE="$buffer" cargo +1.88.0 contract build --release --manifest-path "$manifest" "$@"
+# cargo-contract 5 cleans its target when checking ink buffer settings.
+# Isolate outputs so building one member cannot erase another member’s artifacts.
+env CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}/$contract" \
+  INK_STATIC_BUFFER_SIZE="$buffer" cargo +1.88.0 contract build --release --manifest-path "$manifest" "$@"

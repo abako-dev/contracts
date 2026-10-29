@@ -21,9 +21,10 @@ owns keys and signing. All monetary calculations use checked integer units.
 ## Build and test
 
 Use Rust **1.88.0**, its `wasm32-unknown-unknown` target and
-**cargo-contract 5.0.3**. Each contract has a committed lockfile. Shared contract
-interfaces use immutable commits from this repository to preserve reproducible
-WASM builds. Project pins Dao, including its shared calendar types.
+**cargo-contract 5.0.3**. One Cargo workspace shares pinned dependencies and a
+committed root lockfile. Project uses Dao from the same checkout, including its
+shared calendar types. Build each contract separately; the sandbox probe remains
+an explicit test-only build.
 
 ```sh
 bash build.sh dao --offline
@@ -36,10 +37,14 @@ cargo +1.88.0 test --manifest-path project/Cargo.toml --locked
 
 Omit `--offline` to fetch missing locked dependencies. The build script retains
 the existing ink buffer settings. Use an SSD directory for `TMPDIR` and Cargo
-build output when `/tmp` is memory-backed.
+build output when `/tmp` is memory-backed. Artifacts are written beneath
+`target/<contract>/ink/<contract_name>/` (with underscores in the probe artifact
+name). Each contract gets a separate build directory because cargo-contract 5
+cleans its target when checking ink buffer settings. Dependencies still share
+one lockfile.
 
 The [backend sandbox](https://github.com/abako-project/backend-v2/tree/review/ink-v5-runtime/services/contract-provider)
-pins the source commit, artifacts and build locks. Its rebuild command reproduces
+pins the source commit, artifacts and shared build lock. Its rebuild command reproduces
 WASM and ABI; signed tests cover lifecycle, money, failed commits and restart
 through ordinary constructors and commands. Host tests alone do not verify the VM.
 Verification of the current change belongs in the paired
@@ -72,8 +77,7 @@ Backups still include both provider state and API-owned content.
 
 These sources are not a deployed upgrade. Real-chain integration, SDK security
 remediation and controlled performance acceptance remain release gates. The
-standalone native provider remains the backend default until the SDK dependency
-policy passes; it is not used as a second authority inside the embedded runtime.
+embedded contract provider is the backend’s development execution engine.
 
 Dependencies stay pinned to the reviewed ink/SCALE family. Chrono uses pure
 Gregorian/ISO-week arithmetic with defaults disabled; rand uses the existing
