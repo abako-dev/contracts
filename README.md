@@ -30,9 +30,11 @@ cargo +1.86.0 install --git https://github.com/use-ink/cargo-contract --rev 6cca
 ```
 
 One Cargo workspace shares pinned dependencies and a
-committed root lockfile. Project uses Dao from the same checkout, including its
-shared calendar types. Build each contract separately; the sandbox probe remains
-an explicit test-only build.
+committed root lockfile. Project retains its reviewed, immutable Git dependency
+on Dao: cargo-contract v5 builds local path dependencies outside its temporary
+workspace, making their WASM hashes depend on the checkout path. The Git pin
+keeps builds reproducible until that upstream issue is fixed. Build each contract
+separately; the sandbox probe remains an explicit test-only build.
 
 ```sh
 bash build.sh dao --offline
