@@ -10,7 +10,7 @@ license = "Apache-2.0 AND Unicode-3.0"
 ink.workspace = true
 scale.workspace = true
 scale-info = { workspace = true, optional = true }
-dao = { git = "https://github.com/abako-dev/contracts.git", rev = "87ac5da186e20e95d02e80fd34a6c8178c00b7aa", default-features = false, features = ["ink-as-dependency"] }
+dao = { path = "../dao", default-features = false, features = ["ink-as-dependency"] }
 rand.workspace = true
 chrono.workspace = true
 

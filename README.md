@@ -21,20 +21,18 @@ owns keys and signing. All monetary calculations use checked integer units.
 ## Build and test
 
 Use Rust **1.88.0**, its `wasm32-unknown-unknown` target and
-**cargo-contract 5.0.3 at revision `6ccabdc3d10665dd186ef8b2237be6e856fc818b`**.
-This merged v5 revision preserves lockfiles when building workspace members.
+**cargo-contract 5.0.3 at revision `013305adc77d6f8b93dfc9cdb404710942dd738c`**.
+This v5 revision preserves workspace lockfiles and makes local dependency builds
+reproducible ([upstream fix](https://github.com/use-ink/cargo-contract/pull/2205)).
 Install the tool with its locked dependencies:
 
 ```sh
-cargo +1.86.0 install --git https://github.com/use-ink/cargo-contract --rev 6ccabdc3d10665dd186ef8b2237be6e856fc818b --locked
+cargo +1.86.0 install --git https://github.com/use-ink/cargo-contract --rev 013305adc77d6f8b93dfc9cdb404710942dd738c --locked
 ```
 
-One Cargo workspace shares pinned dependencies and a
-committed root lockfile. Project retains its reviewed, immutable Git dependency
-on Dao: cargo-contract v5 builds local path dependencies outside its temporary
-workspace, making their WASM hashes depend on the checkout path. The Git pin
-keeps builds reproducible until that upstream issue is fixed. Build each contract
-separately; the sandbox probe remains an explicit test-only build.
+One Cargo workspace shares pinned dependencies and a committed root lockfile.
+Project uses the Dao contract in this checkout. Build each contract separately;
+the sandbox probe remains an explicit test-only build.
 
 ```sh
 bash build.sh dao --offline
@@ -59,7 +57,7 @@ WASM and ABI; signed tests cover lifecycle, money, failed commits and restart
 through ordinary constructors and commands. Host tests alone do not verify the VM.
 Verification of the current change belongs in the paired
 [backend PR](https://github.com/abako-project/backend-v2/pull/24) and
-[contracts PR](https://github.com/abako-dev/contracts/pull/21).
+[contracts PR](https://github.com/abako-dev/contracts/pull/22).
 
 ## Storage and execution
 
