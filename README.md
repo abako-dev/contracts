@@ -21,7 +21,15 @@ owns keys and signing. All monetary calculations use checked integer units.
 ## Build and test
 
 Use Rust **1.88.0**, its `wasm32-unknown-unknown` target and
-**cargo-contract 5.0.3**. One Cargo workspace shares pinned dependencies and a
+**cargo-contract 5.0.3 at revision `6ccabdc3d10665dd186ef8b2237be6e856fc818b`**.
+This merged v5 revision preserves lockfiles when building workspace members.
+Install the tool with its locked dependencies:
+
+```sh
+cargo +1.86.0 install --git https://github.com/use-ink/cargo-contract --rev 6ccabdc3d10665dd186ef8b2237be6e856fc818b --locked
+```
+
+One Cargo workspace shares pinned dependencies and a
 committed root lockfile. Project uses Dao from the same checkout, including its
 shared calendar types. Build each contract separately; the sandbox probe remains
 an explicit test-only build.
