@@ -35,7 +35,7 @@ bash build.sh project
 cargo +1.88.0 test --workspace --locked
 ```
 
-Artifacts go under `target/<contract>/ink/<contract>/`. Each contract has a separate
+Artifacts go under `target/<contract>/ink/`. Each contract has a separate
 build directory so buffer checks cannot clean another contract's output.
 Add `--offline` to use cached dependencies. Build the private test probe with
 `bash build.sh sandbox-probe`. Use disk-backed `TMPDIR` and `CARGO_TARGET_DIR`
