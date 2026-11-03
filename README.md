@@ -20,31 +20,30 @@ owns keys and signing. All monetary calculations use checked integer units.
 
 ## Build and test
 
-Use Rust **1.88.0**, its `wasm32-unknown-unknown` target and
-**cargo-contract 5.0.3**. Each contract has a committed lockfile. Shared contract
-interfaces use immutable commits from this repository to preserve reproducible
-WASM builds. Project pins Dao, including its shared calendar types.
+Use Rust **1.88.0** with the `wasm32-unknown-unknown` target and
+install cargo-contract from its v5 branch:
 
 ```sh
-bash build.sh dao --offline
-bash build.sh project --offline
-bash build.sh sandbox-probe --offline
-
-cargo +1.88.0 test --manifest-path dao/Cargo.toml --locked
-cargo +1.88.0 test --manifest-path project/Cargo.toml --locked
+cargo +1.86.0 install --git https://github.com/use-ink/cargo-contract --branch v5.x.x --locked
 ```
 
-Omit `--offline` to fetch missing locked dependencies. The build script retains
-the existing ink buffer settings. Use an SSD directory for `TMPDIR` and Cargo
-build output when `/tmp` is memory-backed.
+Dao and Project share one workspace and lockfile; Project uses the local Dao source.
+
+```sh
+bash build.sh dao
+bash build.sh project
+cargo +1.88.0 test --workspace --locked
+```
+
+Artifacts go under `target/<contract>/ink/`. Each contract has a separate
+build directory so buffer checks cannot clean another contract's output.
+Add `--offline` to use cached dependencies. Build the private test probe with
+`bash build.sh sandbox-probe`. Use disk-backed `TMPDIR` and `CARGO_TARGET_DIR`
+directories when `/tmp` uses RAM.
 
 The [backend sandbox](https://github.com/abako-project/backend-v2/tree/review/ink-v5-runtime/services/contract-provider)
-pins the source commit, artifacts and build locks. Its rebuild command reproduces
-WASM and ABI; signed tests cover lifecycle, money, failed commits and restart
-through ordinary constructors and commands. Host tests alone do not verify the VM.
-Verification of the current change belongs in the paired
-[backend PR](https://github.com/abako-project/backend-v2/pull/24) and
-[contracts PR](https://github.com/abako-dev/contracts/pull/21).
+records the source and tool revisions used for its artifacts. Its rebuild command
+checks WASM and ABI; signed integration tests cover execution and persistence.
 
 ## Storage and execution
 
@@ -72,8 +71,7 @@ Backups still include both provider state and API-owned content.
 
 These sources are not a deployed upgrade. Real-chain integration, SDK security
 remediation and controlled performance acceptance remain release gates. The
-standalone native provider remains the backend default until the SDK dependency
-policy passes; it is not used as a second authority inside the embedded runtime.
+embedded contract provider is the backend’s development execution engine.
 
 Dependencies stay pinned to the reviewed ink/SCALE family. Chrono uses pure
 Gregorian/ISO-week arithmetic with defaults disabled; rand uses the existing
