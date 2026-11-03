@@ -21,13 +21,13 @@ owns keys and signing. All monetary calculations use checked integer units.
 ## Build and test
 
 Use Rust **1.88.0**, its `wasm32-unknown-unknown` target and
-**cargo-contract 5.0.3 at revision `013305adc77d6f8b93dfc9cdb404710942dd738c`**.
-This v5 revision preserves workspace lockfiles and makes local dependency builds
+**cargo-contract 5.0.3 at revision `7cc1c1a121d137f08384eed0dd9108e6f619c832`**.
+This merged v5 revision preserves workspace lockfiles and makes local dependency builds
 reproducible ([upstream fix](https://github.com/use-ink/cargo-contract/pull/2205)).
 Install the tool with its locked dependencies:
 
 ```sh
-cargo +1.86.0 install --git https://github.com/use-ink/cargo-contract --rev 013305adc77d6f8b93dfc9cdb404710942dd738c --locked
+cargo +1.86.0 install --git https://github.com/use-ink/cargo-contract --rev 7cc1c1a121d137f08384eed0dd9108e6f619c832 --locked
 ```
 
 One Cargo workspace shares pinned dependencies and a committed root lockfile.
