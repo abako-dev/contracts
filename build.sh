@@ -5,8 +5,8 @@ contract=${1:?Usage: bash build.sh dao|project|sandbox-probe [cargo-contract opt
 shift
 version=$(cargo +1.88.0 contract --version)
 case "$version" in
-  *" 5.0.3-7cc1c1a-"*) ;;
-  *) echo "Use cargo-contract revision 7cc1c1a121d137f08384eed0dd9108e6f619c832 (see README)." >&2; exit 1 ;;
+  *" 5."*) ;;
+  *) echo "Install cargo-contract from its v5.x.x branch (see README)." >&2; exit 1 ;;
 esac
 case "$contract" in
   dao|project) buffer=294912; manifest="$root/$contract/Cargo.toml" ;;

@@ -20,44 +20,30 @@ owns keys and signing. All monetary calculations use checked integer units.
 
 ## Build and test
 
-Use Rust **1.88.0**, its `wasm32-unknown-unknown` target and
-**cargo-contract 5.0.3 at revision `7cc1c1a121d137f08384eed0dd9108e6f619c832`**.
-This merged v5 revision preserves workspace lockfiles and makes local dependency builds
-reproducible ([upstream fix](https://github.com/use-ink/cargo-contract/pull/2205)).
-Install the tool with its locked dependencies:
+Use Rust **1.88.0** with the `wasm32-unknown-unknown` target and
+install cargo-contract from its v5 branch:
 
 ```sh
-cargo +1.86.0 install --git https://github.com/use-ink/cargo-contract --rev 7cc1c1a121d137f08384eed0dd9108e6f619c832 --locked
+cargo +1.86.0 install --git https://github.com/use-ink/cargo-contract --branch v5.x.x --locked
 ```
 
-One Cargo workspace shares pinned dependencies and a committed root lockfile.
-Project uses the Dao contract in this checkout. Build each contract separately;
-the sandbox probe remains an explicit test-only build.
+Dao and Project share one workspace and lockfile; Project uses the local Dao source.
 
 ```sh
-bash build.sh dao --offline
-bash build.sh project --offline
-bash build.sh sandbox-probe --offline
-
-cargo +1.88.0 test --manifest-path dao/Cargo.toml --locked
-cargo +1.88.0 test --manifest-path project/Cargo.toml --locked
+bash build.sh dao
+bash build.sh project
+cargo +1.88.0 test --workspace --locked
 ```
 
-Omit `--offline` to fetch missing locked dependencies. The build script retains
-the existing ink buffer settings. Use an SSD directory for `TMPDIR` and Cargo
-build output when `/tmp` is memory-backed. Artifacts are written beneath
-`target/<contract>/ink/<contract_name>/` (with underscores in the probe artifact
-name). Each contract gets a separate build directory because cargo-contract 5
-cleans its target when checking ink buffer settings. Dependencies still share
-one lockfile.
+Artifacts go under `target/<contract>/ink/<contract>/`. Each contract has a separate
+build directory so buffer checks cannot clean another contract's output.
+Add `--offline` to use cached dependencies. Build the private test probe with
+`bash build.sh sandbox-probe`. Use disk-backed `TMPDIR` and `CARGO_TARGET_DIR`
+directories when `/tmp` uses RAM.
 
 The [backend sandbox](https://github.com/abako-project/backend-v2/tree/review/ink-v5-runtime/services/contract-provider)
-pins the source commit, artifacts and shared build lock. Its rebuild command reproduces
-WASM and ABI; signed tests cover lifecycle, money, failed commits and restart
-through ordinary constructors and commands. Host tests alone do not verify the VM.
-Verification of the current change belongs in the paired
-[backend PR](https://github.com/abako-project/backend-v2/pull/24) and
-[contracts PR](https://github.com/abako-dev/contracts/pull/22).
+records the source and tool revisions used for its artifacts. Its rebuild command
+checks WASM and ABI; signed integration tests cover execution and persistence.
 
 ## Storage and execution
 
