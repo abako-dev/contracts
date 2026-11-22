@@ -158,6 +158,18 @@ pub mod dao {
         pub worker_score: ReputationView,
         pub coordinator_score: ReputationView,
     }
+    /// One rating applied at a milestone's settlement. `stars` alone count as
+    /// they are; with `blend_with`, the client's score, the score policy
+    /// blends the two.
+    #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
+    pub struct SettlementVote {
+        pub account: AccountId,
+        pub mode: WorkerMode,
+        pub stars: u8,
+        pub blend_with: Option<u8>,
+        pub minutes: u32,
+    }
     #[derive(Debug, Clone, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     pub(crate) struct Worker {
@@ -502,6 +514,67 @@ pub mod dao {
             seed: [u8; 32],
         ) -> Result<Vec<Vec<(u32, AccountId)>>> {
             crate::matching::assign_team(self, project_id, client, coordinator, milestones, seed)
+        }
+
+        /// Project hook for a milestone's settlement, in one call: apply the
+        /// votes, then record the credits, each in order. The Project performs
+        /// the asset transfers.
+        #[ink(message)]
+        pub fn settle(
+            &mut self,
+            votes: Vec<SettlementVote>,
+            credits: Vec<(AccountId, u64)>,
+        ) -> Result<()> {
+            crate::members::settle(self, votes, credits)
+        }
+
+        /// Project hook for an approval, in one call: debit the client's
+        /// balance for the escrow, then select and reserve the team. The
+        /// Project performs the asset deposit.
+        #[ink(message)]
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "One call carries what two hooks took."
+        )]
+        pub fn approve_team(
+            &mut self,
+            project_id: Id,
+            client: AccountId,
+            escrow: u64,
+            coordinator: AccountId,
+            milestones: Vec<Milestone>,
+            seed: [u8; 32],
+        ) -> Result<Vec<Vec<(u32, AccountId)>>> {
+            crate::bank::record_balance_debit(self, client, escrow)?;
+            crate::matching::assign_team(self, project_id, client, coordinator, milestones, seed)
+        }
+
+        /// Project hook for a new task, in one call: check that the assignees
+        /// are registered, then allocate the next global task ID.
+        #[ink(message)]
+        pub fn allocate_task(&mut self, assignees: Vec<AccountId>) -> Result<u32> {
+            crate::members::validate_task_assignees(self, assignees)?;
+            crate::projects::allocate_task_id(self)
+        }
+
+        /// Project hook for a proposal's terms, in one call: check every
+        /// requirement's role and skills, in order, and return the
+        /// compensation share.
+        #[ink(message)]
+        pub fn proposal_terms(&self, requirements: Vec<Qualifications>) -> Result<u8> {
+            crate::catalog::proposal_terms(self, requirements)
+        }
+
+        /// Registered-Project hook for a changed proposal, in one call: record
+        /// the Project's identities, then the proposal's references.
+        #[ink(message)]
+        pub fn set_project_proposal(
+            &mut self,
+            layout: ProjectIdentities,
+            proposal_id: Id,
+            qualifications: Option<Qualifications>,
+        ) -> Result<()> {
+            crate::projects::set_project_proposal(self, layout, proposal_id, qualifications)
         }
 
         /// Allocate the next global task ID for an authorized Project controller.

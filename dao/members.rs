@@ -2,6 +2,7 @@
 use crate::dao::*;
 use crate::{
     indices,
+    projects::IdKind,
     reputation::{self, Contribution, VoteKind},
 };
 use ink::codegen::Env as _;
@@ -38,8 +39,10 @@ pub struct WorkerRecord {
 #[derive(Default, Debug)]
 pub(crate) struct Members {
     pub(crate) workers: Mapping<AccountId, WorkerRecord, ManualKey<4>>,
-    pub(crate) calendar_ids: Mapping<Id, bool, ManualKey<5>>,
     pub(crate) accounts: StorageVec<AccountId, ManualKey<52>>,
+    /// The members in Coordinator mode, in account order: choosing a
+    /// coordinator reads these, not every member.
+    pub(crate) coordinators: StorageVec<AccountId, ManualKey<57>>,
     pub(crate) skill_counts: Mapping<u32, u32, ManualKey<14>>,
     pub(crate) skill_members: Mapping<(u32, u32), AccountId, ManualKey<15>>,
     pub(crate) skill_positions: Mapping<(u32, AccountId), u32, ManualKey<16>>,
@@ -193,6 +196,36 @@ pub(crate) fn apply_settlement_reputation(
     Ok(())
 }
 
+/// A milestone's settlement in one call: each call to the Dao is charged its
+/// whole code, and a team of five took eleven of them.
+pub(crate) fn settle(
+    dao: &mut Dao,
+    votes: Vec<SettlementVote>,
+    credits: Vec<(AccountId, u64)>,
+) -> Result<()> {
+    dao.registered_project()?;
+    let policy = dao.config.score_policy;
+    for vote in votes {
+        let hundredths = match vote.blend_with {
+            Some(client) => policy.blend(vote.stars, client)?,
+            None => u16::from(vote.stars)
+                .checked_mul(100)
+                .ok_or_else(|| String::from("arithmetic_or_calendar_error"))?,
+        };
+        let mut worker = dao.worker_record(vote.account)?;
+        let target = match vote.mode {
+            WorkerMode::Coordinator => &mut worker.coordinator_score,
+            WorkerMode::Worker => &mut worker.worker_score,
+        };
+        *target = reputation::add_hundredths(target, hundredths, vote.minutes, 1)?;
+        dao.members.workers.insert(vote.account, &worker);
+    }
+    for (account, amount) in credits {
+        dao.bank.credit(account, amount)?;
+    }
+    Ok(())
+}
+
 /// Project authorization/required targets are checked by the Project
 /// controller (M6). This narrow hook applies only verified contributions.
 pub(crate) fn apply_reputation(
@@ -266,7 +299,7 @@ pub(crate) fn register_worker(
     require(!dao.members.workers.contains(origin), "worker_exists")?;
     dao.qualifications(&request.qualifications)?;
     require(
-        !dao.members.calendar_ids.contains(calendar_id),
+        dao.projects.public_ids.get(calendar_id) != Some(IdKind::Calendar),
         "invalid_worker_state",
     )?;
     dao.calendars.register(origin, request.calendar)?;
@@ -285,8 +318,7 @@ pub(crate) fn register_worker(
     );
     dao.index_add(origin, &skills)?;
     insert_sorted(&mut dao.members.accounts, origin);
-    dao.members.calendar_ids.insert(calendar_id, &true);
-    dao.validate_public_ids()?;
+    dao.claim(calendar_id, IdKind::Calendar)?;
     Ok(Effect::new(0, Some(calendar_id), origin))
 }
 
@@ -326,6 +358,10 @@ pub(crate) fn set_worker_mode(dao: &mut Dao, mode: WorkerMode) -> Result<Effect>
     )?;
     worker.mode = mode;
     dao.members.workers.insert(origin, &worker);
+    match mode {
+        WorkerMode::Coordinator => insert_sorted(&mut dao.members.coordinators, origin),
+        WorkerMode::Worker => indices::remove(&mut dao.members.coordinators, &origin),
+    }
     Ok(Effect::new(1, None, origin))
 }
 

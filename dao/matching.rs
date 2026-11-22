@@ -10,10 +10,12 @@
 //! This is the source entry point for DAO-specific assignment changes. Reputation
 //! weights are configured separately through Dao's authorized score policy;
 //! changing this algorithm still requires a reviewed contract-code change.
-use crate::calendar::{ReservationView, Week, WeekWindow};
+use crate::calendar::{ReservationView, Session, Week, WeekWindow};
+use crate::members::WorkerRecord;
 use crate::{
     dao::{require, Dao, Id, Result, WorkerMode},
-    indices, reputation,
+    indices::{self, Seen},
+    reputation,
 };
 use core::cmp::Ordering;
 use ink::{
@@ -45,26 +47,93 @@ pub struct Milestone {
     pub requirements: Vec<Requirement>,
 }
 
+/// What one selection has read of the directory, so that it reads each cell
+/// once. A storage read costs the same proof whatever its size, and a team is
+/// chosen from the same workers for every requirement.
+#[derive(Default)]
+struct Directory {
+    workers: Seen<AccountId, WorkerRecord>,
+    counts: Seen<u32, u32>,
+    holders: Seen<u32, Vec<AccountId>>,
+    holds: Seen<(u32, AccountId), bool>,
+}
+
 impl Dao {
+    fn worker_in(&self, directory: &mut Directory, account: AccountId) -> Result<WorkerRecord> {
+        if let Some(worker) = directory.workers.get(&account) {
+            return Ok(worker.clone());
+        }
+        let worker = self.worker_record(account)?;
+        directory.workers.insert(account, worker.clone());
+        Ok(worker)
+    }
+
+    fn holder_count_in(&self, directory: &mut Directory, skill: u32) -> u32 {
+        directory
+            .counts
+            .get_or(skill, || self.members.skill_counts.get(skill).unwrap_or(0))
+    }
+
+    /// The accounts indexed under `skill`, in index order.
+    fn holders_in(&self, directory: &mut Directory, skill: u32) -> Result<Vec<AccountId>> {
+        if let Some(holders) = directory.holders.get(&skill) {
+            return Ok(holders.clone());
+        }
+        let mut holders = Vec::new();
+        for position in 0..self.holder_count_in(directory, skill) {
+            let account = self
+                .members
+                .skill_members
+                .get((skill, position))
+                .ok_or_else(|| String::from("invalid_worker_state"))?;
+            directory.holds.insert((skill, account), true);
+            holders.push(account);
+        }
+        directory.holders.insert(skill, holders.clone());
+        Ok(holders)
+    }
+
+    fn holds_in(&self, directory: &mut Directory, skill: u32, account: AccountId) -> bool {
+        if let Some(holds) = directory.holds.get(&(skill, account)) {
+            return *holds;
+        }
+        if directory.holders.get(&skill).is_some() {
+            return false;
+        }
+        let holds = self.members.skill_positions.contains((skill, account));
+        directory.holds.insert((skill, account), holds);
+        holds
+    }
+
     pub(crate) fn coordinator_selection(
         &self,
         client: AccountId,
         week: Week,
         seed: [u8; 32],
     ) -> Result<(AccountId, Id)> {
+        let mut directory = Directory::default();
+        let mut calendars = Session::default();
         let mut candidates = Vec::new();
-        for account in &indices::values(&self.members.accounts) {
-            let worker = self.worker_record(*account)?;
+        for account in &indices::values(&self.members.coordinators) {
+            let worker = self.worker_in(&mut directory, *account)?;
             if worker.mode == WorkerMode::Coordinator
                 && worker.coordinator_eligible
                 && *account != client
-                && self.calendars.available(*account, week)? != 0
+                && self
+                    .calendars
+                    .available_in(&mut calendars, *account, week)?
+                    != 0
             {
                 candidates.push(*account);
             }
         }
         let mut rng = StdRng::from_seed(seed);
-        let chosen = self.choose(&candidates, WorkerMode::Coordinator, &mut rng)?;
+        let chosen = self.choose(
+            &mut directory,
+            &candidates,
+            WorkerMode::Coordinator,
+            &mut rng,
+        )?;
         let mut id = [0; 16];
         rng.fill_bytes(&mut id);
         Ok((chosen, id))
@@ -72,6 +141,7 @@ impl Dao {
 
     fn choose(
         &self,
+        directory: &mut Directory,
         candidates: &[AccountId],
         mode: WorkerMode,
         rng: &mut StdRng,
@@ -79,7 +149,7 @@ impl Dao {
         let mut winners = Vec::new();
         let mut best = None;
         for account in candidates {
-            let worker = self.worker_record(*account)?;
+            let worker = self.worker_in(directory, *account)?;
             let score = if mode == WorkerMode::Worker {
                 worker.worker_score
             } else {
@@ -119,6 +189,8 @@ pub(crate) fn assign_team(
     seed: [u8; 32],
 ) -> Result<Vec<Vec<(u32, AccountId)>>> {
     dao.project_controller()?;
+    let mut directory = Directory::default();
+    let mut calendars = Session::default();
     let mut rng = StdRng::from_seed(seed);
     let mut earlier = BTreeSet::new();
     let mut result = Vec::new();
@@ -130,7 +202,8 @@ pub(crate) fn assign_team(
             week: milestone.window.start(),
             minutes: 0,
         };
-        dao.calendars.reserve(
+        dao.calendars.reserve_in(
+            &mut calendars,
             coordinator,
             milestone.window,
             milestone.coordinator_minutes,
@@ -145,30 +218,37 @@ pub(crate) fn assign_team(
             ..
         } in milestone.requirements
         {
-            let first = skill_ids
-                .first()
-                .ok_or_else(|| String::from("missing_skills"))?;
+            require(!skill_ids.is_empty(), "missing_skills")?;
+            // Holders of every requested skill, in account order. Whichever
+            // index is read whole, the set is the same: read the shortest.
+            let mut rarest = (skill_ids[0], u32::MAX);
+            for skill in &skill_ids {
+                let holders = dao.holder_count_in(&mut directory, *skill);
+                if holders < rarest.1 {
+                    rarest = (*skill, holders);
+                }
+            }
             let mut candidates = BTreeSet::new();
-            for position in 0..dao.members.skill_counts.get(first).unwrap_or(0) {
-                let account = dao
-                    .members
-                    .skill_members
-                    .get((first, position))
-                    .ok_or_else(|| String::from("invalid_worker_state"))?;
+            for account in dao.holders_in(&mut directory, rarest.0)? {
                 if skill_ids
                     .iter()
-                    .all(|skill| dao.members.skill_positions.contains((skill, account)))
+                    .all(|skill| dao.holds_in(&mut directory, *skill, account))
                 {
                     candidates.insert(account);
                 }
             }
             let mut available = Vec::new();
             for account in candidates {
-                let worker = dao.worker_record(account)?;
+                let worker = dao.worker_in(&mut directory, account)?;
                 if used.contains(&account) || worker.mode != WorkerMode::Worker {
                     continue;
                 }
-                match dao.calendars.allocation(account, milestone.window, minutes) {
+                match dao.calendars.allocation_in(
+                    &mut calendars,
+                    account,
+                    milestone.window,
+                    minutes,
+                ) {
                     Ok(_) => available.push(account),
                     Err(code) if code == "insufficient_capacity" => {}
                     Err(code) => return Err(code),
@@ -180,6 +260,7 @@ pub(crate) fn assign_team(
                 .filter(|account| earlier.contains(account))
                 .collect();
             let chosen = dao.choose(
+                &mut directory,
                 if previous.is_empty() {
                     &available
                 } else {
@@ -188,7 +269,8 @@ pub(crate) fn assign_team(
                 WorkerMode::Worker,
                 &mut rng,
             )?;
-            dao.calendars.reserve(
+            dao.calendars.reserve_in(
+                &mut calendars,
                 chosen,
                 milestone.window,
                 minutes,
@@ -203,6 +285,7 @@ pub(crate) fn assign_team(
         earlier.extend(assignments.iter().map(|(_, account)| *account));
         result.push(assignments);
     }
+    dao.calendars.flush(calendars);
     Ok(result)
 }
 

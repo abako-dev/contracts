@@ -60,6 +60,24 @@ Dao coordinates atomic nested changes across contracts. Its calendar module rese
 integer minutes; approved rules do not release consumed reservations. Milestone
 settlement uses the stored allocation, independently of task progress.
 
+### What a message costs on Kreivo
+
+Kreivo limits the proof a transaction may need, and that limit, not execution
+time, is what a message meets first: 2,446,677 bytes in an ordinary block.
+pallet-contracts charges it by the operation, not by the data:
+
+- Each storage read, write or existence check costs about 10,300 bytes plus the
+  value's length. Reading a 4-byte cell costs what reading a 1,000-byte one does.
+- Each call from one contract to another costs the called contract's whole
+  code: about 130,000 bytes for a call to Dao.
+
+So a message reads a cell once and keeps it for its duration, compares what it
+loaded with what it saves instead of reading again, and makes one call to Dao
+where it has several things to ask. Dao's hooks for Project are grouped that
+way: `proposal_terms`, `set_project_proposal`, `allocate_task`, `approve_team`
+and `settle`. Public IDs are unique through one entry per ID, not by walking
+every record. Code size counts too, since every call pays for it.
+
 Contracts start through their ordinary constructors, with a small numeric catalog
 seed. There is no archive importer, custom storage layer or import/sealing phase.
 

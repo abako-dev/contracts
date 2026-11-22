@@ -45,6 +45,58 @@ pub(crate) struct Projects {
     pub(crate) project_milestones: Mapping<MilestonePosition, MilestoneIdentity, ManualKey<27>>,
     pub(crate) project_submission_values: Mapping<(Id, u32), Id, ManualKey<28>>,
     pub(crate) reason_count: u64,
+    /// Every public ID in use, with the kind of entity that has it.
+    pub(crate) public_ids: Mapping<Id, IdKind, ManualKey<29>>,
+}
+
+/// The kinds of entity that share the space of public IDs, in the order the
+/// earlier whole-state validation met them. A collision is reported with the
+/// error of the later kind of the two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, scale::Encode, scale::Decode)]
+#[cfg_attr(
+    feature = "std",
+    derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Eight fixed SCALE variants."
+)]
+pub enum IdKind {
+    Calendar,
+    Project,
+    Proposal,
+    /// A milestone or its task storage.
+    Milestone,
+    Deposit,
+    Withdrawal,
+    Submission,
+    Dispute,
+}
+impl IdKind {
+    fn collision(self) -> &'static str {
+        match self {
+            Self::Calendar => "invalid_worker_state",
+            Self::Project => "invalid_project_state",
+            Self::Proposal => "duplicate_entity",
+            Self::Milestone => "invalid_storage_state",
+            Self::Deposit => "invalid_deposit_state",
+            Self::Withdrawal => "invalid_withdrawal_state",
+            Self::Submission => "invalid_submission_state",
+            Self::Dispute => "invalid_dispute_id",
+        }
+    }
+}
+
+fn layout_ids(layout: &ProjectIdentities) -> Vec<(Id, IdKind)> {
+    let mut ids = Vec::new();
+    for (proposal, milestones) in layout {
+        ids.push((*proposal, IdKind::Proposal));
+        for (milestone, storage) in milestones {
+            ids.push((*milestone, IdKind::Milestone));
+            ids.push((*storage, IdKind::Milestone));
+        }
+    }
+    ids
 }
 
 impl Projects {
@@ -95,37 +147,37 @@ impl Dao {
         )
     }
 
-    /// Keep the same global traversal as the reference validation boundary.
-    /// Error identity depends on the later entity, not on which command generated it.
-    pub(crate) fn validate_public_ids(&self) -> Result<()> {
-        let mut identities = BTreeSet::new();
-        for account in &indices::values(&self.members.accounts) {
-            let worker = self.worker_record(*account)?;
-            require(
-                identities.insert(worker.calendar_id),
-                "invalid_worker_state",
-            )?;
-        }
-        for id in &indices::values(&self.projects.project_ids) {
-            require(identities.insert(*id), "invalid_project_state")?;
-            for (proposal, milestones) in self.project_layout(*id) {
-                require(identities.insert(proposal), "duplicate_entity")?;
-                for (milestone, storage) in milestones {
-                    require(
-                        identities.insert(milestone) && identities.insert(storage),
-                        "invalid_storage_state",
-                    )?;
-                }
+    /// Take `id` for an entity of `kind`, or fail if any entity has it.
+    ///
+    /// Public IDs are unique across kinds. One entry per ID answers that with
+    /// one read, where walking every worker, project, deposit and dispute cost
+    /// more proof with every one of them.
+    pub(crate) fn claim(&mut self, id: Id, kind: IdKind) -> Result<()> {
+        match self.projects.public_ids.get(id) {
+            Some(taken) => Err(String::from(taken.max(kind).collision())),
+            None => {
+                self.projects.public_ids.insert(id, &kind);
+                Ok(())
             }
         }
-        self.bank.validate_ids(&mut identities)?;
-        for id in &indices::values(&self.projects.project_ids) {
-            for submission in self.project_submission_ids(*id) {
-                require(identities.insert(submission), "invalid_submission_state")?;
+    }
+
+    /// Replace the IDs an owner held, `old`, with `new`: free the ones it no
+    /// longer uses and take the ones it adds.
+    pub(crate) fn exchange(&mut self, old: &[(Id, IdKind)], new: &[(Id, IdKind)]) -> Result<()> {
+        let mut seen = BTreeSet::new();
+        for (id, kind) in new {
+            require(seen.insert(*id), kind.collision())?;
+        }
+        for entry in old {
+            if !new.contains(entry) {
+                self.projects.public_ids.remove(entry.0);
             }
         }
-        for id in &indices::values(&self.projects.dispute_ids) {
-            require(identities.insert(*id), "invalid_dispute_id")?;
+        for entry in new {
+            if !old.contains(entry) {
+                self.claim(entry.0, entry.1)?;
+            }
         }
         Ok(())
     }
@@ -210,35 +262,52 @@ impl Dao {
             .collect()
     }
 
-    pub(crate) fn write_project_layout(&mut self, id: Id, layout: &ProjectIdentities) {
-        for i in 0..self.projects.project_layouts.get(id).unwrap_or(0) {
-            let proposal = self
-                .projects
-                .project_proposals
-                .get((id, i))
-                .expect("missing project proposal");
-            for j in 0..proposal.milestones {
-                self.projects.project_milestones.remove((id, i, j));
-            }
-            self.projects.project_proposals.remove((id, i));
-        }
+    /// Store `layout` for project `id`, which holds `old`: write the entries
+    /// that differ and remove the ones past its end.
+    pub(crate) fn write_project_layout(
+        &mut self,
+        id: Id,
+        old: &ProjectIdentities,
+        layout: &ProjectIdentities,
+    ) {
         for (i, (proposal, milestones)) in layout.iter().enumerate() {
-            self.projects.project_proposals.insert(
-                (id, count(i)),
-                &ProjectProposalRecord {
-                    id: *proposal,
-                    milestones: count(milestones.len()),
-                },
-            );
+            let previous = old.get(i);
+            let kept = previous.map_or(0, |(_, milestones)| milestones.len());
+            if previous.map(|(id, _)| id) != Some(proposal) || kept != milestones.len() {
+                self.projects.project_proposals.insert(
+                    (id, count(i)),
+                    &ProjectProposalRecord {
+                        id: *proposal,
+                        milestones: count(milestones.len()),
+                    },
+                );
+            }
             for (j, milestone) in milestones.iter().enumerate() {
+                if previous.and_then(|(_, milestones)| milestones.get(j)) != Some(milestone) {
+                    self.projects
+                        .project_milestones
+                        .insert((id, count(i), count(j)), milestone);
+                }
+            }
+            for j in milestones.len()..kept {
                 self.projects
                     .project_milestones
-                    .insert((id, count(i), count(j)), milestone);
+                    .remove((id, count(i), count(j)));
             }
         }
-        self.projects
-            .project_layouts
-            .insert(id, &count(layout.len()));
+        for (i, (_, milestones)) in old.iter().enumerate().skip(layout.len()) {
+            for j in 0..milestones.len() {
+                self.projects
+                    .project_milestones
+                    .remove((id, count(i), count(j)));
+            }
+            self.projects.project_proposals.remove((id, count(i)));
+        }
+        if old.len() != layout.len() {
+            self.projects
+                .project_layouts
+                .insert(id, &count(layout.len()));
+        }
     }
 
     pub(crate) fn project_submission_ids(&self, id: Id) -> Vec<Id> {
@@ -252,18 +321,65 @@ impl Dao {
             .collect()
     }
 
-    pub(crate) fn write_project_submissions(&mut self, id: Id, submissions: &[Id]) {
-        for i in 0..self.projects.project_submissions.get(id).unwrap_or(0) {
-            self.projects.project_submission_values.remove((id, i));
-        }
+    /// Store `submissions` for project `id`, which holds `old`.
+    pub(crate) fn write_project_submissions(&mut self, id: Id, old: &[Id], submissions: &[Id]) {
         for (i, submission) in submissions.iter().enumerate() {
+            if old.get(i) != Some(submission) {
+                self.projects
+                    .project_submission_values
+                    .insert((id, count(i)), submission);
+            }
+        }
+        for i in submissions.len()..old.len() {
             self.projects
                 .project_submission_values
-                .insert((id, count(i)), submission);
+                .remove((id, count(i)));
         }
-        self.projects
-            .project_submissions
-            .insert(id, &count(submissions.len()));
+        if old.len() != submissions.len() {
+            self.projects
+                .project_submissions
+                .insert(id, &count(submissions.len()));
+        }
+    }
+
+    /// Record `layout` as the identities of the calling Project.
+    fn set_identities(&mut self, layout: &ProjectIdentities) -> Result<()> {
+        let id = self
+            .projects
+            .registered_projects
+            .get(self.env().caller())
+            .ok_or_else(|| String::from("registered_project_required"))?;
+        let old = self.project_layout(id);
+        if old != *layout {
+            self.exchange(&layout_ids(&old), &layout_ids(layout))?;
+            self.write_project_layout(id, &old, layout);
+        }
+        Ok(())
+    }
+
+    fn set_references(
+        &mut self,
+        proposal_id: Id,
+        qualifications: Option<Qualifications>,
+    ) -> Result<()> {
+        require(
+            (self.projects.project_code.is_none()
+                && self.env().caller() == self.config.reference_controller)
+                || self
+                    .projects
+                    .registered_projects
+                    .contains(self.env().caller()),
+            "reference_controller_required",
+        )?;
+        if let Some(qualifications) = qualifications {
+            self.qualifications(&qualifications)?;
+            self.write_proposal_qualifications(proposal_id, &qualifications);
+            insert_sorted(&mut self.projects.proposal_ids, proposal_id);
+        } else {
+            self.remove_proposal_qualifications(proposal_id);
+            indices::remove(&mut self.projects.proposal_ids, &proposal_id);
+        }
+        Ok(())
     }
 }
 
@@ -347,7 +463,7 @@ pub(crate) fn create_project(
     dao.projects.project_addresses.insert(id, &address);
     dao.projects.registered_projects.insert(address, &id);
     insert_sorted(&mut dao.projects.project_ids, id);
-    dao.validate_public_ids()?;
+    dao.claim(id, IdKind::Project)?;
     if dao.bank.enabled() {
         dao.bank.provision(address)?;
     }
@@ -360,13 +476,20 @@ pub(crate) fn create_project(
 }
 
 pub(crate) fn set_project_identities(dao: &mut Dao, layout: ProjectIdentities) -> Result<()> {
-    let id = dao
-        .projects
-        .registered_projects
-        .get(dao.env().caller())
-        .ok_or_else(|| String::from("registered_project_required"))?;
-    dao.write_project_layout(id, &layout);
-    dao.validate_public_ids()
+    dao.set_identities(&layout)
+}
+
+/// One call for what a Project does on every change to a proposal: record its
+/// identities, then the references of the proposal that changed. Each call to
+/// the Dao is charged its whole code, so the two are not made separately.
+pub(crate) fn set_project_proposal(
+    dao: &mut Dao,
+    layout: ProjectIdentities,
+    proposal_id: Id,
+    qualifications: Option<Qualifications>,
+) -> Result<()> {
+    dao.set_identities(&layout)?;
+    dao.set_references(proposal_id, qualifications)
 }
 
 pub(crate) fn set_project_submissions(dao: &mut Dao, submissions: Vec<Id>) -> Result<()> {
@@ -375,8 +498,11 @@ pub(crate) fn set_project_submissions(dao: &mut Dao, submissions: Vec<Id>) -> Re
         .registered_projects
         .get(dao.env().caller())
         .ok_or_else(|| String::from("registered_project_required"))?;
-    dao.write_project_submissions(id, &submissions);
-    dao.validate_public_ids()
+    let old = dao.project_submission_ids(id);
+    let kind = |ids: &[Id]| -> Vec<_> { ids.iter().map(|id| (*id, IdKind::Submission)).collect() };
+    dao.exchange(&kind(&old), &kind(&submissions))?;
+    dao.write_project_submissions(id, &old, &submissions);
+    Ok(())
 }
 
 pub(crate) fn register_dispute(dao: &mut Dao, id: Id) -> Result<()> {
@@ -391,7 +517,7 @@ pub(crate) fn register_dispute(dao: &mut Dao, id: Id) -> Result<()> {
     )?;
     dao.projects.dispute_owners.insert(id, &project);
     insert_sorted(&mut dao.projects.dispute_ids, id);
-    dao.validate_public_ids()
+    dao.claim(id, IdKind::Dispute)
 }
 
 pub(crate) fn dispute_project(dao: &Dao, id: Id) -> Option<Id> {
@@ -427,22 +553,5 @@ pub(crate) fn set_proposal_references(
     proposal_id: Id,
     qualifications: Option<Qualifications>,
 ) -> Result<()> {
-    require(
-        (dao.projects.project_code.is_none()
-            && dao.env().caller() == dao.config.reference_controller)
-            || dao
-                .projects
-                .registered_projects
-                .contains(dao.env().caller()),
-        "reference_controller_required",
-    )?;
-    if let Some(qualifications) = qualifications {
-        dao.qualifications(&qualifications)?;
-        dao.write_proposal_qualifications(proposal_id, &qualifications);
-        insert_sorted(&mut dao.projects.proposal_ids, proposal_id);
-    } else {
-        dao.remove_proposal_qualifications(proposal_id);
-        indices::remove(&mut dao.projects.proposal_ids, &proposal_id);
-    }
-    Ok(())
+    dao.set_references(proposal_id, qualifications)
 }
