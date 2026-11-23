@@ -2,8 +2,22 @@
 use core::convert::Infallible;
 use ink::prelude::vec::Vec;
 
-/// The values read under each key. A sorted vector, because every map type a
-/// contract uses adds to its code, and the code is charged to every call.
+/// The values read under each key: a cache for the life of one message.
+///
+/// A storage read costs about 10 kB of proof whatever its size, so asking for
+/// the same cell again from memory is where most of a team selection's cost
+/// went away.
+///
+/// It is a sorted vector and not a `BTreeMap` on purpose:
+///
+/// - **For:** code size. A contract's whole code is charged to every call,
+///   and a `BTreeMap` is compiled once for each key and value type. With the
+///   six this crate uses, it made Dao 13.8 kB larger than this type does.
+/// - **Against:** an insert shifts the entries after it, so filling it costs
+///   quadratic time. That is nothing for the tens of entries a message reads
+///   and wrong for thousands: measure again before caching a whole index.
+/// - **Against:** it only grows. A value changed in storage must be changed
+///   here too, through the reference `get_or` returns.
 pub(crate) struct Seen<K, V>(Vec<(K, V)>);
 
 impl<K, V> Default for Seen<K, V> {
