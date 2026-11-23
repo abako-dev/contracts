@@ -7,7 +7,10 @@ use crate::{
 };
 use ink::{
     primitives::AccountId,
-    storage::{Lazy, Mapping},
+    storage::{
+        traits::{Packed, StorageKey},
+        Lazy, Mapping,
+    },
 };
 
 pub type MilestonePosition = (u32, u32);
@@ -236,17 +239,30 @@ fn evaluation_record(value: &ProjectEvaluation) -> EvaluationRecord {
         ratings: count(value.ratings.len()),
     }
 }
-/// The entry of `old` at `index`, if it had one.
-fn at<T>(old: Option<&[T]>, index: usize) -> Option<&T> {
-    old.and_then(|items| items.get(index))
-}
 /// The entries of `old` after its first `kept`, with their positions.
-fn dropped<T>(old: Option<&[T]>, kept: usize) -> impl Iterator<Item = (u32, &T)> {
-    old.unwrap_or_default()
-        .iter()
+fn dropped<T>(old: &[T], kept: usize) -> impl Iterator<Item = (u32, &T)> {
+    old.iter()
         .enumerate()
         .skip(kept)
         .map(|(index, item)| (count(index), item))
+}
+/// Store the list `new` where `cells` holds `old`, one entry under each
+/// `key(position)`: write the entries that differ and remove the ones past
+/// its end.
+fn store_list<K, V, S>(cells: &mut Mapping<K, V, S>, key: impl Fn(u32) -> K, new: &[V], old: &[V])
+where
+    K: scale::Encode + scale::EncodeLike<K>,
+    V: Packed + PartialEq + scale::EncodeLike<V>,
+    S: StorageKey,
+{
+    for (i, value) in new.iter().enumerate() {
+        if old.get(i) != Some(value) {
+            cells.insert(key(count(i)), value);
+        }
+    }
+    for (i, _) in dropped(old, new.len()) {
+        cells.remove(key(i));
+    }
 }
 
 impl Project {
@@ -261,29 +277,26 @@ impl Project {
         )?;
         let project = &data.project;
         let before = old.map(|old| &old.project);
-        let proposals = before.map(|old| old.proposals.as_slice());
+        let proposals = before.map_or(&[][..], |old| &old.proposals);
         for (p, proposal) in project.proposals.iter().enumerate() {
-            self.save_proposal(count(p), proposal, at(proposals, p))?;
+            self.save_proposal(count(p), proposal, proposals.get(p))?;
         }
         for (p, proposal) in dropped(proposals, project.proposals.len()) {
             self.remove_proposal(p, proposal);
         }
-        let evaluations = before.map(|old| old.evaluations.as_slice());
+        let evaluations = before.map_or(&[][..], |old| &old.evaluations);
         for (e, evaluation) in project.evaluations.iter().enumerate() {
-            let previous = at(evaluations, e);
+            let previous = evaluations.get(e);
             if previous == Some(evaluation) {
                 continue;
             }
-            let ratings = previous.map(|old| old.ratings.as_slice());
             let e = count(e);
-            for (i, rating) in evaluation.ratings.iter().enumerate() {
-                if at(ratings, i) != Some(rating) {
-                    self.evaluation_ratings.insert((e, count(i)), rating);
-                }
-            }
-            for (i, _) in dropped(ratings, evaluation.ratings.len()) {
-                self.evaluation_ratings.remove((e, i));
-            }
+            store_list(
+                &mut self.evaluation_ratings,
+                |i| (e, i),
+                &evaluation.ratings,
+                previous.map_or(&[], |old| &old.ratings),
+            );
             let record = evaluation_record(evaluation);
             if previous.map(evaluation_record).as_ref() != Some(&record) {
                 self.evaluations.insert(e, &record);
@@ -295,24 +308,18 @@ impl Project {
             }
             self.evaluations.remove(e);
         }
-        let reasons = old.map(|old| old.reasons.as_slice());
-        for (i, reason) in data.reasons.iter().enumerate() {
-            if at(reasons, i) != Some(reason) {
-                self.reasons.insert(count(i), reason);
-            }
-        }
-        for (i, _) in dropped(reasons, data.reasons.len()) {
-            self.reasons.remove(i);
-        }
-        let disputes = old.map(|old| old.disputes.as_slice());
-        for (i, dispute) in data.disputes.iter().enumerate() {
-            if at(disputes, i) != Some(dispute) {
-                self.disputes.insert(count(i), dispute);
-            }
-        }
-        for (i, _) in dropped(disputes, data.disputes.len()) {
-            self.disputes.remove(i);
-        }
+        store_list(
+            &mut self.reasons,
+            |i| i,
+            &data.reasons,
+            old.map_or(&[], |old| &old.reasons),
+        );
+        store_list(
+            &mut self.disputes,
+            |i| i,
+            &data.disputes,
+            old.map_or(&[], |old| &old.disputes),
+        );
         let header = project_record(data);
         if old.map(project_record).as_ref() != Some(&header) {
             self.header.set(&header);
@@ -329,9 +336,9 @@ impl Project {
             return Ok(());
         }
         let record = proposal_record(value)?;
-        let milestones = old.map(|old| old.milestones.as_slice());
+        let milestones = old.map_or(&[][..], |old| &old.milestones);
         for (m, milestone) in value.milestones.iter().enumerate() {
-            self.save_milestone((p, count(m)), milestone, at(milestones, m))?;
+            self.save_milestone((p, count(m)), milestone, milestones.get(m))?;
         }
         for (m, milestone) in dropped(milestones, value.milestones.len()) {
             self.remove_milestone((p, m), milestone);
@@ -354,41 +361,35 @@ impl Project {
         if old == Some(value) {
             return Ok(());
         }
-        let requirements = old.map(|old| old.definition.requirements.as_slice());
+        let requirements = old.map_or(&[][..], |old| &old.definition.requirements);
         for (r, requirement) in value.definition.requirements.iter().enumerate() {
-            self.save_requirement((pos, count(r)), requirement, at(requirements, r));
+            self.save_requirement((pos, count(r)), requirement, requirements.get(r));
         }
         for (r, requirement) in dropped(requirements, value.definition.requirements.len()) {
             self.remove_requirement((pos, r), requirement);
         }
-        let assignments = old.map(|old| old.assignments.as_slice());
-        for (i, assignment) in value.assignments.iter().enumerate() {
-            if at(assignments, i) != Some(assignment) {
-                self.assignments.insert((pos, count(i)), assignment);
-            }
-        }
-        for (i, _) in dropped(assignments, value.assignments.len()) {
-            self.assignments.remove((pos, i));
-        }
-        let ratings = old.map(|old| old.worker_ratings.as_slice());
-        for (i, rating) in value.worker_ratings.iter().enumerate() {
-            if at(ratings, i) != Some(rating) {
-                self.milestone_ratings.insert((pos, count(i)), rating);
-            }
-        }
-        for (i, _) in dropped(ratings, value.worker_ratings.len()) {
-            self.milestone_ratings.remove((pos, i));
-        }
-        let tasks = old.map(|old| old.task_storage.tasks.as_slice());
+        store_list(
+            &mut self.assignments,
+            |i| (pos, i),
+            &value.assignments,
+            old.map_or(&[], |old| &old.assignments),
+        );
+        store_list(
+            &mut self.milestone_ratings,
+            |i| (pos, i),
+            &value.worker_ratings,
+            old.map_or(&[], |old| &old.worker_ratings),
+        );
+        let tasks = old.map_or(&[][..], |old| &old.task_storage.tasks);
         for (t, task) in value.task_storage.tasks.iter().enumerate() {
-            self.save_task((pos, count(t)), task, at(tasks, t));
+            self.save_task((pos, count(t)), task, tasks.get(t));
         }
         for (t, task) in dropped(tasks, value.task_storage.tasks.len()) {
             self.remove_task((pos, t), task);
         }
-        let submissions = old.map(|old| old.submissions.as_slice());
+        let submissions = old.map_or(&[][..], |old| &old.submissions);
         for (s, submission) in value.submissions.iter().enumerate() {
-            self.save_submission((pos, count(s)), submission, at(submissions, s));
+            self.save_submission((pos, count(s)), submission, submissions.get(s));
         }
         for (s, submission) in dropped(submissions, value.submissions.len()) {
             self.remove_submission((pos, s), submission);
@@ -408,15 +409,12 @@ impl Project {
         if old == Some(value) {
             return;
         }
-        let skills = old.map(|old| old.skill_ids.as_slice());
-        for (i, skill) in value.skill_ids.iter().enumerate() {
-            if at(skills, i) != Some(skill) {
-                self.skills.insert((key, count(i)), skill);
-            }
-        }
-        for (i, _) in dropped(skills, value.skill_ids.len()) {
-            self.skills.remove((key, i));
-        }
+        store_list(
+            &mut self.skills,
+            |i| (key, i),
+            &value.skill_ids,
+            old.map_or(&[], |old| &old.skill_ids),
+        );
         let record = requirement_record(value);
         if old.map(requirement_record).as_ref() != Some(&record) {
             self.requirements.insert(key, &record);
@@ -426,15 +424,12 @@ impl Project {
         if old == Some(value) {
             return;
         }
-        let assignees = old.map(|old| old.assignees.as_slice());
-        for (i, assignee) in value.assignees.iter().enumerate() {
-            if at(assignees, i) != Some(assignee) {
-                self.assignees.insert((key, count(i)), assignee);
-            }
-        }
-        for (i, _) in dropped(assignees, value.assignees.len()) {
-            self.assignees.remove((key, i));
-        }
+        store_list(
+            &mut self.assignees,
+            |i| (key, i),
+            &value.assignees,
+            old.map_or(&[], |old| &old.assignees),
+        );
         let record = task_record(value);
         if old.map(task_record).as_ref() != Some(&record) {
             self.tasks.insert(key, &record);
@@ -449,28 +444,25 @@ impl Project {
         if old == Some(value) {
             return;
         }
-        let ratings = old.map(|old| old.worker_ratings.as_slice());
-        for (i, rating) in value.worker_ratings.iter().enumerate() {
-            if at(ratings, i) != Some(rating) {
-                self.submission_ratings.insert((key, count(i)), rating);
-            }
-        }
-        for (i, _) in dropped(ratings, value.worker_ratings.len()) {
-            self.submission_ratings.remove((key, i));
-        }
+        store_list(
+            &mut self.submission_ratings,
+            |i| (key, i),
+            &value.worker_ratings,
+            old.map_or(&[], |old| &old.worker_ratings),
+        );
         let record = submission_record(value);
         if old.map(submission_record).as_ref() != Some(&record) {
             self.submissions.insert(key, &record);
         }
     }
     fn remove_proposal(&mut self, p: u32, old: &ProposalCore) {
-        for (m, milestone) in dropped(Some(&old.milestones), 0) {
+        for (m, milestone) in dropped(&old.milestones, 0) {
             self.remove_milestone((p, m), milestone);
         }
         self.proposals.remove(p);
     }
     fn remove_milestone(&mut self, pos: MilestonePosition, old: &MilestoneCore) {
-        for (r, requirement) in dropped(Some(&old.definition.requirements), 0) {
+        for (r, requirement) in dropped(&old.definition.requirements, 0) {
             self.remove_requirement((pos, r), requirement);
         }
         for i in 0..count(old.assignments.len()) {
@@ -479,10 +471,10 @@ impl Project {
         for i in 0..count(old.worker_ratings.len()) {
             self.milestone_ratings.remove((pos, i));
         }
-        for (t, task) in dropped(Some(&old.task_storage.tasks), 0) {
+        for (t, task) in dropped(&old.task_storage.tasks, 0) {
             self.remove_task((pos, t), task);
         }
-        for (s, submission) in dropped(Some(&old.submissions), 0) {
+        for (s, submission) in dropped(&old.submissions, 0) {
             self.remove_submission((pos, s), submission);
         }
         self.milestones.remove(pos);
@@ -697,6 +689,45 @@ mod tests {
         assert!(storage.header.get().unwrap().encode().len() < 256);
         assert!(storage.proposals.get(0).unwrap().encode().len() < 256);
         assert!(storage.milestones.get((0, 0)).unwrap().encode().len() < 128);
+    }
+    /// The storage reads and writes `run` makes.
+    fn accesses(run: impl FnOnce()) -> (usize, usize) {
+        let count = || {
+            ink::env::test::get_contract_storage_rw::<ink::env::DefaultEnvironment>(
+                &ink::env::test::callee::<ink::env::DefaultEnvironment>(),
+            )
+        };
+        let before = count();
+        run();
+        let after = count();
+        (after.0 - before.0, after.1 - before.1)
+    }
+    #[ink::test]
+    fn a_save_writes_the_cells_that_differ_and_reads_none() {
+        let mut data = fixture();
+        let mut storage = Project::empty(data.dao, data.project.project_id);
+        store(&mut storage, &data);
+        let loaded = data.clone();
+        assert_eq!(
+            accesses(|| storage.save(&data, Some(&loaded)).unwrap()),
+            (0, 0)
+        );
+        // One more assignee: its entry and the task's count.
+        let milestone = &mut data.project.proposals[0].milestones[0];
+        milestone.task_storage.tasks[0]
+            .assignees
+            .push(AccountId::from([7; 32]));
+        // A changed rating: its entry alone.
+        milestone.worker_ratings[0].score = 1;
+        // One reason fewer: its removal and the header's count.
+        data.reasons.truncate(1);
+        assert_eq!(
+            accesses(|| storage.save(&data, Some(&loaded)).unwrap()),
+            (0, 5)
+        );
+        assert_eq!(storage.load().unwrap().project, data.project);
+        assert_eq!(storage.load().unwrap().reasons, data.reasons);
+        assert!(!storage.reasons.contains(1));
     }
     #[ink::test]
     fn replacement_shrink_removal_and_position_reuse_clear_old_children() {

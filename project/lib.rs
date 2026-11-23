@@ -212,14 +212,16 @@ pub mod project {
         /// compensation share, which splits each milestone's budget.
         fn record_terms(&mut self, index: usize) -> Result<()> {
             let proposal = &self.project.proposals[index];
-            let requirements = || {
-                proposal
-                    .milestones
-                    .iter()
-                    .flat_map(|m| &m.definition.requirements)
-            };
-            let roles: BTreeSet<_> = requirements().map(|r| r.role_id).collect();
-            let skills: BTreeSet<_> = requirements().flat_map(|r| &r.skill_ids).copied().collect();
+            // Inserted one by one: collecting into a set adds kilobytes of
+            // sorting code, which every call to Project is charged.
+            let mut roles = BTreeSet::new();
+            let mut skills = BTreeSet::new();
+            for milestone in &proposal.milestones {
+                for requirement in &milestone.definition.requirements {
+                    roles.insert(requirement.role_id);
+                    skills.extend(requirement.skill_ids.iter().copied());
+                }
+            }
             let percent = self.dao().set_project_proposal(
                 self.identities(),
                 proposal.proposal_id,
