@@ -49,6 +49,14 @@ pub(crate) struct Members {
     pub(crate) worker_skills: Mapping<(AccountId, u32), u32, ManualKey<22>>,
 }
 
+impl Members {
+    pub(crate) fn worker(&self, account: AccountId) -> Result<WorkerRecord> {
+        self.workers
+            .get(account)
+            .ok_or_else(|| String::from("worker_not_found"))
+    }
+}
+
 impl Dao {
     // Dense per-skill entries avoid packing a whole index into ink's 16 KiB
     // storage buffer. Candidate iteration has no fixed search/truncation limit.
@@ -97,10 +105,7 @@ impl Dao {
     }
 
     pub(crate) fn worker_record(&self, account: AccountId) -> Result<WorkerRecord> {
-        self.members
-            .workers
-            .get(account)
-            .ok_or_else(|| String::from("worker_not_found"))
+        self.members.worker(account)
     }
 
     pub(crate) fn worker_with_qualifications(&self, account: AccountId) -> Result<Worker> {

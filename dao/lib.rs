@@ -12,6 +12,7 @@ mod members;
 mod projects;
 mod registry;
 pub mod reputation;
+mod seen;
 #[cfg(test)]
 mod tests;
 

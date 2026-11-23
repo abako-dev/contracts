@@ -192,36 +192,36 @@ fn catalog_rename_retains_origin_and_recreation_selects_new_origin() {
 }
 
 #[test]
-fn seen_keeps_the_latest_value_of_each_key_and_reads_once() {
-    let mut seen = crate::indices::Seen::<u32, u32>::default();
-    assert_eq!(seen.get(&7), None);
-    seen.insert(7, 1);
-    seen.insert(3, 2);
-    seen.insert(7, 3);
-    assert_eq!(seen.get(&7), Some(&3));
-    assert_eq!(seen.get(&3), Some(&2));
-    *seen.get_mut(&3).unwrap() = 4;
+fn seen_reads_each_key_once_and_keeps_what_is_written_to_it() {
+    let mut seen = crate::seen::Seen::<u32, u32>::default();
+    assert_eq!(seen.get(&9), None);
     let mut reads = 0;
     for _ in 0..3 {
-        assert_eq!(
-            seen.get_or(9, || {
-                reads += 1;
-                5
-            }),
+        let value = seen.get_or(9, || {
+            reads += 1;
             5
-        );
+        });
+        assert_eq!(*value, 5);
     }
     assert_eq!(reads, 1);
-    assert_eq!(seen.get_or(3, || 0), 4);
+    *seen.get_or(3, || 2) = 4;
+    assert_eq!(seen.get(&3), Some(&4));
+    // A read that fails leaves nothing behind.
     assert_eq!(
-        seen.into_values().collect::<Vec<_>>(),
-        ink::prelude::vec![(3, 4), (7, 3), (9, 5)]
+        seen.get_or_try(7, || Err::<u32, _>("unread")),
+        Err("unread")
+    );
+    assert_eq!(seen.get(&7), None);
+    assert_eq!(seen.get_or_try(7, || Ok::<_, &str>(1)), Ok(&mut 1));
+    assert_eq!(
+        seen.into_iter().collect::<Vec<_>>(),
+        ink::prelude::vec![(3, 4), (7, 1), (9, 5)]
     );
 }
 
 /// What `run` returns, with the storage reads and writes it makes. The chain
 /// charges each of them the same proof, whatever the size of the value.
-fn accesses<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
+pub(crate) fn accesses<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
     let count = || {
         ink::env::test::get_contract_storage_rw::<ink::env::DefaultEnvironment>(
             &ink::env::test::callee::<ink::env::DefaultEnvironment>(),

@@ -1,6 +1,6 @@
 //! DAO-owned capacity and reservations, isolated by worker account.
 use crate::dao::{Dao, Effect};
-use crate::indices::Seen;
+use crate::seen::Seen;
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use ink::codegen::Env as _;
 #[cfg(feature = "std")]
@@ -120,7 +120,7 @@ pub struct CalendarView {
     pub reservations: Vec<ReservationView>,
 }
 /// Capacity counts only; the worker record owns the public calendar ID.
-#[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, scale::Encode, scale::Decode)]
 #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
 pub struct CalendarHeader {
     pub default_weekly_minutes: u32,
@@ -149,168 +149,169 @@ fn require(condition: bool, code: &str) -> Result<()> {
     }
 }
 
-/// The calendar cells one message has read, so that it reads each of them once.
-///
-/// A storage read costs the same proof whatever its size, and choosing a team
-/// asks for the same weeks of the same workers for every requirement. Changes
-/// are written through, except headers: [`Calendars::flush`] writes those once.
-#[derive(Default)]
-pub(crate) struct Session {
-    headers: Seen<AccountId, (CalendarHeader, bool)>,
-    weeks: Seen<(AccountId, Week), WeekState>,
-}
+/// What a calendar holds for one week.
 #[derive(Clone, Copy)]
 struct WeekState {
     capacity: u32,
     /// `None` until the week has a reservation: it then also needs a key entry.
     reserved: Option<u32>,
 }
-impl Calendars {
-    fn header_in(&self, session: &mut Session, owner: AccountId) -> Result<CalendarHeader> {
-        if let Some((header, _)) = session.headers.get(&owner) {
-            return Ok(header.clone());
-        }
-        let header = self.header(owner)?;
-        session.headers.insert(owner, (header.clone(), false));
-        Ok(header)
-    }
-    fn week_in(
-        &self,
-        session: &mut Session,
-        owner: AccountId,
-        header: &CalendarHeader,
-        week: Week,
-    ) -> WeekState {
-        if let Some(state) = session.weeks.get(&(owner, week)) {
-            return *state;
-        }
-        // The header counts the overrides and the reserved weeks: a calendar
-        // with none of either has nothing to read for a week.
-        let state = WeekState {
-            capacity: if header.overrides == 0 {
-                header.default_weekly_minutes
-            } else {
-                self.capacity(owner, header, week)
-            },
-            reserved: if header.reserved_weeks == 0 {
-                None
-            } else {
-                self.reserved.get((owner, week))
-            },
-        };
-        session.weeks.insert((owner, week), state);
-        state
-    }
-    fn slots_in(
-        &self,
-        session: &mut Session,
-        owner: AccountId,
-        header: &CalendarHeader,
-        window: WeekWindow,
-        minutes: u32,
-    ) -> Result<Vec<(Week, u32)>> {
-        let mut remaining = minutes;
-        let mut week = window.start;
-        let mut slots = Vec::new();
-        while remaining != 0 {
-            let state = self.week_in(session, owner, header, week);
-            let assigned = state
-                .capacity
-                .checked_sub(state.reserved.unwrap_or(0))
-                .ok_or_else(|| String::from(ARITHMETIC))?
-                .min(remaining);
-            if assigned != 0 {
-                slots.push((week, assigned));
-                remaining = remaining
-                    .checked_sub(assigned)
-                    .ok_or_else(|| String::from(ARITHMETIC))?;
-            }
-            if week == window.end {
-                break;
-            }
-            week = week.next()?;
-        }
-        require(remaining == 0, "insufficient_capacity")?;
-        Ok(slots)
-    }
-    pub(crate) fn available_in(
-        &self,
-        session: &mut Session,
-        owner: AccountId,
-        week: Week,
-    ) -> Result<u32> {
-        let header = self.header_in(session, owner)?;
-        let state = self.week_in(session, owner, &header, week);
-        state
-            .capacity
-            .checked_sub(state.reserved.unwrap_or(0))
+impl WeekState {
+    fn free(self) -> Result<u32> {
+        self.capacity
+            .checked_sub(self.reserved.unwrap_or(0))
             .ok_or_else(|| String::from(ARITHMETIC))
     }
-    pub(crate) fn allocation_in(
-        &self,
-        session: &mut Session,
+}
+
+/// Split `minutes` over the weeks of `window`, earliest first, by what
+/// `state` reports free in each.
+fn slots(
+    window: WeekWindow,
+    minutes: u32,
+    mut state: impl FnMut(Week) -> WeekState,
+) -> Result<Vec<(Week, u32)>> {
+    let mut remaining = minutes;
+    let mut week = window.start;
+    let mut slots = Vec::new();
+    while remaining != 0 {
+        let assigned = state(week).free()?.min(remaining);
+        if assigned != 0 {
+            slots.push((week, assigned));
+            remaining = remaining
+                .checked_sub(assigned)
+                .ok_or_else(|| String::from(ARITHMETIC))?;
+        }
+        if week == window.end {
+            break;
+        }
+        week = week.next()?;
+    }
+    require(remaining == 0, "insufficient_capacity")?;
+    Ok(slots)
+}
+
+/// One message's work on the calendars, reading each cell once.
+///
+/// A storage read costs the same proof whatever its size, and choosing a team
+/// asks for the same weeks of the same workers for every requirement. Changes
+/// are written through, except headers: [`Calendars::session`] writes each
+/// changed header once, when the work succeeds.
+pub(crate) struct Session<'a> {
+    calendars: &'a mut Calendars,
+    /// Each header read, and whether the session changed it.
+    headers: Seen<AccountId, (CalendarHeader, bool)>,
+    weeks: Seen<(AccountId, Week), WeekState>,
+}
+impl Session<'_> {
+    fn header(&mut self, owner: AccountId) -> Result<&mut (CalendarHeader, bool)> {
+        let calendars = &*self.calendars;
+        self.headers
+            .get_or_try(owner, || Ok((calendars.header(owner)?, false)))
+    }
+    fn week(&mut self, owner: AccountId, header: &CalendarHeader, week: Week) -> &mut WeekState {
+        let calendars = &*self.calendars;
+        self.weeks
+            .get_or((owner, week), || calendars.week_state(owner, header, week))
+    }
+    pub(crate) fn allocation(
+        &mut self,
         owner: AccountId,
         window: WeekWindow,
         minutes: u32,
     ) -> Result<Vec<(Week, u32)>> {
-        let header = self.header_in(session, owner)?;
-        self.slots_in(session, owner, &header, window, minutes)
+        let header = self.header(owner)?.0;
+        slots(window, minutes, |week| *self.week(owner, &header, week))
     }
-    pub(crate) fn reserve_in(
+    pub(crate) fn reserve(
         &mut self,
-        session: &mut Session,
         owner: AccountId,
         window: WeekWindow,
         minutes: u32,
         reference: ReservationView,
     ) -> Result<()> {
-        let mut header = self.header_in(session, owner)?;
-        let slots = self.slots_in(session, owner, &header, window, minutes)?;
+        let mut header = self.header(owner)?.0;
+        let slots = slots(window, minutes, |week| *self.week(owner, &header, week))?;
         header
             .reservations
             .checked_add(u32::try_from(slots.len()).map_err(|_| String::from(ARITHMETIC))?)
             .ok_or_else(|| String::from(ARITHMETIC))?;
         for (week, minutes) in slots {
-            let item = ReservationView {
-                week,
-                minutes,
-                ..reference.clone()
-            };
-            let state = session
-                .weeks
-                .get_mut(&(owner, week))
-                .expect("slots read every week they return");
+            let state = self.week(owner, &header, week);
+            let first = state.reserved.is_none();
             let total = state
                 .reserved
                 .unwrap_or(0)
                 .checked_add(minutes)
                 .expect("allocation fits the checked week capacity");
-            if state.reserved.is_none() {
-                self.reserved_week_keys
+            state.reserved = Some(total);
+            if first {
+                self.calendars
+                    .reserved_week_keys
                     .insert((owner, header.reserved_weeks), &week);
                 header.reserved_weeks = header
                     .reserved_weeks
                     .checked_add(1)
                     .expect("distinct weeks cannot exceed checked reservation count");
             }
-            state.reserved = Some(total);
-            self.reservations
-                .insert((owner, header.reservations), &item);
-            self.reserved.insert((owner, week), &total);
+            self.calendars.reservations.insert(
+                (owner, header.reservations),
+                &ReservationView {
+                    week,
+                    minutes,
+                    ..reference.clone()
+                },
+            );
+            self.calendars.reserved.insert((owner, week), &total);
             header.reservations = header
                 .reservations
                 .checked_add(1)
                 .expect("reservation count checked before writing");
         }
-        session.headers.insert(owner, (header, true));
+        *self.header(owner)? = (header, true);
         Ok(())
     }
-    /// Write the headers the session changed. Nothing else is deferred.
-    pub(crate) fn flush(&mut self, session: Session) {
-        for (owner, (header, changed)) in session.headers.into_values() {
+}
+impl Calendars {
+    /// Run `work` on a session and, if it succeeds, write the headers it
+    /// changed. A failed message reverts what the session wrote through.
+    pub(crate) fn session<T>(
+        &mut self,
+        work: impl FnOnce(&mut Session<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut session = Session {
+            calendars: self,
+            headers: Seen::default(),
+            weeks: Seen::default(),
+        };
+        let result = work(&mut session)?;
+        let Session {
+            calendars, headers, ..
+        } = session;
+        for (owner, (header, changed)) in headers {
             if changed {
-                self.headers.insert(owner, &header);
+                calendars.headers.insert(owner, &header);
             }
+        }
+        Ok(result)
+    }
+    /// What `owner`'s calendar holds for `week`, read from storage. The
+    /// header counts the overrides and the reserved weeks: a calendar with
+    /// none of either has nothing to read for a week.
+    fn week_state(&self, owner: AccountId, header: &CalendarHeader, week: Week) -> WeekState {
+        WeekState {
+            capacity: if header.overrides == 0 {
+                header.default_weekly_minutes
+            } else {
+                self.overrides
+                    .get((owner, week))
+                    .unwrap_or(header.default_weekly_minutes)
+            },
+            reserved: if header.reserved_weeks == 0 {
+                None
+            } else {
+                self.reserved.get((owner, week))
+            },
         }
     }
 }
@@ -343,11 +344,6 @@ impl Calendars {
         self.headers
             .get(owner)
             .ok_or_else(|| String::from("worker_not_found"))
-    }
-    fn capacity(&self, owner: AccountId, header: &CalendarHeader, week: Week) -> u32 {
-        self.overrides
-            .get((owner, week))
-            .unwrap_or(header.default_weekly_minutes)
     }
     pub(crate) fn override_at(&self, owner: AccountId, index: u32) -> Option<WeekOverride> {
         let week = self.override_keys.get((owner, index))?;
@@ -411,7 +407,8 @@ impl Calendars {
         Ok(())
     }
     pub(crate) fn available(&self, owner: AccountId, week: Week) -> Result<u32> {
-        self.available_in(&mut Session::default(), owner, week)
+        let header = self.header(owner)?;
+        self.week_state(owner, &header, week).free()
     }
     pub(crate) fn allocation(
         &self,
@@ -419,7 +416,10 @@ impl Calendars {
         window: WeekWindow,
         minutes: u32,
     ) -> Result<Vec<(Week, u32)>> {
-        self.allocation_in(&mut Session::default(), owner, window, minutes)
+        let header = self.header(owner)?;
+        slots(window, minutes, |week| {
+            self.week_state(owner, &header, week)
+        })
     }
     pub(crate) fn reserve(
         &mut self,
@@ -428,10 +428,7 @@ impl Calendars {
         minutes: u32,
         reference: ReservationView,
     ) -> Result<()> {
-        let mut session = Session::default();
-        self.reserve_in(&mut session, owner, window, minutes, reference)?;
-        self.flush(session);
-        Ok(())
+        self.session(|session| session.reserve(owner, window, minutes, reference))
     }
 }
 
@@ -533,7 +530,7 @@ mod tests {
         assert_eq!(calendar.view(accounts.alice, [1; 16]).unwrap(), before);
     }
     #[ink::test]
-    fn one_session_leaves_what_separate_reservations_leave() {
+    fn a_session_reads_each_cell_once_and_leaves_what_separate_reservations_leave() {
         let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
         let mut calendar = Calendars::default();
         let first = Week::new(2026, 1).unwrap();
@@ -542,7 +539,8 @@ mod tests {
             start: first,
             end: second,
         };
-        // Alice has an override, Bob none: both ways of reading a week.
+        // Alice and Charlie have an override, Bob and Django none: both ways
+        // of reading a week.
         for owner in [accounts.alice, accounts.charlie] {
             calendar
                 .register(
@@ -560,60 +558,72 @@ mod tests {
         for owner in [accounts.bob, accounts.django] {
             calendar.register(owner, definition(100)).unwrap();
         }
-        // 60 fits the first week; 50 spills into the second; 80 no longer fits.
+        // 60 fits the first week and 50 spills into the second. Then 80 no
+        // longer fits Alice, and 40 no longer fits Bob.
         let requests = [60, 50, 80, 40];
-        let mut session = Session::default();
-        for (owner, separately) in [
-            (accounts.alice, true),
-            (accounts.bob, true),
-            (accounts.charlie, false),
-            (accounts.django, false),
+        let (fits, reads, writes) = crate::tests::accesses(|| {
+            calendar
+                .session(|session| {
+                    let mut fits = Vec::new();
+                    for owner in [accounts.alice, accounts.bob] {
+                        for minutes in requests {
+                            let free = session.allocation(owner, window, minutes).is_ok();
+                            let reserved = session
+                                .reserve(owner, window, minutes, reservation(first, 0))
+                                .is_ok();
+                            assert_eq!(free, reserved);
+                            fits.push(reserved);
+                        }
+                    }
+                    Ok(fits)
+                })
+                .unwrap()
+        });
+        assert_eq!(fits, [true, true, false, true, true, true, true, false]);
+        // Read: the two headers; for Alice, the override of each week; and
+        // for both, the second week's total, since by then the calendar has
+        // a reserved week. Written: the reservation and the week's total for
+        // each of eight slots, then two week keys and the header per owner.
+        assert_eq!((reads, writes), (6, 22));
+        let slots = |calendar: &Calendars, owner| -> Vec<_> {
+            let view = calendar.view(owner, [1; 16]).unwrap();
+            view.reservations
+                .iter()
+                .map(|item| (item.week, item.minutes))
+                .collect()
+        };
+        assert_eq!(
+            slots(&calendar, accounts.alice),
+            [(first, 60), (first, 10), (second, 40), (second, 40)]
+        );
+        assert_eq!(
+            slots(&calendar, accounts.bob),
+            [(first, 60), (first, 40), (second, 10), (second, 80)]
+        );
+        assert_eq!(calendar.available(accounts.alice, first), Ok(0));
+        assert_eq!(calendar.available(accounts.alice, second), Ok(20));
+        assert_eq!(calendar.available(accounts.bob, first), Ok(0));
+        assert_eq!(calendar.available(accounts.bob, second), Ok(10));
+        // The same requests, one message each, leave the same calendar.
+        for (separate, shared) in [
+            (accounts.charlie, accounts.alice),
+            (accounts.django, accounts.bob),
         ] {
             for minutes in requests {
-                let reference = reservation(first, 0);
-                if separately {
-                    assert_eq!(
-                        calendar.allocation(owner, window, minutes).is_ok(),
-                        calendar.reserve(owner, window, minutes, reference).is_ok()
-                    );
-                } else {
-                    let fits = calendar
-                        .allocation_in(&mut session, owner, window, minutes)
-                        .is_ok();
-                    assert_eq!(
-                        fits,
-                        calendar
-                            .reserve_in(&mut session, owner, window, minutes, reference)
-                            .is_ok()
-                    );
-                }
+                let _ = calendar.reserve(separate, window, minutes, reservation(first, 0));
             }
-        }
-        calendar.flush(session);
-        for (separate, shared) in [
-            (accounts.alice, accounts.charlie),
-            (accounts.bob, accounts.django),
-        ] {
-            let expected = calendar.view(separate, [1; 16]).unwrap();
-            let actual = calendar.view(shared, [1; 16]).unwrap();
-            assert_eq!(actual.definition, expected.definition);
-            assert_eq!(actual.reservations, expected.reservations);
-            assert!(!actual.reservations.is_empty());
-            assert_eq!(calendar.header(shared), calendar.header(separate));
+            assert_eq!(slots(&calendar, separate), slots(&calendar, shared));
+            assert_eq!(calendar.header(separate), calendar.header(shared));
             for week in [first, second] {
                 assert_eq!(
-                    calendar.available(shared, week),
-                    calendar.available(separate, week)
-                );
-                assert_eq!(
-                    calendar.reserved.get((shared, week)),
-                    calendar.reserved.get((separate, week))
+                    calendar.reserved.get((separate, week)),
+                    calendar.reserved.get((shared, week))
                 );
             }
             for index in 0..2 {
                 assert_eq!(
-                    calendar.reserved_week_keys.get((shared, index)),
-                    calendar.reserved_week_keys.get((separate, index))
+                    calendar.reserved_week_keys.get((separate, index)),
+                    calendar.reserved_week_keys.get((shared, index))
                 );
             }
         }
