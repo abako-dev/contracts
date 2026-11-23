@@ -2,7 +2,6 @@
 use crate::dao::*;
 use crate::{
     indices,
-    projects::IdKind,
     reputation::{self, Contribution, VoteKind},
 };
 use ink::codegen::Env as _;
@@ -281,7 +280,7 @@ pub(crate) fn register_worker(
     let origin = dao.env().caller();
     require(!dao.members.workers.contains(origin), "worker_exists")?;
     dao.qualifications(&request.qualifications)?;
-    dao.claim(calendar_id, IdKind::Calendar)?;
+    dao.ids.claim(calendar_id, "invalid_worker_state")?;
     dao.calendars.register(origin, request.calendar)?;
     let skills = request.qualifications.skill_ids.clone();
     dao.write_worker(

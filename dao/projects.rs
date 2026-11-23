@@ -3,6 +3,7 @@ use crate::calendar::Week;
 use crate::dao::*;
 use crate::indices;
 use crate::members::QualificationCounts;
+use crate::registry::Claim;
 use chrono::Datelike;
 use ink::codegen::Env as _;
 use ink::prelude::{collections::BTreeSet, string::String, vec::Vec};
@@ -45,55 +46,17 @@ pub(crate) struct Projects {
     pub(crate) project_milestones: Mapping<MilestonePosition, MilestoneIdentity, ManualKey<27>>,
     pub(crate) project_submission_values: Mapping<(Id, u32), Id, ManualKey<28>>,
     pub(crate) reason_count: u64,
-    /// Every public ID in use, with the kind of entity that has it.
-    pub(crate) public_ids: Mapping<Id, IdKind, ManualKey<29>>,
 }
 
-/// The kinds of entity that share the space of public IDs, in the order the
-/// earlier whole-state validation met them. A collision is reported with the
-/// error of the later kind of the two.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, scale::Encode, scale::Decode)]
-#[cfg_attr(
-    feature = "std",
-    derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
-)]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "Eight fixed SCALE variants."
-)]
-pub enum IdKind {
-    Calendar,
-    Project,
-    Proposal,
-    /// A milestone or its task storage.
-    Milestone,
-    Deposit,
-    Withdrawal,
-    Submission,
-    Dispute,
-}
-impl IdKind {
-    fn collision(self) -> &'static str {
-        match self {
-            Self::Calendar => "invalid_worker_state",
-            Self::Project => "invalid_project_state",
-            Self::Proposal => "duplicate_entity",
-            Self::Milestone => "invalid_storage_state",
-            Self::Deposit => "invalid_deposit_state",
-            Self::Withdrawal => "invalid_withdrawal_state",
-            Self::Submission => "invalid_submission_state",
-            Self::Dispute => "invalid_dispute_id",
-        }
-    }
-}
-
-fn layout_ids(layout: &ProjectIdentities) -> Vec<(Id, IdKind)> {
+/// The public IDs a project's layout holds: its proposals, and each
+/// milestone with its task storage.
+fn layout_ids(layout: &ProjectIdentities) -> Vec<Claim> {
     let mut ids = Vec::new();
     for (proposal, milestones) in layout {
-        ids.push((*proposal, IdKind::Proposal));
+        ids.push((*proposal, "duplicate_entity"));
         for (milestone, storage) in milestones {
-            ids.push((*milestone, IdKind::Milestone));
-            ids.push((*storage, IdKind::Milestone));
+            ids.push((*milestone, "invalid_storage_state"));
+            ids.push((*storage, "invalid_storage_state"));
         }
     }
     ids
@@ -144,41 +107,6 @@ impl Dao {
             .registered_projects
             .get(self.env().caller())
             .ok_or_else(|| String::from("registered_project_required"))
-    }
-
-    /// Take `id` for an entity of `kind`, or fail if any entity has it.
-    ///
-    /// Public IDs are unique across kinds. One entry per ID answers that with
-    /// one read, where walking every worker, project, deposit and dispute cost
-    /// more proof with every one of them.
-    pub(crate) fn claim(&mut self, id: Id, kind: IdKind) -> Result<()> {
-        match self.projects.public_ids.get(id) {
-            Some(taken) => Err(String::from(taken.max(kind).collision())),
-            None => {
-                self.projects.public_ids.insert(id, &kind);
-                Ok(())
-            }
-        }
-    }
-
-    /// Replace the IDs an owner held, `old`, with `new`: free the ones it no
-    /// longer uses and take the ones it adds.
-    pub(crate) fn exchange(&mut self, old: &[(Id, IdKind)], new: &[(Id, IdKind)]) -> Result<()> {
-        let mut seen = BTreeSet::new();
-        for (id, kind) in new {
-            require(seen.insert(*id), kind.collision())?;
-        }
-        for entry in old {
-            if !new.contains(entry) {
-                self.projects.public_ids.remove(entry.0);
-            }
-        }
-        for entry in new {
-            if !old.contains(entry) {
-                self.claim(entry.0, entry.1)?;
-            }
-        }
-        Ok(())
     }
 
     pub(crate) fn proposal_qualifications(&self, id: Id) -> Option<Qualifications> {
@@ -309,43 +237,11 @@ impl Dao {
         }
     }
 
-    pub(crate) fn project_submission_ids(&self, id: Id) -> Vec<Id> {
-        (0..self.projects.project_submissions.get(id).unwrap_or(0))
-            .map(|i| {
-                self.projects
-                    .project_submission_values
-                    .get((id, i))
-                    .expect("missing project submission")
-            })
-            .collect()
-    }
-
-    /// Store `submissions` for project `id`, which holds `old`.
-    pub(crate) fn write_project_submissions(&mut self, id: Id, old: &[Id], submissions: &[Id]) {
-        for (i, submission) in submissions.iter().enumerate() {
-            if old.get(i) != Some(submission) {
-                self.projects
-                    .project_submission_values
-                    .insert((id, count(i)), submission);
-            }
-        }
-        for i in submissions.len()..old.len() {
-            self.projects
-                .project_submission_values
-                .remove((id, count(i)));
-        }
-        if old.len() != submissions.len() {
-            self.projects
-                .project_submissions
-                .insert(id, &count(submissions.len()));
-        }
-    }
-
     /// Record `layout` as the identities of project `id`.
     fn set_identities(&mut self, id: Id, layout: &ProjectIdentities) -> Result<()> {
         let old = self.project_layout(id);
         if old != *layout {
-            self.exchange(&layout_ids(&old), &layout_ids(layout))?;
+            self.ids.exchange(&layout_ids(&old), &layout_ids(layout))?;
             self.write_project_layout(id, &old, layout);
         }
         Ok(())
@@ -429,7 +325,7 @@ pub(crate) fn create_project(
     )?;
     let client = dao.env().caller();
     let (coordinator, id) = dao.coordinator_selection(client, week, seed)?;
-    dao.claim(id, IdKind::Project)?;
+    dao.ids.claim(id, "invalid_project_state")?;
     let code = dao
         .projects
         .project_code
@@ -473,16 +369,20 @@ pub(crate) fn set_project_proposal(
     Ok(dao.config.compensation_percent)
 }
 
-pub(crate) fn set_project_submissions(dao: &mut Dao, submissions: Vec<Id>) -> Result<()> {
-    let id = dao
-        .projects
-        .registered_projects
-        .get(dao.env().caller())
-        .ok_or_else(|| String::from("registered_project_required"))?;
-    let old = dao.project_submission_ids(id);
-    let kind = |ids: &[Id]| -> Vec<_> { ids.iter().map(|id| (*id, IdKind::Submission)).collect() };
-    dao.exchange(&kind(&old), &kind(&submissions))?;
-    dao.write_project_submissions(id, &old, &submissions);
+/// Record a new submission of the calling Project, after the ones it has.
+/// Project submits to one milestone at a time, in their order, so appending
+/// keeps the order of its milestones.
+pub(crate) fn add_project_submission(dao: &mut Dao, submission: Id) -> Result<()> {
+    let project = dao.calling_project()?;
+    dao.ids.claim(submission, "invalid_submission_state")?;
+    let position = dao.projects.project_submissions.get(project).unwrap_or(0);
+    let next = position
+        .checked_add(1)
+        .ok_or_else(|| String::from("invalid_submission_state"))?;
+    dao.projects
+        .project_submission_values
+        .insert((project, position), &submission);
+    dao.projects.project_submissions.insert(project, &next);
     Ok(())
 }
 
@@ -498,7 +398,7 @@ pub(crate) fn register_dispute(dao: &mut Dao, id: Id) -> Result<()> {
     )?;
     dao.projects.dispute_owners.insert(id, &project);
     insert_sorted(&mut dao.projects.dispute_ids, id);
-    dao.claim(id, IdKind::Dispute)
+    dao.ids.claim(id, "invalid_dispute_id")
 }
 
 pub(crate) fn dispute_project(dao: &Dao, id: Id) -> Option<Id> {

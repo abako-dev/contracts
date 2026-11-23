@@ -194,15 +194,21 @@ pub fn submit(
     });
     milestone.worker_ratings = ratings;
     milestone.status = Some(MilestoneStatus::CompletionRequested);
-    let ids = state
+    // The Dao lists a project's submissions in the order of its milestones
+    // by appending each new one: a milestone starts when the one before it
+    // is complete, so no later milestone has a submission yet.
+    let last = state
         .project
         .proposals
         .iter()
         .flat_map(|p| &p.milestones)
         .flat_map(|m| &m.submissions)
-        .map(|s| s.submission_id)
-        .collect();
-    state.dao().set_project_submissions(ids)?;
+        .last();
+    require(
+        last.map(|s| s.submission_id) == Some(id),
+        "invalid_submission_state",
+    )?;
+    state.dao().add_project_submission(id)?;
     Ok(state.effect(22, id))
 }
 pub fn reject(

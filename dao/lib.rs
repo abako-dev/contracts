@@ -10,6 +10,7 @@ mod indices;
 pub mod matching;
 mod members;
 mod projects;
+mod registry;
 pub mod reputation;
 #[cfg(test)]
 mod tests;
@@ -234,6 +235,7 @@ pub mod dao {
         pub(crate) catalog: crate::catalog::Catalog,
         pub(crate) members: crate::members::Members,
         pub(crate) projects: crate::projects::Projects,
+        pub(crate) ids: crate::registry::PublicIds,
         pub(crate) calendars: crate::calendar::Calendars,
         pub(crate) bank: Bank,
     }
@@ -258,6 +260,7 @@ pub mod dao {
                 catalog: Default::default(),
                 members: Default::default(),
                 projects: crate::projects::Projects::new(),
+                ids: Default::default(),
                 calendars: Default::default(),
                 bank: Bank::default(),
             };
@@ -569,9 +572,11 @@ pub mod dao {
             crate::bank::record_balance_credit(self, account, amount)
         }
 
+        /// Registered-Project hook: record a new submission, the last of the
+        /// calling Project's.
         #[ink(message)]
-        pub fn set_project_submissions(&mut self, submissions: Vec<Id>) -> Result<()> {
-            crate::projects::set_project_submissions(self, submissions)
+        pub fn add_project_submission(&mut self, submission: Id) -> Result<()> {
+            crate::projects::add_project_submission(self, submission)
         }
 
         #[ink(message)]

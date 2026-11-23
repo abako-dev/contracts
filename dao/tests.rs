@@ -1,7 +1,7 @@
 use crate::catalog::RequestRecord;
 use crate::dao::*;
 use crate::members::{QualificationCounts, WorkerRecord};
-use crate::projects::{IdKind, ProjectProposalRecord, ReasonRecord};
+use crate::projects::{ProjectProposalRecord, ReasonRecord};
 use ink::prelude::{string::String, vec::Vec};
 
 use ink::primitives::Hash;
@@ -219,58 +219,77 @@ fn seen_keeps_the_latest_value_of_each_key_and_reads_once() {
     );
 }
 
+/// What `run` returns, with the storage reads and writes it makes. The chain
+/// charges each of them the same proof, whatever the size of the value.
+fn accesses<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
+    let count = || {
+        ink::env::test::get_contract_storage_rw::<ink::env::DefaultEnvironment>(
+            &ink::env::test::callee::<ink::env::DefaultEnvironment>(),
+        )
+    };
+    let before = count();
+    let result = run();
+    let after = count();
+    (result, after.0 - before.0, after.1 - before.1)
+}
+
 #[ink::test]
-fn a_public_id_is_taken_once_across_kinds() {
+fn a_public_id_is_taken_once_and_a_claim_is_one_access() {
     let mut data = fresh();
-    data.claim([1; 16], IdKind::Calendar).unwrap();
-    data.claim([2; 16], IdKind::Proposal).unwrap();
-    // The later kind of the two names the collision.
-    for (id, kind, code) in [
-        ([1; 16], IdKind::Calendar, "invalid_worker_state"),
-        ([1; 16], IdKind::Project, "invalid_project_state"),
-        ([1; 16], IdKind::Dispute, "invalid_dispute_id"),
-        ([2; 16], IdKind::Calendar, "duplicate_entity"),
-        ([2; 16], IdKind::Milestone, "invalid_storage_state"),
-        ([2; 16], IdKind::Deposit, "invalid_deposit_state"),
-        ([2; 16], IdKind::Withdrawal, "invalid_withdrawal_state"),
-        ([2; 16], IdKind::Submission, "invalid_submission_state"),
+    assert_eq!(
+        accesses(|| data.ids.claim([1; 16], "invalid_worker_state")),
+        (Ok(()), 0, 1)
+    );
+    // Whatever claims a taken ID is refused, with its own error.
+    for code in [
+        "invalid_worker_state",
+        "invalid_project_state",
+        "invalid_dispute_id",
     ] {
-        assert_eq!(data.claim(id, kind), Err(String::from(code)));
+        assert_eq!(
+            accesses(|| data.ids.claim([1; 16], code)),
+            (Err(String::from(code)), 0, 1)
+        );
     }
-    assert_eq!(
-        data.projects.public_ids.get([1; 16]),
-        Some(IdKind::Calendar)
-    );
-    assert_eq!(
-        data.projects.public_ids.get([2; 16]),
-        Some(IdKind::Proposal)
-    );
+    assert!(data.ids.contains([1; 16]));
+    assert!(!data.ids.contains([2; 16]));
 }
 
 #[ink::test]
 fn exchanging_ids_frees_dropped_ones_and_refuses_taken_or_repeated_ones() {
     let mut data = fresh();
-    let held = [([1; 16], IdKind::Proposal), ([2; 16], IdKind::Milestone)];
-    data.exchange(&[], &held).unwrap();
-    data.claim([9; 16], IdKind::Deposit).unwrap();
-    // Keeping an ID is not a collision with itself.
-    let next = [([2; 16], IdKind::Milestone), ([3; 16], IdKind::Milestone)];
-    data.exchange(&held, &next).unwrap();
-    assert!(!data.projects.public_ids.contains([1; 16]));
-    assert!(data.projects.public_ids.contains([2; 16]));
-    assert!(data.projects.public_ids.contains([3; 16]));
-    // A dropped ID can be taken again, by any kind.
-    data.claim([1; 16], IdKind::Submission).unwrap();
+    let held = [
+        ([1; 16], "duplicate_entity"),
+        ([2; 16], "invalid_storage_state"),
+    ];
+    data.ids.exchange(&[], &held).unwrap();
+    data.ids.claim([9; 16], "invalid_deposit_state").unwrap();
+    // Keeping an ID is not a collision with itself, and costs nothing: this
+    // frees one ID and takes one.
+    let next = [
+        ([2; 16], "invalid_storage_state"),
+        ([3; 16], "invalid_storage_state"),
+    ];
+    assert_eq!(accesses(|| data.ids.exchange(&held, &next)), (Ok(()), 0, 2));
+    assert!(!data.ids.contains([1; 16]));
+    assert!(data.ids.contains([2; 16]));
+    assert!(data.ids.contains([3; 16]));
+    // A dropped ID can be taken again, by anything.
+    data.ids.claim([1; 16], "invalid_submission_state").unwrap();
+    // A repeated ID is refused before anything is written.
     assert_eq!(
-        data.exchange(&next, &[([9; 16], IdKind::Proposal)]),
-        Err(String::from("invalid_deposit_state"))
+        accesses(|| data.ids.exchange(
+            &next,
+            &[
+                ([4; 16], "duplicate_entity"),
+                ([4; 16], "invalid_storage_state")
+            ]
+        )),
+        (Err(String::from("invalid_storage_state")), 0, 0)
     );
     assert_eq!(
-        data.exchange(
-            &next,
-            &[([4; 16], IdKind::Proposal), ([4; 16], IdKind::Milestone)]
-        ),
-        Err(String::from("invalid_storage_state"))
+        data.ids.exchange(&next, &[([9; 16], "duplicate_entity")]),
+        Err(String::from("duplicate_entity"))
     );
 }
 
@@ -314,23 +333,31 @@ fn a_project_layout_is_rewritten_by_difference() {
 }
 
 #[ink::test]
-fn project_submissions_are_rewritten_by_difference() {
+fn a_project_appends_its_submissions_at_a_fixed_cost() {
+    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
     let mut data = fresh();
     let project = [7; 16];
-    data.write_project_submissions(project, &[], &[[1; 16], [2; 16]]);
+    data.projects
+        .registered_projects
+        .insert(accounts.alice, &project);
+    // The third costs what the first does: the caller and the count are read,
+    // the ID, the entry and the count are written.
+    for id in [[1; 16], [2; 16], [3; 16]] {
+        assert_eq!(accesses(|| data.add_project_submission(id)), (Ok(()), 2, 3));
+    }
+    assert_eq!(data.projects.project_submissions.get(project), Some(3));
+    for (position, id) in [(0, [1; 16]), (1, [2; 16]), (2, [3; 16])] {
+        assert_eq!(
+            data.projects
+                .project_submission_values
+                .get((project, position)),
+            Some(id)
+        );
+    }
     assert_eq!(
-        data.project_submission_ids(project),
-        ink::prelude::vec![[1; 16], [2; 16]]
+        data.add_project_submission([2; 16]),
+        Err(String::from("invalid_submission_state"))
     );
-    data.write_project_submissions(project, &[[1; 16], [2; 16]], &[[3; 16]]);
-    assert_eq!(
-        data.project_submission_ids(project),
-        ink::prelude::vec![[3; 16]]
-    );
-    assert!(!data
-        .projects
-        .project_submission_values
-        .contains((project, 1)));
 }
 
 #[ink::test]
@@ -383,7 +410,12 @@ fn grouped_project_hooks_refuse_a_caller_that_is_not_a_registered_project() {
         Err(String::from("unknown_task_assignee"))
     );
     assert_eq!(data.projects.next_task_id, 1);
-    assert!(!data.projects.public_ids.contains([3; 16]));
+    assert_eq!(
+        data.add_project_submission([4; 16]),
+        Err(String::from("registered_project_required"))
+    );
+    assert!(!data.ids.contains([3; 16]));
+    assert!(!data.ids.contains([4; 16]));
     assert_eq!(data.bank.balance(accounts.bob), 0);
 }
 

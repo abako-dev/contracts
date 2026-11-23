@@ -314,7 +314,7 @@ pub(crate) fn create_deposit(dao: &mut Dao, amount: u64, seed: [u8; 32]) -> Resu
     let mut id = [0; 16];
     StdRng::from_seed(seed).fill_bytes(&mut id);
     dao.bank.create_deposit(origin, id, amount, dao.now())?;
-    dao.claim(id, crate::projects::IdKind::Deposit)?;
+    dao.ids.claim(id, "invalid_deposit_state")?;
     Ok(Effect::new(27, Some(id), origin))
 }
 
@@ -329,7 +329,7 @@ pub(crate) fn create_withdrawal(dao: &mut Dao, amount: u64, seed: [u8; 32]) -> R
     let mut id = [0; 16];
     StdRng::from_seed(seed).fill_bytes(&mut id);
     dao.bank.create_withdrawal(origin, id, amount, dao.now())?;
-    dao.claim(id, crate::projects::IdKind::Withdrawal)?;
+    dao.ids.claim(id, "invalid_withdrawal_state")?;
     Ok(Effect::new(29, Some(id), origin))
 }
 
