@@ -315,12 +315,26 @@ fn a_project_layout_is_rewritten_by_difference() {
         ),
         ([13; 16], Vec::new()),
     ];
-    data.write_project_layout(project, &first, &second);
+    // Written: the first proposal's record and milestone, the second
+    // proposal's record and new milestone, the third proposal's record and the
+    // count. Removed: the first proposal's second milestone. A full rewrite
+    // would also write the milestone that did not change.
+    assert_eq!(
+        accesses(|| data.write_project_layout(project, &first, &second)),
+        ((), 0, 7)
+    );
     assert_eq!(data.project_layout(project), second);
+    assert_eq!(
+        accesses(|| data.write_project_layout(project, &second, &second)),
+        ((), 0, 0)
+    );
     assert!(!data.projects.project_milestones.contains((project, 0, 1)));
     // Shrinking removes every entry past the end, and their milestones.
     let third: ProjectIdentities = ink::prelude::vec![([1; 16], Vec::new())];
-    data.write_project_layout(project, &second, &third);
+    assert_eq!(
+        accesses(|| data.write_project_layout(project, &second, &third)),
+        ((), 0, 7)
+    );
     assert_eq!(data.project_layout(project), third);
     assert!(!data.projects.project_milestones.contains((project, 0, 0)));
     assert!(!data.projects.project_proposals.contains((project, 1)));
@@ -675,6 +689,63 @@ fn approve_team_debits_the_client_and_reserves_the_calling_projects_team() {
 }
 
 #[ink::test]
+fn equal_candidates_are_drawn_from_one_stream_in_account_order() {
+    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let mut data = with_project();
+    let week = crate::calendar::Week::new(2026, 1).unwrap();
+    let window: crate::calendar::WeekWindow =
+        scale::Decode::decode(&mut &(week, week).encode()[..]).unwrap();
+    // Registered out of account order: the draw is over accounts in order.
+    for (account, calendar) in [
+        (accounts.frank, 13),
+        (accounts.bob, 11),
+        (accounts.charlie, 12),
+    ] {
+        register(&mut data, account, calendar, &[7], Vec::new());
+    }
+    register(&mut data, accounts.django, 14, &[], Vec::new());
+    ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+    let team = |data: &mut Dao, seed: u8| -> Vec<_> {
+        let requirement = |key| crate::matching::Requirement {
+            key,
+            role_id: 1,
+            skill_ids: ink::prelude::vec![7],
+            minutes: 10,
+        };
+        let teams = data
+            .approve_team(
+                accounts.eve,
+                0,
+                accounts.django,
+                ink::prelude::vec![crate::matching::Milestone {
+                    id: [seed; 16],
+                    window,
+                    coordinator_minutes: 0,
+                    requirements: ink::prelude::vec![requirement(1), requirement(2)],
+                }],
+                [seed; 32],
+            )
+            .unwrap();
+        teams[0].iter().map(|(_, account)| *account).collect()
+    };
+    // Recorded from this implementation. A change of the order candidates
+    // are listed in, or of how many draws a choice takes, changes these; that
+    // the stream matches the reference is for the backend's provider tests,
+    // which run the built contract.
+    let (bob, charlie, frank) = (accounts.bob, accounts.charlie, accounts.frank);
+    for (seed, expected) in [
+        (0, [charlie, bob]),
+        (1, [frank, bob]),
+        (2, [bob, frank]),
+        (3, [charlie, frank]),
+        (4, [bob, frank]),
+        (5, [charlie, frank]),
+    ] {
+        assert_eq!(team(&mut data, seed), expected, "seed {seed}");
+    }
+}
+
+#[ink::test]
 fn set_project_proposal_records_identities_and_references_and_answers_the_share() {
     let mut data = with_project();
     let project = [7; 16];
@@ -765,8 +836,11 @@ fn coordinators_are_indexed_by_their_mode_and_chosen_from_that_index() {
     let mut expected = ink::prelude::vec![accounts.bob, accounts.django];
     expected.sort();
     assert_eq!(coordinators(&data), expected);
+    // Neither is rated, so the seed draws between them, in account order.
+    // The outcome is recorded from this implementation, like the teams in
+    // `equal_candidates_are_drawn_from_one_stream_in_account_order`.
     let chosen = select(&data).unwrap();
-    assert!(expected.contains(&chosen));
+    assert_eq!(chosen, accounts.bob);
     ink::env::test::set_caller::<ink::env::DefaultEnvironment>(chosen);
     data.set_worker_mode(WorkerMode::Worker).unwrap();
     data.set_worker_mode(WorkerMode::Worker).unwrap();
