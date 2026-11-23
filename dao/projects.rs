@@ -138,13 +138,12 @@ impl Dao {
         )
     }
 
-    pub(crate) fn registered_project(&self) -> Result<()> {
-        require(
-            self.projects
-                .registered_projects
-                .contains(self.env().caller()),
-            "registered_project_required",
-        )
+    /// The project the calling contract was instantiated as.
+    pub(crate) fn calling_project(&self) -> Result<Id> {
+        self.projects
+            .registered_projects
+            .get(self.env().caller())
+            .ok_or_else(|| String::from("registered_project_required"))
     }
 
     /// Take `id` for an entity of `kind`, or fail if any entity has it.
@@ -342,13 +341,8 @@ impl Dao {
         }
     }
 
-    /// Record `layout` as the identities of the calling Project.
-    fn set_identities(&mut self, layout: &ProjectIdentities) -> Result<()> {
-        let id = self
-            .projects
-            .registered_projects
-            .get(self.env().caller())
-            .ok_or_else(|| String::from("registered_project_required"))?;
+    /// Record `layout` as the identities of project `id`.
+    fn set_identities(&mut self, id: Id, layout: &ProjectIdentities) -> Result<()> {
         let old = self.project_layout(id);
         if old != *layout {
             self.exchange(&layout_ids(&old), &layout_ids(layout))?;
@@ -357,20 +351,12 @@ impl Dao {
         Ok(())
     }
 
+    /// Check and record what a proposal references, or forget the proposal.
     fn set_references(
         &mut self,
         proposal_id: Id,
         qualifications: Option<Qualifications>,
     ) -> Result<()> {
-        require(
-            (self.projects.project_code.is_none()
-                && self.env().caller() == self.config.reference_controller)
-                || self
-                    .projects
-                    .registered_projects
-                    .contains(self.env().caller()),
-            "reference_controller_required",
-        )?;
         if let Some(qualifications) = qualifications {
             self.qualifications(&qualifications)?;
             self.write_proposal_qualifications(proposal_id, &qualifications);
@@ -443,10 +429,7 @@ pub(crate) fn create_project(
     )?;
     let client = dao.env().caller();
     let (coordinator, id) = dao.coordinator_selection(client, week, seed)?;
-    require(
-        !dao.projects.project_addresses.contains(id),
-        "invalid_project_state",
-    )?;
+    dao.claim(id, IdKind::Project)?;
     let code = dao
         .projects
         .project_code
@@ -463,7 +446,6 @@ pub(crate) fn create_project(
     dao.projects.project_addresses.insert(id, &address);
     dao.projects.registered_projects.insert(address, &id);
     insert_sorted(&mut dao.projects.project_ids, id);
-    dao.claim(id, IdKind::Project)?;
     if dao.bank.enabled() {
         dao.bank.provision(address)?;
     }
@@ -475,21 +457,20 @@ pub(crate) fn create_project(
     })
 }
 
-pub(crate) fn set_project_identities(dao: &mut Dao, layout: ProjectIdentities) -> Result<()> {
-    dao.set_identities(&layout)
-}
-
 /// One call for what a Project does on every change to a proposal: record its
-/// identities, then the references of the proposal that changed. Each call to
-/// the Dao is charged its whole code, so the two are not made separately.
+/// identities, then the references of the proposal that changed, and answer
+/// the compensation share its terms capture. Each call to the Dao is charged
+/// its whole code, so these are not made separately.
 pub(crate) fn set_project_proposal(
     dao: &mut Dao,
     layout: ProjectIdentities,
     proposal_id: Id,
     qualifications: Option<Qualifications>,
-) -> Result<()> {
-    dao.set_identities(&layout)?;
-    dao.set_references(proposal_id, qualifications)
+) -> Result<u8> {
+    let project = dao.calling_project()?;
+    dao.set_identities(project, &layout)?;
+    dao.set_references(proposal_id, qualifications)?;
+    Ok(dao.config.compensation_percent)
 }
 
 pub(crate) fn set_project_submissions(dao: &mut Dao, submissions: Vec<Id>) -> Result<()> {
@@ -536,7 +517,10 @@ pub(crate) fn disputes(dao: &Dao) -> Vec<(Id, Id)> {
         .collect()
 }
 
-pub(crate) fn allocate_task_id(dao: &mut Dao) -> Result<u32> {
+/// One call for a new task: check that the assignees are registered, then
+/// allocate the next global task ID.
+pub(crate) fn allocate_task(dao: &mut Dao, assignees: Vec<AccountId>) -> Result<u32> {
+    crate::members::validate_task_assignees(dao, assignees)?;
     dao.project_controller()?;
     let id = dao.projects.next_task_id;
     dao.projects.next_task_id = id
@@ -553,5 +537,14 @@ pub(crate) fn set_proposal_references(
     proposal_id: Id,
     qualifications: Option<Qualifications>,
 ) -> Result<()> {
+    require(
+        (dao.projects.project_code.is_none()
+            && dao.env().caller() == dao.config.reference_controller)
+            || dao
+                .projects
+                .registered_projects
+                .contains(dao.env().caller()),
+        "reference_controller_required",
+    )?;
     dao.set_references(proposal_id, qualifications)
 }

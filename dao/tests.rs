@@ -357,7 +357,6 @@ fn grouped_project_hooks_refuse_a_caller_that_is_not_a_registered_project() {
     );
     assert_eq!(
         data.approve_team(
-            [1; 16],
             accounts.bob,
             100,
             accounts.charlie,
@@ -386,55 +385,6 @@ fn grouped_project_hooks_refuse_a_caller_that_is_not_a_registered_project() {
     assert_eq!(data.projects.next_task_id, 1);
     assert!(!data.projects.public_ids.contains([3; 16]));
     assert_eq!(data.bank.balance(accounts.bob), 0);
-}
-
-#[ink::test]
-fn proposal_terms_answer_each_requirement_in_order() {
-    let mut data = fresh();
-    let commitment = MetadataCommitmentV1 {
-        operation_id: [3; 16],
-        hash: [4; 32],
-    };
-    data.upsert_catalog_entry(CatalogKind::Skill, 7, commitment)
-        .unwrap();
-    let requirement = |role, skills: &[u32]| Qualifications {
-        role_ids: ink::prelude::vec![role],
-        skill_ids: skills.to_vec(),
-    };
-    assert_eq!(
-        data.proposal_terms(ink::prelude::vec![
-            requirement(1, &[7]),
-            requirement(1, &[7])
-        ]),
-        Ok(data.compensation_policy())
-    );
-    // As one check per requirement did: the first one that fails names the error.
-    assert_eq!(
-        data.proposal_terms(ink::prelude::vec![
-            requirement(1, &[7]),
-            requirement(1, &[8]),
-            requirement(1, &[7, 7]),
-        ]),
-        Err(String::from("unknown_qualification"))
-    );
-    assert_eq!(
-        data.proposal_terms(ink::prelude::vec![
-            requirement(1, &[7, 7]),
-            requirement(2, &[7]),
-        ]),
-        Err(String::from("invalid_contract"))
-    );
-    for qualifications in [
-        requirement(1, &[7]),
-        requirement(2, &[7]),
-        requirement(1, &[0]),
-    ] {
-        assert_eq!(
-            data.proposal_terms(ink::prelude::vec![qualifications.clone()])
-                .map(|_| ()),
-            data.validate_qualifications(qualifications)
-        );
-    }
 }
 
 #[ink::test]

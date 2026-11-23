@@ -178,32 +178,15 @@ pub(crate) fn validate_task_assignees(dao: &Dao, accounts: Vec<AccountId>) -> Re
     )
 }
 
-/// Retained signed settlement variants contribute exact hundredths.
-pub(crate) fn apply_settlement_reputation(
-    dao: &mut Dao,
-    votes: Vec<(AccountId, WorkerMode, u16, u32)>,
-) -> Result<()> {
-    dao.registered_project()?;
-    for (account, mode, score, minutes) in votes {
-        let mut worker = dao.worker_record(account)?;
-        let target = match mode {
-            WorkerMode::Coordinator => &mut worker.coordinator_score,
-            WorkerMode::Worker => &mut worker.worker_score,
-        };
-        *target = reputation::add_hundredths(target, score, minutes, 1)?;
-        dao.members.workers.insert(account, &worker);
-    }
-    Ok(())
-}
-
 /// A milestone's settlement in one call: each call to the Dao is charged its
-/// whole code, and a team of five took eleven of them.
+/// whole code, and a team of five took eleven of them. Ratings contribute
+/// exact hundredths.
 pub(crate) fn settle(
     dao: &mut Dao,
     votes: Vec<SettlementVote>,
     credits: Vec<(AccountId, u64)>,
 ) -> Result<()> {
-    dao.registered_project()?;
+    dao.calling_project()?;
     let policy = dao.config.score_policy;
     for vote in votes {
         let hundredths = match vote.blend_with {
@@ -298,10 +281,7 @@ pub(crate) fn register_worker(
     let origin = dao.env().caller();
     require(!dao.members.workers.contains(origin), "worker_exists")?;
     dao.qualifications(&request.qualifications)?;
-    require(
-        dao.projects.public_ids.get(calendar_id) != Some(IdKind::Calendar),
-        "invalid_worker_state",
-    )?;
+    dao.claim(calendar_id, IdKind::Calendar)?;
     dao.calendars.register(origin, request.calendar)?;
     let skills = request.qualifications.skill_ids.clone();
     dao.write_worker(
@@ -318,7 +298,6 @@ pub(crate) fn register_worker(
     );
     dao.index_add(origin, &skills)?;
     insert_sorted(&mut dao.members.accounts, origin);
-    dao.claim(calendar_id, IdKind::Calendar)?;
     Ok(Effect::new(0, Some(calendar_id), origin))
 }
 
@@ -356,11 +335,13 @@ pub(crate) fn set_worker_mode(dao: &mut Dao, mode: WorkerMode) -> Result<Effect>
         mode != WorkerMode::Coordinator || worker.coordinator_eligible,
         "coordinator_not_eligible",
     )?;
-    worker.mode = mode;
-    dao.members.workers.insert(origin, &worker);
-    match mode {
-        WorkerMode::Coordinator => insert_sorted(&mut dao.members.coordinators, origin),
-        WorkerMode::Worker => indices::remove(&mut dao.members.coordinators, &origin),
+    if worker.mode != mode {
+        worker.mode = mode;
+        dao.members.workers.insert(origin, &worker);
+        match mode {
+            WorkerMode::Coordinator => insert_sorted(&mut dao.members.coordinators, origin),
+            WorkerMode::Worker => indices::remove(&mut dao.members.coordinators, &origin),
+        }
     }
     Ok(Effect::new(1, None, origin))
 }

@@ -178,8 +178,7 @@ impl Dao {
     }
 }
 
-/// All milestones share one RNG and transaction. Returning Err reverts
-/// every nested Calendar reservation, including earlier slots/milestones.
+/// Controller hook, also used by explicit assignment fixtures.
 pub(crate) fn assign_team(
     dao: &mut Dao,
     project_id: Id,
@@ -189,6 +188,34 @@ pub(crate) fn assign_team(
     seed: [u8; 32],
 ) -> Result<Vec<Vec<(u32, AccountId)>>> {
     dao.project_controller()?;
+    select_team(dao, project_id, client, coordinator, milestones, seed)
+}
+
+/// An approval in one call: debit the client's balance for the escrow, then
+/// select and reserve the team of the calling Project.
+pub(crate) fn approve_team(
+    dao: &mut Dao,
+    client: AccountId,
+    escrow: u64,
+    coordinator: AccountId,
+    milestones: Vec<Milestone>,
+    seed: [u8; 32],
+) -> Result<Vec<Vec<(u32, AccountId)>>> {
+    let project_id = dao.calling_project()?;
+    dao.bank.debit(client, escrow)?;
+    select_team(dao, project_id, client, coordinator, milestones, seed)
+}
+
+/// All milestones share one RNG and transaction. Returning Err reverts
+/// every nested Calendar reservation, including earlier slots/milestones.
+fn select_team(
+    dao: &mut Dao,
+    project_id: Id,
+    client: AccountId,
+    coordinator: AccountId,
+    milestones: Vec<Milestone>,
+    seed: [u8; 32],
+) -> Result<Vec<Vec<(u32, AccountId)>>> {
     let mut directory = Directory::default();
     let mut calendars = Session::default();
     let mut rng = StdRng::from_seed(seed);

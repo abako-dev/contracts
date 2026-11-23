@@ -120,10 +120,10 @@ impl Bank {
     pub fn minted(&self) -> u64 {
         self.minted
     }
-    /// Store a balance. An account with a balance is already in the index:
-    /// only a first balance searches and extends it.
-    fn write_balance(&mut self, account: AccountId, known: bool, amount: u64) {
-        if !known {
+    /// Store a balance in place of `previous`. An account with a balance is
+    /// already in the index: only a first balance searches and extends it.
+    fn write_balance(&mut self, account: AccountId, previous: Option<u64>, amount: u64) {
+        if previous.is_none() {
             indices::insert(&mut self.accounts, account);
         }
         self.balances.insert(account, &amount);
@@ -133,7 +133,7 @@ impl Bank {
         let stored = self.balances.get(account);
         let balance = add(stored.unwrap_or_default(), amount)?;
         self.provision(account)?;
-        self.write_balance(account, stored.is_some(), balance);
+        self.write_balance(account, stored, balance);
         Ok(())
     }
     pub fn debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
@@ -144,7 +144,7 @@ impl Bank {
         self.provision(account)?;
         self.write_balance(
             account,
-            stored.is_some(),
+            stored,
             balance
                 .checked_sub(amount)
                 .ok_or_else(|| String::from("arithmetic_or_calendar_error"))?,
@@ -368,12 +368,7 @@ pub(crate) fn financial_projection(dao: &Dao) -> Result<FinancialProjection> {
     ))
 }
 
-pub(crate) fn record_balance_debit(dao: &mut Dao, account: AccountId, amount: u64) -> Result<()> {
-    dao.registered_project()?;
-    dao.bank.debit(account, amount)
-}
-
 pub(crate) fn record_balance_credit(dao: &mut Dao, account: AccountId, amount: u64) -> Result<()> {
-    dao.registered_project()?;
+    dao.calling_project()?;
     dao.bank.credit(account, amount)
 }

@@ -127,25 +127,6 @@ impl Dao {
     }
 }
 
-/// What [`Dao::qualifications`] answers for each requirement in turn, asking
-/// the catalog once for each role and skill.
-pub(crate) fn proposal_terms(dao: &Dao, requirements: Vec<Qualifications>) -> Result<u8> {
-    let mut roles = indices::Seen::<u32, bool>::default();
-    let mut skills = indices::Seen::<u32, bool>::default();
-    for qualifications in &requirements {
-        qualifications.validate()?;
-        let mut known = true;
-        for id in &qualifications.role_ids {
-            known = known && roles.get_or(*id, || dao.catalog.roles.contains(id));
-        }
-        for id in &qualifications.skill_ids {
-            known = known && skills.get_or(*id, || dao.catalog.skills.contains(id));
-        }
-        require(known, "unknown_qualification")?;
-    }
-    Ok(dao.config.compensation_percent)
-}
-
 pub(crate) fn validate_qualifications(dao: &Dao, qualifications: Qualifications) -> Result<()> {
     dao.qualifications(&qualifications)
 }

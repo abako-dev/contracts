@@ -528,76 +528,45 @@ pub mod dao {
             crate::members::settle(self, votes, credits)
         }
 
-        /// Project hook for an approval, in one call: debit the client's
-        /// balance for the escrow, then select and reserve the team. The
-        /// Project performs the asset deposit.
+        /// Registered-Project hook for an approval, in one call: debit the
+        /// client's balance for the escrow, then select and reserve the team
+        /// of the calling Project. The Project performs the asset deposit.
         #[ink(message)]
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "One call carries what two hooks took."
-        )]
         pub fn approve_team(
             &mut self,
-            project_id: Id,
             client: AccountId,
             escrow: u64,
             coordinator: AccountId,
             milestones: Vec<Milestone>,
             seed: [u8; 32],
         ) -> Result<Vec<Vec<(u32, AccountId)>>> {
-            crate::bank::record_balance_debit(self, client, escrow)?;
-            crate::matching::assign_team(self, project_id, client, coordinator, milestones, seed)
+            crate::matching::approve_team(self, client, escrow, coordinator, milestones, seed)
         }
 
         /// Project hook for a new task, in one call: check that the assignees
         /// are registered, then allocate the next global task ID.
         #[ink(message)]
         pub fn allocate_task(&mut self, assignees: Vec<AccountId>) -> Result<u32> {
-            crate::members::validate_task_assignees(self, assignees)?;
-            crate::projects::allocate_task_id(self)
-        }
-
-        /// Project hook for a proposal's terms, in one call: check every
-        /// requirement's role and skills, in order, and return the
-        /// compensation share.
-        #[ink(message)]
-        pub fn proposal_terms(&self, requirements: Vec<Qualifications>) -> Result<u8> {
-            crate::catalog::proposal_terms(self, requirements)
+            crate::projects::allocate_task(self, assignees)
         }
 
         /// Registered-Project hook for a changed proposal, in one call: record
-        /// the Project's identities, then the proposal's references.
+        /// the Project's identities, then check and record the roles and
+        /// skills the proposal references. Returns the compensation share.
         #[ink(message)]
         pub fn set_project_proposal(
             &mut self,
             layout: ProjectIdentities,
             proposal_id: Id,
             qualifications: Option<Qualifications>,
-        ) -> Result<()> {
+        ) -> Result<u8> {
             crate::projects::set_project_proposal(self, layout, proposal_id, qualifications)
-        }
-
-        /// Allocate the next global task ID for an authorized Project controller.
-        #[ink(message)]
-        pub fn allocate_task_id(&mut self) -> Result<u32> {
-            crate::projects::allocate_task_id(self)
-        }
-
-        /// Registered-Project hook: debit accounting only; the Project performs the asset deposit.
-        #[ink(message)]
-        pub fn record_balance_debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
-            crate::bank::record_balance_debit(self, account, amount)
         }
 
         /// Registered-Project hook: credit accounting only; the Project performs the asset transfer.
         #[ink(message)]
         pub fn record_balance_credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
             crate::bank::record_balance_credit(self, account, amount)
-        }
-
-        #[ink(message)]
-        pub fn set_project_identities(&mut self, layout: ProjectIdentities) -> Result<()> {
-            crate::projects::set_project_identities(self, layout)
         }
 
         #[ink(message)]
@@ -634,15 +603,6 @@ pub mod dao {
             votes: Vec<Contribution>,
         ) -> Result<()> {
             crate::members::apply_reputation(self, project_id, author, votes)
-        }
-
-        /// Registered-Project hook for rated settlement contributions, in score hundredths.
-        #[ink(message)]
-        pub fn apply_settlement_reputation(
-            &mut self,
-            votes: Vec<(AccountId, WorkerMode, u16, u32)>,
-        ) -> Result<()> {
-            crate::members::apply_settlement_reputation(self, votes)
         }
 
         // Component hooks: fixture controller before factory setup, registered Projects afterward.

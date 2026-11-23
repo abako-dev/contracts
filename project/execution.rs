@@ -113,7 +113,6 @@ pub fn approve(
     // Project is called directly by the verified client: extension deposit debits
     // that client. Dao records free balance; it never substitutes as payer.
     let teams = state.dao().approve_team(
-        state.project.project_id,
         state.project.client,
         total,
         state.project.coordinator,
