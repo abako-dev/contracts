@@ -38,13 +38,23 @@ pub struct WorkerRecord {
 #[derive(Default, Debug)]
 pub(crate) struct Members {
     pub(crate) workers: Mapping<AccountId, WorkerRecord, ManualKey<4>>,
-    pub(crate) calendar_ids: Mapping<Id, bool, ManualKey<5>>,
     pub(crate) accounts: StorageVec<AccountId, ManualKey<52>>,
+    /// The members in Coordinator mode, in account order. `set_worker_mode`
+    /// maintains it and coordinator selection reads it.
+    pub(crate) coordinators: StorageVec<AccountId, ManualKey<57>>,
     pub(crate) skill_counts: Mapping<u32, u32, ManualKey<14>>,
     pub(crate) skill_members: Mapping<(u32, u32), AccountId, ManualKey<15>>,
     pub(crate) skill_positions: Mapping<(u32, AccountId), u32, ManualKey<16>>,
     pub(crate) worker_roles: Mapping<(AccountId, u32), u32, ManualKey<21>>,
     pub(crate) worker_skills: Mapping<(AccountId, u32), u32, ManualKey<22>>,
+}
+
+impl Members {
+    pub(crate) fn worker(&self, account: AccountId) -> Result<WorkerRecord> {
+        self.workers
+            .get(account)
+            .ok_or_else(|| String::from("worker_not_found"))
+    }
 }
 
 impl Dao {
@@ -95,10 +105,7 @@ impl Dao {
     }
 
     pub(crate) fn worker_record(&self, account: AccountId) -> Result<WorkerRecord> {
-        self.members
-            .workers
-            .get(account)
-            .ok_or_else(|| String::from("worker_not_found"))
+        self.members.worker(account)
     }
 
     pub(crate) fn worker_with_qualifications(&self, account: AccountId) -> Result<Worker> {
@@ -175,20 +182,34 @@ pub(crate) fn validate_task_assignees(dao: &Dao, accounts: Vec<AccountId>) -> Re
     )
 }
 
-/// Retained signed settlement variants contribute exact hundredths.
-pub(crate) fn apply_settlement_reputation(
+/// Settle a milestone of the calling Project: apply each vote to its
+/// account's score, then credit each account, in the order given. A vote
+/// counts its stars in exact hundredths, blended with the client's score by
+/// the score policy when `client_stars` is set.
+pub(crate) fn settle_milestone(
     dao: &mut Dao,
-    votes: Vec<(AccountId, WorkerMode, u16, u32)>,
+    votes: Vec<SettlementVote>,
+    credits: Vec<(AccountId, u64)>,
 ) -> Result<()> {
-    dao.registered_project()?;
-    for (account, mode, score, minutes) in votes {
-        let mut worker = dao.worker_record(account)?;
-        let target = match mode {
+    dao.calling_project()?;
+    let policy = dao.config.score_policy;
+    for vote in votes {
+        let hundredths = match vote.client_stars {
+            Some(client) => policy.blend(vote.stars, client)?,
+            None => u16::from(vote.stars)
+                .checked_mul(100)
+                .ok_or_else(|| String::from("arithmetic_or_calendar_error"))?,
+        };
+        let mut worker = dao.worker_record(vote.account)?;
+        let target = match vote.mode {
             WorkerMode::Coordinator => &mut worker.coordinator_score,
             WorkerMode::Worker => &mut worker.worker_score,
         };
-        *target = reputation::add_hundredths(target, score, minutes, 1)?;
-        dao.members.workers.insert(account, &worker);
+        *target = reputation::add_hundredths(target, hundredths, vote.minutes, 1)?;
+        dao.members.workers.insert(vote.account, &worker);
+    }
+    for (account, amount) in credits {
+        dao.bank.credit(account, amount)?;
     }
     Ok(())
 }
@@ -265,10 +286,7 @@ pub(crate) fn register_worker(
     let origin = dao.env().caller();
     require(!dao.members.workers.contains(origin), "worker_exists")?;
     dao.qualifications(&request.qualifications)?;
-    require(
-        !dao.members.calendar_ids.contains(calendar_id),
-        "invalid_worker_state",
-    )?;
+    dao.ids.claim(calendar_id, "invalid_worker_state")?;
     dao.calendars.register(origin, request.calendar)?;
     let skills = request.qualifications.skill_ids.clone();
     dao.write_worker(
@@ -285,8 +303,6 @@ pub(crate) fn register_worker(
     );
     dao.index_add(origin, &skills)?;
     insert_sorted(&mut dao.members.accounts, origin);
-    dao.members.calendar_ids.insert(calendar_id, &true);
-    dao.validate_public_ids()?;
     Ok(Effect::new(0, Some(calendar_id), origin))
 }
 
@@ -324,8 +340,14 @@ pub(crate) fn set_worker_mode(dao: &mut Dao, mode: WorkerMode) -> Result<Effect>
         mode != WorkerMode::Coordinator || worker.coordinator_eligible,
         "coordinator_not_eligible",
     )?;
-    worker.mode = mode;
-    dao.members.workers.insert(origin, &worker);
+    if worker.mode != mode {
+        worker.mode = mode;
+        dao.members.workers.insert(origin, &worker);
+        match mode {
+            WorkerMode::Coordinator => insert_sorted(&mut dao.members.coordinators, origin),
+            WorkerMode::Worker => indices::remove(&mut dao.members.coordinators, &origin),
+        }
+    }
     Ok(Effect::new(1, None, origin))
 }
 

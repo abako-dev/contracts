@@ -6,7 +6,7 @@ use crate::indices;
 use ink::codegen::Env as _;
 use ink::storage::{traits::ManualKey, Mapping, StorageVec};
 use ink::{
-    prelude::{collections::BTreeSet, string::String, vec::Vec},
+    prelude::{string::String, vec::Vec},
     primitives::AccountId,
 };
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -120,24 +120,31 @@ impl Bank {
     pub fn minted(&self) -> u64 {
         self.minted
     }
-    fn write_balance(&mut self, account: AccountId, amount: u64) {
-        indices::insert(&mut self.accounts, account);
+    /// Store `amount` as the balance of `account`. `previous` is the balance
+    /// storage holds: with `None`, the account is also added to the index.
+    fn write_balance(&mut self, account: AccountId, previous: Option<u64>, amount: u64) {
+        if previous.is_none() {
+            indices::insert(&mut self.accounts, account);
+        }
         self.balances.insert(account, &amount);
     }
     pub fn credit(&mut self, account: AccountId, amount: u64) -> Result<()> {
         self.covered()?;
-        let balance = add(self.balance(account), amount)?;
+        let stored = self.balances.get(account);
+        let balance = add(stored.unwrap_or_default(), amount)?;
         self.provision(account)?;
-        self.write_balance(account, balance);
+        self.write_balance(account, stored, balance);
         Ok(())
     }
     pub fn debit(&mut self, account: AccountId, amount: u64) -> Result<()> {
         self.covered()?;
-        let balance = self.balance(account);
+        let stored = self.balances.get(account);
+        let balance = stored.unwrap_or_default();
         require(balance >= amount, "insufficient_balance")?;
         self.provision(account)?;
         self.write_balance(
             account,
+            stored,
             balance
                 .checked_sub(amount)
                 .ok_or_else(|| String::from("arithmetic_or_calendar_error"))?,
@@ -271,15 +278,6 @@ impl Bank {
             .filter_map(|id| self.withdrawals.get(id))
             .collect()
     }
-    pub fn validate_ids(&self, identities: &mut BTreeSet<Id>) -> Result<()> {
-        for id in &indices::values(&self.deposit_ids) {
-            require(identities.insert(*id), "invalid_deposit_state")?;
-        }
-        for id in &indices::values(&self.withdrawal_ids) {
-            require(identities.insert(*id), "invalid_withdrawal_state")?;
-        }
-        Ok(())
-    }
 }
 impl Dao {
     pub(crate) fn now(&self) -> u64 {
@@ -316,7 +314,7 @@ pub(crate) fn create_deposit(dao: &mut Dao, amount: u64, seed: [u8; 32]) -> Resu
     let mut id = [0; 16];
     StdRng::from_seed(seed).fill_bytes(&mut id);
     dao.bank.create_deposit(origin, id, amount, dao.now())?;
-    dao.validate_public_ids()?;
+    dao.ids.claim(id, "invalid_deposit_state")?;
     Ok(Effect::new(27, Some(id), origin))
 }
 
@@ -331,7 +329,7 @@ pub(crate) fn create_withdrawal(dao: &mut Dao, amount: u64, seed: [u8; 32]) -> R
     let mut id = [0; 16];
     StdRng::from_seed(seed).fill_bytes(&mut id);
     dao.bank.create_withdrawal(origin, id, amount, dao.now())?;
-    dao.validate_public_ids()?;
+    dao.ids.claim(id, "invalid_withdrawal_state")?;
     Ok(Effect::new(29, Some(id), origin))
 }
 
@@ -370,12 +368,7 @@ pub(crate) fn financial_projection(dao: &Dao) -> Result<FinancialProjection> {
     ))
 }
 
-pub(crate) fn record_balance_debit(dao: &mut Dao, account: AccountId, amount: u64) -> Result<()> {
-    dao.registered_project()?;
-    dao.bank.debit(account, amount)
-}
-
 pub(crate) fn record_balance_credit(dao: &mut Dao, account: AccountId, amount: u64) -> Result<()> {
-    dao.registered_project()?;
+    dao.calling_project()?;
     dao.bank.credit(account, amount)
 }

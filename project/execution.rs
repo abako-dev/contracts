@@ -2,7 +2,7 @@
 use crate::{project::ProjectData, types::*};
 use dao::{
     assets,
-    dao::{Effect, WorkerMode},
+    dao::{Effect, SettlementVote, WorkerMode},
     matching,
     reputation::{Contribution, VoteKind},
 };
@@ -90,12 +90,6 @@ pub fn approve(
         sum.checked_add(m.definition.total()?)
             .ok_or_else(arithmetic)
     })?;
-    // Project is called directly by the verified client: extension deposit debits
-    // that client. Dao records free balance; it never substitutes as payer.
-    state
-        .dao()
-        .record_balance_debit(state.project.client, total)?;
-    assets::deposit(u128::from(total))?;
     let milestones = proposal
         .milestones
         .iter()
@@ -116,13 +110,16 @@ pub fn approve(
                 .collect(),
         })
         .collect();
-    let teams = state.dao().assign_team(
-        state.project.project_id,
+    // Project is called directly by the verified client: extension deposit debits
+    // that client. Dao records free balance; it never substitutes as payer.
+    let teams = state.dao().fund_and_assign_team(
         state.project.client,
+        total,
         state.project.coordinator,
         milestones,
         seed,
     )?;
+    assets::deposit(u128::from(total))?;
     for (position, milestone) in proposal.milestones.iter_mut().enumerate() {
         let assignments = teams
             .get(position)
@@ -197,15 +194,21 @@ pub fn submit(
     });
     milestone.worker_ratings = ratings;
     milestone.status = Some(MilestoneStatus::CompletionRequested);
-    let ids = state
+    // The Dao lists a project's submissions in the order of its milestones
+    // by appending each new one: a milestone starts when the one before it
+    // is complete, so no later milestone has a submission yet.
+    let last = state
         .project
         .proposals
         .iter()
         .flat_map(|p| &p.milestones)
         .flat_map(|m| &m.submissions)
-        .map(|s| s.submission_id)
-        .collect();
-    state.dao().set_project_submissions(ids)?;
+        .last();
+    require(
+        last.map(|s| s.submission_id) == Some(id),
+        "invalid_submission_state",
+    )?;
+    state.dao().record_submission(id)?;
     Ok(state.effect(22, id))
 }
 pub fn reject(
@@ -265,18 +268,15 @@ pub fn accept(
         "invalid_milestone_state",
     )?;
     pending(&current, submission_id)?;
+    let mut votes = Vec::new();
     if let Some((coordinator, team)) = ratings {
-        state
-            .dao()
-            .apply_settlement_reputation(ink::prelude::vec![(
-                state.project.coordinator,
-                WorkerMode::Coordinator,
-                u16::from(coordinator)
-                    .checked_mul(100)
-                    .ok_or_else(arithmetic)?,
-                current.definition.coordinator_minutes
-            )])?;
-        let policy = state.dao().score_policy();
+        votes.push(SettlementVote {
+            account: state.project.coordinator,
+            mode: WorkerMode::Coordinator,
+            stars: coordinator,
+            client_stars: None,
+            minutes: current.definition.coordinator_minutes,
+        });
         for requirement in &current.definition.requirements {
             let assigned = current
                 .assignments
@@ -288,41 +288,36 @@ pub fn accept(
                 .iter()
                 .find(|r| r.worker == assigned.worker)
                 .ok_or_else(|| String::from("provider_unavailable"))?;
-            let hundredths = match team {
-                TeamRating::Client(score) => policy.blend(rating.score, score)?,
-                TeamRating::DelegateToCoordinator => u16::from(rating.score)
-                    .checked_mul(100)
-                    .ok_or_else(arithmetic)?,
-            };
-            state
-                .dao()
-                .apply_settlement_reputation(ink::prelude::vec![(
-                    assigned.worker,
-                    WorkerMode::Worker,
-                    hundredths,
-                    requirement.minutes,
-                )])?;
+            votes.push(SettlementVote {
+                account: assigned.worker,
+                mode: WorkerMode::Worker,
+                stars: rating.score,
+                client_stars: match team {
+                    TeamRating::Client(score) => Some(score),
+                    TeamRating::DelegateToCoordinator => None,
+                },
+                minutes: requirement.minutes,
+            });
         }
     }
     let total = current.definition.total()?;
-    state.dao().record_balance_credit(
+    let mut payments = ink::prelude::vec![(
         state.project.coordinator,
-        current.definition.coordinator_fee,
-    )?;
-    assets::transfer(
-        u128::from(current.definition.coordinator_fee),
-        state.project.coordinator,
-    )?;
+        current.definition.coordinator_fee
+    )];
     for requirement in &current.definition.requirements {
         let assignment = current
             .assignments
             .iter()
             .find(|a| a.requirement_key == requirement.key)
             .ok_or_else(|| String::from("invalid_assignment_state"))?;
-        state
-            .dao()
-            .record_balance_credit(assignment.worker, requirement.budget)?;
-        assets::transfer(u128::from(requirement.budget), assignment.worker)?;
+        payments.push((assignment.worker, requirement.budget));
+    }
+    // The Dao applies the ratings and records every credit; the transfers
+    // out of this Project's escrow follow in the same order.
+    state.dao().settle_milestone(votes, payments.clone())?;
+    for (account, amount) in payments {
+        assets::transfer(u128::from(amount), account)?;
     }
     let origin = state.env().caller();
     let now = state.now();

@@ -3,6 +3,7 @@ use crate::calendar::Week;
 use crate::dao::*;
 use crate::indices;
 use crate::members::QualificationCounts;
+use crate::registry::Claim;
 use chrono::Datelike;
 use ink::codegen::Env as _;
 use ink::prelude::{collections::BTreeSet, string::String, vec::Vec};
@@ -47,6 +48,24 @@ pub(crate) struct Projects {
     pub(crate) reason_count: u64,
 }
 
+/// The public IDs a project's identities hold: its proposals, and each
+/// milestone with its task storage.
+fn identity_claims(identities: &ProjectIdentities) -> Vec<Claim> {
+    let claim = |id: &Id, error_if_taken| Claim {
+        id: *id,
+        error_if_taken,
+    };
+    let mut claims = Vec::new();
+    for (proposal, milestones) in identities {
+        claims.push(claim(proposal, "duplicate_entity"));
+        for (milestone, storage) in milestones {
+            claims.push(claim(milestone, "invalid_storage_state"));
+            claims.push(claim(storage, "invalid_storage_state"));
+        }
+    }
+    claims
+}
+
 impl Projects {
     pub(crate) fn new() -> Self {
         Self {
@@ -86,48 +105,12 @@ impl Dao {
         )
     }
 
-    pub(crate) fn registered_project(&self) -> Result<()> {
-        require(
-            self.projects
-                .registered_projects
-                .contains(self.env().caller()),
-            "registered_project_required",
-        )
-    }
-
-    /// Keep the same global traversal as the reference validation boundary.
-    /// Error identity depends on the later entity, not on which command generated it.
-    pub(crate) fn validate_public_ids(&self) -> Result<()> {
-        let mut identities = BTreeSet::new();
-        for account in &indices::values(&self.members.accounts) {
-            let worker = self.worker_record(*account)?;
-            require(
-                identities.insert(worker.calendar_id),
-                "invalid_worker_state",
-            )?;
-        }
-        for id in &indices::values(&self.projects.project_ids) {
-            require(identities.insert(*id), "invalid_project_state")?;
-            for (proposal, milestones) in self.project_layout(*id) {
-                require(identities.insert(proposal), "duplicate_entity")?;
-                for (milestone, storage) in milestones {
-                    require(
-                        identities.insert(milestone) && identities.insert(storage),
-                        "invalid_storage_state",
-                    )?;
-                }
-            }
-        }
-        self.bank.validate_ids(&mut identities)?;
-        for id in &indices::values(&self.projects.project_ids) {
-            for submission in self.project_submission_ids(*id) {
-                require(identities.insert(submission), "invalid_submission_state")?;
-            }
-        }
-        for id in &indices::values(&self.projects.dispute_ids) {
-            require(identities.insert(*id), "invalid_dispute_id")?;
-        }
-        Ok(())
+    /// The project the calling contract was instantiated as.
+    pub(crate) fn calling_project(&self) -> Result<Id> {
+        self.projects
+            .registered_projects
+            .get(self.env().caller())
+            .ok_or_else(|| String::from("registered_project_required"))
     }
 
     pub(crate) fn proposal_qualifications(&self, id: Id) -> Option<Qualifications> {
@@ -187,7 +170,7 @@ impl Dao {
         );
     }
 
-    pub(crate) fn project_layout(&self, id: Id) -> ProjectIdentities {
+    pub(crate) fn project_identities(&self, id: Id) -> ProjectIdentities {
         (0..self.projects.project_layouts.get(id).unwrap_or(0))
             .map(|i| {
                 let proposal = self
@@ -210,60 +193,81 @@ impl Dao {
             .collect()
     }
 
-    pub(crate) fn write_project_layout(&mut self, id: Id, layout: &ProjectIdentities) {
-        for i in 0..self.projects.project_layouts.get(id).unwrap_or(0) {
-            let proposal = self
-                .projects
-                .project_proposals
-                .get((id, i))
-                .expect("missing project proposal");
-            for j in 0..proposal.milestones {
-                self.projects.project_milestones.remove((id, i, j));
+    /// Store `identities` for project `id`, which holds `old`: write the
+    /// entries that differ and remove the ones past its end.
+    pub(crate) fn write_identities(
+        &mut self,
+        id: Id,
+        old: &ProjectIdentities,
+        identities: &ProjectIdentities,
+    ) {
+        for (i, (proposal, milestones)) in identities.iter().enumerate() {
+            let previous = old.get(i);
+            let kept = previous.map_or(0, |(_, milestones)| milestones.len());
+            if previous.map(|(id, _)| id) != Some(proposal) || kept != milestones.len() {
+                self.projects.project_proposals.insert(
+                    (id, count(i)),
+                    &ProjectProposalRecord {
+                        id: *proposal,
+                        milestones: count(milestones.len()),
+                    },
+                );
             }
-            self.projects.project_proposals.remove((id, i));
-        }
-        for (i, (proposal, milestones)) in layout.iter().enumerate() {
-            self.projects.project_proposals.insert(
-                (id, count(i)),
-                &ProjectProposalRecord {
-                    id: *proposal,
-                    milestones: count(milestones.len()),
-                },
-            );
             for (j, milestone) in milestones.iter().enumerate() {
+                if previous.and_then(|(_, milestones)| milestones.get(j)) != Some(milestone) {
+                    self.projects
+                        .project_milestones
+                        .insert((id, count(i), count(j)), milestone);
+                }
+            }
+            for j in milestones.len()..kept {
                 self.projects
                     .project_milestones
-                    .insert((id, count(i), count(j)), milestone);
+                    .remove((id, count(i), count(j)));
             }
         }
-        self.projects
-            .project_layouts
-            .insert(id, &count(layout.len()));
-    }
-
-    pub(crate) fn project_submission_ids(&self, id: Id) -> Vec<Id> {
-        (0..self.projects.project_submissions.get(id).unwrap_or(0))
-            .map(|i| {
+        for (i, (_, milestones)) in old.iter().enumerate().skip(identities.len()) {
+            for j in 0..milestones.len() {
                 self.projects
-                    .project_submission_values
-                    .get((id, i))
-                    .expect("missing project submission")
-            })
-            .collect()
+                    .project_milestones
+                    .remove((id, count(i), count(j)));
+            }
+            self.projects.project_proposals.remove((id, count(i)));
+        }
+        if old.len() != identities.len() {
+            self.projects
+                .project_layouts
+                .insert(id, &count(identities.len()));
+        }
     }
 
-    pub(crate) fn write_project_submissions(&mut self, id: Id, submissions: &[Id]) {
-        for i in 0..self.projects.project_submissions.get(id).unwrap_or(0) {
-            self.projects.project_submission_values.remove((id, i));
+    /// Record `identities` for project `id`: claim the IDs they add, free
+    /// the ones they drop, and store them.
+    fn set_identities(&mut self, id: Id, identities: &ProjectIdentities) -> Result<()> {
+        let old = self.project_identities(id);
+        if old != *identities {
+            self.ids
+                .replace(&identity_claims(&old), &identity_claims(identities))?;
+            self.write_identities(id, &old, identities);
         }
-        for (i, submission) in submissions.iter().enumerate() {
-            self.projects
-                .project_submission_values
-                .insert((id, count(i)), submission);
+        Ok(())
+    }
+
+    /// Check and record what a proposal references, or forget the proposal.
+    fn set_qualifications(
+        &mut self,
+        proposal_id: Id,
+        qualifications: Option<Qualifications>,
+    ) -> Result<()> {
+        if let Some(qualifications) = qualifications {
+            self.qualifications(&qualifications)?;
+            self.write_proposal_qualifications(proposal_id, &qualifications);
+            insert_sorted(&mut self.projects.proposal_ids, proposal_id);
+        } else {
+            self.remove_proposal_qualifications(proposal_id);
+            indices::remove(&mut self.projects.proposal_ids, &proposal_id);
         }
-        self.projects
-            .project_submissions
-            .insert(id, &count(submissions.len()));
+        Ok(())
     }
 }
 
@@ -327,10 +331,7 @@ pub(crate) fn create_project(
     )?;
     let client = dao.env().caller();
     let (coordinator, id) = dao.coordinator_selection(client, week, seed)?;
-    require(
-        !dao.projects.project_addresses.contains(id),
-        "invalid_project_state",
-    )?;
+    dao.ids.claim(id, "invalid_project_state")?;
     let code = dao
         .projects
         .project_code
@@ -347,7 +348,6 @@ pub(crate) fn create_project(
     dao.projects.project_addresses.insert(id, &address);
     dao.projects.registered_projects.insert(address, &id);
     insert_sorted(&mut dao.projects.project_ids, id);
-    dao.validate_public_ids()?;
     if dao.bank.enabled() {
         dao.bank.provision(address)?;
     }
@@ -359,24 +359,37 @@ pub(crate) fn create_project(
     })
 }
 
-pub(crate) fn set_project_identities(dao: &mut Dao, layout: ProjectIdentities) -> Result<()> {
-    let id = dao
-        .projects
-        .registered_projects
-        .get(dao.env().caller())
-        .ok_or_else(|| String::from("registered_project_required"))?;
-    dao.write_project_layout(id, &layout);
-    dao.validate_public_ids()
+/// Record a changed proposal of the calling Project: the Project's
+/// identities, then the roles and skills the proposal references, checked
+/// against the catalog. `None` forgets the proposal's references. Returns the
+/// coordinator's compensation percent, for the Project to split budgets by.
+pub(crate) fn record_proposal(
+    dao: &mut Dao,
+    identities: ProjectIdentities,
+    proposal_id: Id,
+    qualifications: Option<Qualifications>,
+) -> Result<u8> {
+    let project = dao.calling_project()?;
+    dao.set_identities(project, &identities)?;
+    dao.set_qualifications(proposal_id, qualifications)?;
+    Ok(dao.config.compensation_percent)
 }
 
-pub(crate) fn set_project_submissions(dao: &mut Dao, submissions: Vec<Id>) -> Result<()> {
-    let id = dao
-        .projects
-        .registered_projects
-        .get(dao.env().caller())
-        .ok_or_else(|| String::from("registered_project_required"))?;
-    dao.write_project_submissions(id, &submissions);
-    dao.validate_public_ids()
+/// Record a new submission of the calling Project, after the ones it has.
+/// Project submits to one milestone at a time, in their order, so appending
+/// keeps the order of its milestones.
+pub(crate) fn record_submission(dao: &mut Dao, submission: Id) -> Result<()> {
+    let project = dao.calling_project()?;
+    dao.ids.claim(submission, "invalid_submission_state")?;
+    let position = dao.projects.project_submissions.get(project).unwrap_or(0);
+    let next = position
+        .checked_add(1)
+        .ok_or_else(|| String::from("invalid_submission_state"))?;
+    dao.projects
+        .project_submission_values
+        .insert((project, position), &submission);
+    dao.projects.project_submissions.insert(project, &next);
+    Ok(())
 }
 
 pub(crate) fn register_dispute(dao: &mut Dao, id: Id) -> Result<()> {
@@ -391,7 +404,7 @@ pub(crate) fn register_dispute(dao: &mut Dao, id: Id) -> Result<()> {
     )?;
     dao.projects.dispute_owners.insert(id, &project);
     insert_sorted(&mut dao.projects.dispute_ids, id);
-    dao.validate_public_ids()
+    dao.ids.claim(id, "invalid_dispute_id")
 }
 
 pub(crate) fn dispute_project(dao: &Dao, id: Id) -> Option<Id> {
@@ -410,7 +423,10 @@ pub(crate) fn disputes(dao: &Dao) -> Vec<(Id, Id)> {
         .collect()
 }
 
-pub(crate) fn allocate_task_id(dao: &mut Dao) -> Result<u32> {
+/// Check that the assignees are registered, then allocate the next global
+/// task ID.
+pub(crate) fn allocate_task(dao: &mut Dao, assignees: Vec<AccountId>) -> Result<u32> {
+    crate::members::validate_task_assignees(dao, assignees)?;
     dao.project_controller()?;
     let id = dao.projects.next_task_id;
     dao.projects.next_task_id = id
@@ -436,13 +452,5 @@ pub(crate) fn set_proposal_references(
                 .contains(dao.env().caller()),
         "reference_controller_required",
     )?;
-    if let Some(qualifications) = qualifications {
-        dao.qualifications(&qualifications)?;
-        dao.write_proposal_qualifications(proposal_id, &qualifications);
-        insert_sorted(&mut dao.projects.proposal_ids, proposal_id);
-    } else {
-        dao.remove_proposal_qualifications(proposal_id);
-        indices::remove(&mut dao.projects.proposal_ids, &proposal_id);
-    }
-    Ok(())
+    dao.set_qualifications(proposal_id, qualifications)
 }

@@ -14,7 +14,10 @@ pub mod project {
     };
     use chrono::{Datelike, Duration, NaiveDate, Weekday};
     use dao::calendar::Week;
-    use dao::dao::{DaoRef, Effect, MetadataCommitmentV1, MetadataReferenceV1, Qualifications};
+    use dao::dao::{
+        DaoRef, Effect, MetadataCommitmentV1, MetadataReferenceV1, ProjectIdentities,
+        Qualifications,
+    };
     use ink::codegen::Env as _;
     use ink::storage::{traits::ManualKey, Lazy, Mapping};
     use ink::{
@@ -48,6 +51,7 @@ pub mod project {
         pub(crate) disputes: Mapping<u32, DisputeRecord, ManualKey<23>>,
     }
 
+    #[derive(Clone)]
     pub(crate) struct ProjectData {
         pub(crate) dao: AccountId,
         pub(crate) project: ProjectCore,
@@ -104,9 +108,8 @@ pub mod project {
         pub fn reasons(&self) -> Vec<ReasonRecord> {
             self.reasons.clone()
         }
-        fn sync_identities(&mut self) -> Result<()> {
-            let layout = self
-                .project
+        fn identities(&self) -> ProjectIdentities {
+            self.project
                 .proposals
                 .iter()
                 .map(|proposal| {
@@ -119,8 +122,7 @@ pub mod project {
                             .collect(),
                     )
                 })
-                .collect();
-            self.dao().set_project_identities(layout)
+                .collect()
         }
         pub(crate) fn dao(&self) -> DaoRef {
             DaoRef::from_account_id(self.dao)
@@ -205,21 +207,37 @@ pub mod project {
             }
             Err("task_storage_not_found".into())
         }
-        fn qualifications(&self, definition: &ProposalTerms) -> Result<Qualifications> {
+        /// Record the proposal at `index` with the Dao, which checks the
+        /// roles and skills it references, then split each milestone's budget
+        /// by the compensation percent the Dao returns.
+        fn record_proposal(&mut self, index: usize) -> Result<()> {
+            let proposal = &self.project.proposals[index];
+            // Inserted one by one on purpose: `collect` into a set pulls
+            // sorting code into the contract.
             let mut roles = BTreeSet::new();
             let mut skills = BTreeSet::new();
-            for requirement in definition.milestones.iter().flat_map(|m| &m.requirements) {
-                self.dao().validate_qualifications(Qualifications {
-                    role_ids: ink::prelude::vec![requirement.role_id],
-                    skill_ids: requirement.skill_ids.clone(),
-                })?;
-                roles.insert(requirement.role_id);
-                skills.extend(requirement.skill_ids.iter().copied());
+            for milestone in &proposal.milestones {
+                for requirement in &milestone.definition.requirements {
+                    roles.insert(requirement.role_id);
+                    skills.extend(requirement.skill_ids.iter().copied());
+                }
             }
-            Ok(Qualifications {
-                role_ids: roles.into_iter().collect(),
-                skill_ids: skills.into_iter().collect(),
-            })
+            let percent = self.dao().record_proposal(
+                self.identities(),
+                proposal.proposal_id,
+                Some(Qualifications {
+                    role_ids: roles.into_iter().collect(),
+                    skill_ids: skills.into_iter().collect(),
+                }),
+            )?;
+            let proposal = &mut self.project.proposals[index];
+            for milestone in &mut proposal.milestones {
+                milestone.definition.allocate(percent)?;
+            }
+            proposal.compensation_policy = Some(CompensationPolicy {
+                coordinator_percent: percent,
+            });
+            Ok(())
         }
         pub fn open_dispute(
             &mut self,
@@ -300,7 +318,7 @@ pub mod project {
         }
         pub fn create_proposal(
             &mut self,
-            mut terms: ProposalTerms,
+            terms: ProposalTerms,
             content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
@@ -308,14 +326,10 @@ pub mod project {
             self.guard()?;
             self.coordinator()?;
             self.planning_active()?;
-            let qualifications = self.qualifications(&terms)?;
-            let percent = self.dao().compensation_policy();
-            for milestone in &mut terms.milestones {
-                milestone.allocate(percent)?;
-            }
             let mut rng = StdRng::from_seed(seed);
             let proposal_id = random_id(&mut rng);
             let milestones = make_milestones(&terms, &[], &mut rng);
+            let index = self.project.proposals.len();
             self.project.proposals.push(ProposalCore {
                 proposal_id,
                 revision: 0,
@@ -324,19 +338,15 @@ pub mod project {
                 milestones,
                 change_request: None,
                 delivery: None,
-                compensation_policy: Some(CompensationPolicy {
-                    coordinator_percent: percent,
-                }),
+                compensation_policy: None,
             });
-            self.sync_identities()?;
-            self.dao()
-                .set_proposal_references(proposal_id, Some(qualifications))?;
+            self.record_proposal(index)?;
             Ok(self.effect(10, proposal_id))
         }
         pub fn update_proposal(
             &mut self,
             proposal_id: Id,
-            mut terms: ProposalTerms,
+            terms: ProposalTerms,
             content: MetadataCommitmentV1,
             seed: [u8; 32],
         ) -> Result<Effect> {
@@ -344,11 +354,6 @@ pub mod project {
             self.guard()?;
             self.coordinator()?;
             self.planning_active()?;
-            let qualifications = self.qualifications(&terms)?;
-            let percent = self.dao().compensation_policy();
-            for milestone in &mut terms.milestones {
-                milestone.allocate(percent)?;
-            }
             let index = self.proposal_index(proposal_id)?;
             require(
                 self.project.proposals[index].status == ProposalStatus::Draft,
@@ -359,14 +364,9 @@ pub mod project {
             let milestones = make_milestones(&terms, previous, &mut rng);
             let current = &mut self.project.proposals[index];
             current.milestones = milestones;
-            current.compensation_policy = Some(CompensationPolicy {
-                coordinator_percent: percent,
-            });
             current.content = ProposalContentReferenceV1::Signed(content);
             bump(&mut current.revision)?;
-            self.sync_identities()?;
-            self.dao()
-                .set_proposal_references(proposal_id, Some(qualifications))?;
+            self.record_proposal(index)?;
             Ok(self.effect(11, proposal_id))
         }
         pub fn delete_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
@@ -379,8 +379,8 @@ pub mod project {
                 "proposal_not_draft",
             )?;
             self.project.proposals.remove(index);
-            self.sync_identities()?;
-            self.dao().set_proposal_references(proposal_id, None)?;
+            self.dao()
+                .record_proposal(self.identities(), proposal_id, None)?;
             Ok(self.effect(12, proposal_id))
         }
         pub fn set_proposal_delivery(
@@ -513,8 +513,7 @@ pub mod project {
             require(unique(&assignees), "invalid_contract")?;
             self.guard()?;
             self.coordinator()?;
-            self.dao().validate_task_assignees(assignees.clone())?;
-            let task_id = self.dao().allocate_task_id()?;
+            let task_id = self.dao().allocate_task(assignees.clone())?;
             let (pi, mi) = self.storage_index(task_storage_id)?;
             self.project.proposals[pi].milestones[mi]
                 .task_storage
@@ -722,9 +721,10 @@ pub mod project {
             read(self.load().expect("complete Project storage"))
         }
         fn change<T>(&mut self, change: impl FnOnce(&mut ProjectData) -> Result<T>) -> Result<T> {
-            let mut data = self.load()?;
+            let loaded = self.load()?;
+            let mut data = loaded.clone();
             let result = change(&mut data)?;
-            self.save(&data)?;
+            self.save(&data, Some(&loaded))?;
             Ok(result)
         }
         #[ink(constructor)]
@@ -742,7 +742,7 @@ pub mod project {
         ) -> Result<Self> {
             let data = ProjectData::new(dao, project_id, client, coordinator, content, now)?;
             let mut stored = Self::empty(dao, project_id);
-            stored.save(&data)?;
+            stored.save(&data, None)?;
             Ok(stored)
         }
         // Queries.

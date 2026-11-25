@@ -11,9 +11,12 @@
 //! weights are configured separately through Dao's authorized score policy;
 //! changing this algorithm still requires a reviewed contract-code change.
 use crate::calendar::{ReservationView, Week, WeekWindow};
+use crate::members::{Members, WorkerRecord};
 use crate::{
     dao::{require, Dao, Id, Result, WorkerMode},
-    indices, reputation,
+    indices,
+    read_cache::ReadCache,
+    reputation,
 };
 use core::cmp::Ordering;
 use ink::{
@@ -45,33 +48,100 @@ pub struct Milestone {
     pub requirements: Vec<Requirement>,
 }
 
-impl Dao {
-    pub(crate) fn coordinator_selection(
-        &self,
-        client: AccountId,
-        week: Week,
-        seed: [u8; 32],
-    ) -> Result<(AccountId, Id)> {
-        let mut candidates = Vec::new();
-        for account in &indices::values(&self.members.accounts) {
-            let worker = self.worker_record(*account)?;
-            if worker.mode == WorkerMode::Coordinator
-                && worker.coordinator_eligible
-                && *account != client
-                && self.calendars.available(*account, week)? != 0
-            {
-                candidates.push(*account);
-            }
+/// The members as one selection reads them: each worker record and skill
+/// index comes from storage once and from memory afterwards. It borrows the
+/// members, so they cannot change while it lives.
+struct MemberCache<'a> {
+    members: &'a Members,
+    workers: ReadCache<AccountId, WorkerRecord>,
+    skill_holder_counts: ReadCache<u32, u32>,
+    skill_holders: ReadCache<u32, Vec<AccountId>>,
+    /// Whether an account holds a skill, for skills whose index is not read.
+    has_skill: ReadCache<(u32, AccountId), bool>,
+}
+
+impl<'a> MemberCache<'a> {
+    fn new(members: &'a Members) -> Self {
+        Self {
+            members,
+            workers: ReadCache::default(),
+            skill_holder_counts: ReadCache::default(),
+            skill_holders: ReadCache::default(),
+            has_skill: ReadCache::default(),
         }
-        let mut rng = StdRng::from_seed(seed);
-        let chosen = self.choose(&candidates, WorkerMode::Coordinator, &mut rng)?;
-        let mut id = [0; 16];
-        rng.fill_bytes(&mut id);
-        Ok((chosen, id))
     }
 
-    fn choose(
-        &self,
+    fn worker(&mut self, account: AccountId) -> Result<&WorkerRecord> {
+        let members = self.members;
+        let worker = self
+            .workers
+            .get_or_try_insert_with(account, || members.worker(account))?;
+        Ok(worker)
+    }
+
+    fn skill_holder_count(&mut self, skill: u32) -> u32 {
+        let members = self.members;
+        *self
+            .skill_holder_counts
+            .get_or_insert_with(skill, || members.skill_counts.get(skill).unwrap_or(0))
+    }
+
+    /// The accounts indexed under `skill`, in index order.
+    fn skill_holders(&mut self, skill: u32) -> Result<&[AccountId]> {
+        let count = self.skill_holder_count(skill);
+        let members = self.members;
+        let holders = self
+            .skill_holders
+            .get_or_try_insert_with(skill, || -> Result<_> {
+                // A loop on purpose, here and below: `collect` into a `Result`
+                // or a set pulls sorting code into the contract.
+                let mut holders = Vec::new();
+                for position in 0..count {
+                    holders.push(
+                        members
+                            .skill_members
+                            .get((skill, position))
+                            .ok_or_else(|| String::from("invalid_worker_state"))?,
+                    );
+                }
+                Ok(holders)
+            })?;
+        Ok(holders)
+    }
+
+    /// Whether `account` holds `skill`: from the skill's index if this
+    /// selection has read it whole, and from one storage entry otherwise.
+    fn has_skill(&mut self, account: AccountId, skill: u32) -> bool {
+        if let Some(holders) = self.skill_holders.get(&skill) {
+            return holders.contains(&account);
+        }
+        let members = self.members;
+        *self.has_skill.get_or_insert_with((skill, account), || {
+            members.skill_positions.contains((skill, account))
+        })
+    }
+
+    /// The accounts that hold every one of `skills`, in account order. Reads
+    /// the index of the skill with the fewest holders and checks each of its
+    /// accounts for the others.
+    fn accounts_with_all(&mut self, skills: &[u32]) -> Result<BTreeSet<AccountId>> {
+        let rarest = skills
+            .iter()
+            .copied()
+            .min_by_key(|skill| self.skill_holder_count(*skill))
+            .ok_or_else(|| String::from("missing_skills"))?;
+        let mut accounts = BTreeSet::new();
+        for account in self.skill_holders(rarest)?.to_vec() {
+            if skills.iter().all(|skill| self.has_skill(account, *skill)) {
+                accounts.insert(account);
+            }
+        }
+        Ok(accounts)
+    }
+
+    /// The best-rated of `candidates` in `mode`, drawing among equals.
+    fn pick_best(
+        &mut self,
         candidates: &[AccountId],
         mode: WorkerMode,
         rng: &mut StdRng,
@@ -79,18 +149,18 @@ impl Dao {
         let mut winners = Vec::new();
         let mut best = None;
         for account in candidates {
-            let worker = self.worker_record(*account)?;
+            let worker = self.worker(*account)?;
             let score = if mode == WorkerMode::Worker {
-                worker.worker_score
+                &worker.worker_score
             } else {
-                worker.coordinator_score
+                &worker.coordinator_score
             };
             let order = best.as_ref().map_or(Ordering::Greater, |current| {
-                reputation::compare(&score, current)
+                reputation::compare(score, current)
             });
             if order == Ordering::Greater {
                 winners.clear();
-                best = Some(score);
+                best = Some(score.clone());
             }
             if order != Ordering::Less {
                 winners.push(*account);
@@ -108,8 +178,34 @@ impl Dao {
     }
 }
 
-/// All milestones share one RNG and transaction. Returning Err reverts
-/// every nested Calendar reservation, including earlier slots/milestones.
+impl Dao {
+    pub(crate) fn coordinator_selection(
+        &self,
+        client: AccountId,
+        week: Week,
+        seed: [u8; 32],
+    ) -> Result<(AccountId, Id)> {
+        let mut members = MemberCache::new(&self.members);
+        let mut candidates = Vec::new();
+        for account in indices::values(&self.members.coordinators) {
+            let worker = members.worker(account)?;
+            if worker.mode == WorkerMode::Coordinator
+                && worker.coordinator_eligible
+                && account != client
+                && self.calendars.available(account, week)? != 0
+            {
+                candidates.push(account);
+            }
+        }
+        let mut rng = StdRng::from_seed(seed);
+        let chosen = members.pick_best(&candidates, WorkerMode::Coordinator, &mut rng)?;
+        let mut id = [0; 16];
+        rng.fill_bytes(&mut id);
+        Ok((chosen, id))
+    }
+}
+
+/// Controller hook, also used by explicit assignment fixtures.
 pub(crate) fn assign_team(
     dao: &mut Dao,
     project_id: Id,
@@ -119,91 +215,106 @@ pub(crate) fn assign_team(
     seed: [u8; 32],
 ) -> Result<Vec<Vec<(u32, AccountId)>>> {
     dao.project_controller()?;
+    select_team(dao, project_id, client, coordinator, milestones, seed)
+}
+
+/// Debit the client's balance for the escrow, then select and reserve the
+/// team of the calling Project.
+pub(crate) fn fund_and_assign_team(
+    dao: &mut Dao,
+    client: AccountId,
+    escrow: u64,
+    coordinator: AccountId,
+    milestones: Vec<Milestone>,
+    seed: [u8; 32],
+) -> Result<Vec<Vec<(u32, AccountId)>>> {
+    let project_id = dao.calling_project()?;
+    dao.bank.debit(client, escrow)?;
+    select_team(dao, project_id, client, coordinator, milestones, seed)
+}
+
+/// All milestones share one RNG and transaction. Returning Err reverts
+/// every nested Calendar reservation, including earlier slots/milestones.
+fn select_team(
+    dao: &mut Dao,
+    project_id: Id,
+    client: AccountId,
+    coordinator: AccountId,
+    milestones: Vec<Milestone>,
+    seed: [u8; 32],
+) -> Result<Vec<Vec<(u32, AccountId)>>> {
+    let mut members = MemberCache::new(&dao.members);
     let mut rng = StdRng::from_seed(seed);
-    let mut earlier = BTreeSet::new();
-    let mut result = Vec::new();
-    for milestone in milestones {
-        let reference = ReservationView {
-            project_id,
-            milestone_id: Some(milestone.id),
-            requirement_key: None,
-            week: milestone.window.start(),
-            minutes: 0,
-        };
-        dao.calendars.reserve(
-            coordinator,
-            milestone.window,
-            milestone.coordinator_minutes,
-            reference.clone(),
-        )?;
-        let mut used = BTreeSet::from([client, coordinator]);
-        let mut assignments = Vec::new();
-        for Requirement {
-            key,
-            skill_ids,
-            minutes,
-            ..
-        } in milestone.requirements
-        {
-            let first = skill_ids
-                .first()
-                .ok_or_else(|| String::from("missing_skills"))?;
-            let mut candidates = BTreeSet::new();
-            for position in 0..dao.members.skill_counts.get(first).unwrap_or(0) {
-                let account = dao
-                    .members
-                    .skill_members
-                    .get((first, position))
-                    .ok_or_else(|| String::from("invalid_worker_state"))?;
-                if skill_ids
-                    .iter()
-                    .all(|skill| dao.members.skill_positions.contains((skill, account)))
-                {
-                    candidates.insert(account);
-                }
-            }
-            let mut available = Vec::new();
-            for account in candidates {
-                let worker = dao.worker_record(account)?;
-                if used.contains(&account) || worker.mode != WorkerMode::Worker {
-                    continue;
-                }
-                match dao.calendars.allocation(account, milestone.window, minutes) {
-                    Ok(_) => available.push(account),
-                    Err(code) if code == "insufficient_capacity" => {}
-                    Err(code) => return Err(code),
-                }
-            }
-            let previous: Vec<_> = available
-                .iter()
-                .copied()
-                .filter(|account| earlier.contains(account))
-                .collect();
-            let chosen = dao.choose(
-                if previous.is_empty() {
-                    &available
-                } else {
-                    &previous
-                },
-                WorkerMode::Worker,
-                &mut rng,
-            )?;
-            dao.calendars.reserve(
-                chosen,
+    dao.calendars.with_cache(|calendars| {
+        let mut earlier = BTreeSet::new();
+        let mut result = Vec::new();
+        for milestone in milestones {
+            let reference = ReservationView {
+                project_id,
+                milestone_id: Some(milestone.id),
+                requirement_key: None,
+                week: milestone.window.start(),
+                minutes: 0,
+            };
+            calendars.reserve(
+                coordinator,
                 milestone.window,
-                minutes,
-                ReservationView {
-                    requirement_key: Some(key),
-                    ..reference.clone()
-                },
+                milestone.coordinator_minutes,
+                reference.clone(),
             )?;
-            assignments.push((key, chosen));
-            used.insert(chosen);
+            let mut used = BTreeSet::from([client, coordinator]);
+            let mut assignments = Vec::new();
+            for Requirement {
+                key,
+                skill_ids,
+                minutes,
+                ..
+            } in milestone.requirements
+            {
+                let mut available = Vec::new();
+                for account in members.accounts_with_all(&skill_ids)? {
+                    if used.contains(&account)
+                        || members.worker(account)?.mode != WorkerMode::Worker
+                    {
+                        continue;
+                    }
+                    match calendars.allocation(account, milestone.window, minutes) {
+                        Ok(_) => available.push(account),
+                        Err(code) if code == "insufficient_capacity" => {}
+                        Err(code) => return Err(code),
+                    }
+                }
+                let previous: Vec<_> = available
+                    .iter()
+                    .copied()
+                    .filter(|account| earlier.contains(account))
+                    .collect();
+                let chosen = members.pick_best(
+                    if previous.is_empty() {
+                        &available
+                    } else {
+                        &previous
+                    },
+                    WorkerMode::Worker,
+                    &mut rng,
+                )?;
+                calendars.reserve(
+                    chosen,
+                    milestone.window,
+                    minutes,
+                    ReservationView {
+                        requirement_key: Some(key),
+                        ..reference.clone()
+                    },
+                )?;
+                assignments.push((key, chosen));
+                used.insert(chosen);
+            }
+            earlier.extend(assignments.iter().map(|(_, account)| *account));
+            result.push(assignments);
         }
-        earlier.extend(assignments.iter().map(|(_, account)| *account));
-        result.push(assignments);
-    }
-    Ok(result)
+        Ok(result)
+    })
 }
 
 /// Used by the Project factory. Captured entropy derives the same ID
