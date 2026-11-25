@@ -119,14 +119,18 @@ pub struct CalendarView {
     pub definition: CalendarDefinition,
     pub reservations: Vec<ReservationView>,
 }
-/// Capacity counts only; the worker record owns the public calendar ID.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, scale::Encode, scale::Decode)]
+/// One worker's calendar: the default capacity and how many entries each of
+/// its lists holds. The worker record owns the public calendar ID.
+///
+/// A count changes only together with its list, through
+/// `Calendars::write_definition`, `push_reservation` and `push_reserved_week`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, scale::Encode, scale::Decode)]
 #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
 pub struct CalendarHeader {
-    pub default_weekly_minutes: u32,
-    pub overrides: u32,
-    pub reservations: u32,
-    pub reserved_weeks: u32,
+    default_weekly_minutes: u32,
+    override_count: u32,
+    reservation_count: u32,
+    reserved_week_count: u32,
 }
 use ink::storage::{traits::ManualKey, Mapping};
 
@@ -236,7 +240,7 @@ impl CalendarCache<'_> {
         let mut header = self.header(owner)?.0;
         let allocation = allocate(window, minutes, |week| *self.week(owner, &header, week))?;
         header
-            .reservations
+            .reservation_count
             .checked_add(u32::try_from(allocation.len()).map_err(|_| String::from(ARITHMETIC))?)
             .ok_or_else(|| String::from(ARITHMETIC))?;
         for (week, minutes) in allocation {
@@ -249,16 +253,11 @@ impl CalendarCache<'_> {
                 .expect("allocation fits the checked week capacity");
             state.reserved = Some(total);
             if first {
-                self.calendars
-                    .reserved_week_keys
-                    .insert((owner, header.reserved_weeks), &week);
-                header.reserved_weeks = header
-                    .reserved_weeks
-                    .checked_add(1)
-                    .expect("distinct weeks cannot exceed checked reservation count");
+                self.calendars.push_reserved_week(owner, &mut header, week);
             }
-            self.calendars.reservations.insert(
-                (owner, header.reservations),
+            self.calendars.push_reservation(
+                owner,
+                &mut header,
                 &ReservationView {
                     week,
                     minutes,
@@ -266,10 +265,6 @@ impl CalendarCache<'_> {
                 },
             );
             self.calendars.reserved.insert((owner, week), &total);
-            header.reservations = header
-                .reservations
-                .checked_add(1)
-                .expect("reservation count checked before writing");
         }
         *self.header(owner)? = (header, true);
         Ok(())
@@ -299,19 +294,70 @@ impl Calendars {
         }
         Ok(result)
     }
+    /// Replace `owner`'s default capacity and overrides with `definition`'s,
+    /// counting them in `header`. The caller writes the header.
+    fn write_definition(
+        &mut self,
+        owner: AccountId,
+        header: &mut CalendarHeader,
+        definition: CalendarDefinition,
+    ) -> Result<()> {
+        let count =
+            u32::try_from(definition.overrides.len()).map_err(|_| String::from(ARITHMETIC))?;
+        for index in 0..header.override_count {
+            let week = self
+                .override_keys
+                .get((owner, index))
+                .expect("retained override index");
+            self.overrides.remove((owner, week));
+            self.override_keys.remove((owner, index));
+        }
+        for (index, item) in (0..count).zip(definition.overrides) {
+            self.overrides.insert((owner, item.week), &item.capacity);
+            self.override_keys.insert((owner, index), &item.week);
+        }
+        header.default_weekly_minutes = definition.default_weekly_minutes;
+        header.override_count = count;
+        Ok(())
+    }
+    /// Append `reservation` to `owner`'s reservations, counting it in
+    /// `header`. The caller writes the header.
+    fn push_reservation(
+        &mut self,
+        owner: AccountId,
+        header: &mut CalendarHeader,
+        reservation: &ReservationView,
+    ) {
+        self.reservations
+            .insert((owner, header.reservation_count), reservation);
+        header.reservation_count = header
+            .reservation_count
+            .checked_add(1)
+            .expect("reservation count checked before writing");
+    }
+    /// Append `week` to the weeks `owner` has reservations in, counting it in
+    /// `header`. The caller writes the header.
+    fn push_reserved_week(&mut self, owner: AccountId, header: &mut CalendarHeader, week: Week) {
+        self.reserved_week_keys
+            .insert((owner, header.reserved_week_count), &week);
+        header.reserved_week_count = header
+            .reserved_week_count
+            .checked_add(1)
+            .expect("distinct weeks cannot exceed checked reservation count");
+    }
     /// What `owner`'s calendar holds for `week`, read from storage. The
     /// header counts the overrides and the reserved weeks: a calendar with
     /// none of either has nothing to read for a week.
     fn week_usage(&self, owner: AccountId, header: &CalendarHeader, week: Week) -> WeekUsage {
         WeekUsage {
-            capacity: if header.overrides == 0 {
+            capacity: if header.override_count == 0 {
                 header.default_weekly_minutes
             } else {
                 self.overrides
                     .get((owner, week))
                     .unwrap_or(header.default_weekly_minutes)
             },
-            reserved: if header.reserved_weeks == 0 {
+            reserved: if header.reserved_week_count == 0 {
                 None
             } else {
                 self.reserved.get((owner, week))
@@ -327,21 +373,9 @@ impl Calendars {
     ) -> Result<()> {
         definition.validate()?;
         require(!self.headers.contains(owner), "worker_exists")?;
-        let overrides =
-            u32::try_from(definition.overrides.len()).map_err(|_| String::from(ARITHMETIC))?;
-        for (index, item) in (0..overrides).zip(definition.overrides) {
-            self.overrides.insert((owner, item.week), &item.capacity);
-            self.override_keys.insert((owner, index), &item.week);
-        }
-        self.headers.insert(
-            owner,
-            &CalendarHeader {
-                default_weekly_minutes: definition.default_weekly_minutes,
-                overrides,
-                reservations: 0,
-                reserved_weeks: 0,
-            },
-        );
+        let mut header = CalendarHeader::default();
+        self.write_definition(owner, &mut header, definition)?;
+        self.headers.insert(owner, &header);
         Ok(())
     }
     pub(crate) fn header(&self, owner: AccountId) -> Result<CalendarHeader> {
@@ -365,11 +399,11 @@ impl Calendars {
             owner,
             definition: CalendarDefinition {
                 default_weekly_minutes: header.default_weekly_minutes,
-                overrides: (0..header.overrides)
+                overrides: (0..header.override_count)
                     .map(|i| self.override_at(owner, i).expect("retained override index"))
                     .collect(),
             },
-            reservations: (0..header.reservations)
+            reservations: (0..header.reservation_count)
                 .map(|i| {
                     self.reservation_at(owner, i)
                         .expect("retained reservation index")
@@ -380,10 +414,8 @@ impl Calendars {
     pub(crate) fn set(&mut self, owner: AccountId, definition: CalendarDefinition) -> Result<()> {
         let mut header = self.header(owner)?;
         definition.validate()?;
-        let count =
-            u32::try_from(definition.overrides.len()).map_err(|_| String::from(ARITHMETIC))?;
         // Validate all retained capacity before changing any cell.
-        for index in 0..header.reserved_weeks {
+        for index in 0..header.reserved_week_count {
             let week = self
                 .reserved_week_keys
                 .get((owner, index))
@@ -393,20 +425,7 @@ impl Calendars {
                 "calendar_overcommitted",
             )?;
         }
-        for index in 0..header.overrides {
-            let week = self
-                .override_keys
-                .get((owner, index))
-                .expect("retained override index");
-            self.overrides.remove((owner, week));
-            self.override_keys.remove((owner, index));
-        }
-        for (index, item) in (0..count).zip(definition.overrides) {
-            self.overrides.insert((owner, item.week), &item.capacity);
-            self.override_keys.insert((owner, index), &item.week);
-        }
-        header.default_weekly_minutes = definition.default_weekly_minutes;
-        header.overrides = count;
+        self.write_definition(owner, &mut header, definition)?;
         self.headers.insert(owner, &header);
         Ok(())
     }
@@ -508,8 +527,14 @@ mod tests {
                 .reserve(accounts.alice, window, 1, reservation(week, 1))
                 .unwrap();
         }
-        assert_eq!(calendar.header(accounts.alice).unwrap().reservations, 1000);
-        assert_eq!(calendar.header(accounts.alice).unwrap().reserved_weeks, 1);
+        assert_eq!(
+            calendar.header(accounts.alice).unwrap().reservation_count,
+            1000
+        );
+        assert_eq!(
+            calendar.header(accounts.alice).unwrap().reserved_week_count,
+            1
+        );
         assert_eq!(calendar.available(accounts.alice, week), Ok(1000));
         assert_eq!(calendar.header(accounts.alice).unwrap().encode().len(), 16);
         assert!(
