@@ -39,8 +39,8 @@ pub struct WorkerRecord {
 pub(crate) struct Members {
     pub(crate) workers: Mapping<AccountId, WorkerRecord, ManualKey<4>>,
     pub(crate) accounts: StorageVec<AccountId, ManualKey<52>>,
-    /// The members in Coordinator mode, in account order: choosing a
-    /// coordinator reads these, not every member.
+    /// The members in Coordinator mode, in account order. `set_worker_mode`
+    /// maintains it and coordinator selection reads it.
     pub(crate) coordinators: StorageVec<AccountId, ManualKey<57>>,
     pub(crate) skill_counts: Mapping<u32, u32, ManualKey<14>>,
     pub(crate) skill_members: Mapping<(u32, u32), AccountId, ManualKey<15>>,
@@ -182,9 +182,10 @@ pub(crate) fn validate_task_assignees(dao: &Dao, accounts: Vec<AccountId>) -> Re
     )
 }
 
-/// A milestone's settlement in one call: each call to the Dao is charged its
-/// whole code, and a team of five took eleven of them. Ratings contribute
-/// exact hundredths.
+/// Settle a milestone of the calling Project: apply each vote to its
+/// account's score, then credit each account, in the order given. A vote
+/// counts its stars in exact hundredths, blended with the client's score by
+/// the score policy when `blend_with` is set.
 pub(crate) fn settle(
     dao: &mut Dao,
     votes: Vec<SettlementVote>,

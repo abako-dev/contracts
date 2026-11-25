@@ -266,10 +266,9 @@ where
 }
 
 impl Project {
-    /// Persist domain records individually, writing the cells that differ from
-    /// `old`, which is what this storage holds: the state the message loaded,
-    /// or nothing for a new Project. Comparing in memory avoids reading every
-    /// cell a second time, and each read costs the same proof as a write.
+    /// Persist domain records individually, writing only the cells that
+    /// differ from `old`. `old` must be what this storage holds: the state
+    /// the message loaded, or `None` for a new Project.
     pub(crate) fn save(&mut self, data: &ProjectData, old: Option<&ProjectData>) -> Result<()> {
         require(
             data.dao == self.dao && data.project.project_id == self.project_id,

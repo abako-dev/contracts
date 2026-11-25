@@ -120,8 +120,8 @@ impl Bank {
     pub fn minted(&self) -> u64 {
         self.minted
     }
-    /// Store a balance in place of `previous`. An account with a balance is
-    /// already in the index: only a first balance searches and extends it.
+    /// Store `amount` as the balance of `account`. `previous` is the balance
+    /// storage holds: with `None`, the account is also added to the index.
     fn write_balance(&mut self, account: AccountId, previous: Option<u64>, amount: u64) {
         if previous.is_none() {
             indices::insert(&mut self.accounts, account);

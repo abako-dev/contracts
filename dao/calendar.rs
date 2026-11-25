@@ -191,12 +191,15 @@ fn slots(
     Ok(slots)
 }
 
-/// One message's work on the calendars, reading each cell once.
+/// The calendars as one message works on them: each header and week is read
+/// from storage once, and header writes are held until the end.
 ///
-/// A storage read costs the same proof whatever its size, and choosing a team
-/// asks for the same weeks of the same workers for every requirement. Changes
-/// are written through, except headers: [`Calendars::session`] writes each
-/// changed header once, when the work succeeds.
+/// Get one from [`Calendars::session`] and make every calendar call inside
+/// its closure through the session. [`Self::allocation`] and
+/// [`Self::reserve`] answer as the methods of the same name on [`Calendars`].
+///
+/// Reservations and week totals are written as they are made. Each changed
+/// header is written once, when the closure returns `Ok`.
 pub(crate) struct Session<'a> {
     calendars: &'a mut Calendars,
     /// Each header read, and whether the session changed it.
@@ -273,8 +276,9 @@ impl Session<'_> {
     }
 }
 impl Calendars {
-    /// Run `work` on a session and, if it succeeds, write the headers it
-    /// changed. A failed message reverts what the session wrote through.
+    /// Run `work` on a [`Session`], then write the headers it changed. On
+    /// `Err` no header is written: the caller must fail the message, which
+    /// reverts what the session had already written.
     pub(crate) fn session<T>(
         &mut self,
         work: impl FnOnce(&mut Session<'_>) -> Result<T>,

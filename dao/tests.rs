@@ -219,8 +219,7 @@ fn seen_reads_each_key_once_and_keeps_what_is_written_to_it() {
     );
 }
 
-/// What `run` returns, with the storage reads and writes it makes. The chain
-/// charges each of them the same proof, whatever the size of the value.
+/// What `run` returns, with the number of storage reads and writes it makes.
 pub(crate) fn accesses<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
     let count = || {
         ink::env::test::get_contract_storage_rw::<ink::env::DefaultEnvironment>(

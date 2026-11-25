@@ -353,10 +353,10 @@ pub(crate) fn create_project(
     })
 }
 
-/// One call for what a Project does on every change to a proposal: record its
-/// identities, then the references of the proposal that changed, and answer
-/// the compensation share its terms capture. Each call to the Dao is charged
-/// its whole code, so these are not made separately.
+/// Record a changed proposal of the calling Project: the Project's
+/// identities, then the roles and skills the proposal references, checked
+/// against the catalog. `None` forgets the proposal's references. Returns the
+/// coordinator's compensation percent, for the Project to split budgets by.
 pub(crate) fn set_project_proposal(
     dao: &mut Dao,
     layout: ProjectIdentities,
@@ -417,8 +417,8 @@ pub(crate) fn disputes(dao: &Dao) -> Vec<(Id, Id)> {
         .collect()
 }
 
-/// One call for a new task: check that the assignees are registered, then
-/// allocate the next global task ID.
+/// Check that the assignees are registered, then allocate the next global
+/// task ID.
 pub(crate) fn allocate_task(dao: &mut Dao, assignees: Vec<AccountId>) -> Result<u32> {
     crate::members::validate_task_assignees(dao, assignees)?;
     dao.project_controller()?;

@@ -520,7 +520,7 @@ pub mod dao {
             crate::matching::assign_team(self, project_id, client, coordinator, milestones, seed)
         }
 
-        /// Project hook for a milestone's settlement, in one call: apply the
+        /// Registered-Project hook for a milestone's settlement: apply the
         /// votes, then record the credits, each in order. The Project performs
         /// the asset transfers.
         #[ink(message)]
@@ -532,9 +532,9 @@ pub mod dao {
             crate::members::settle(self, votes, credits)
         }
 
-        /// Registered-Project hook for an approval, in one call: debit the
-        /// client's balance for the escrow, then select and reserve the team
-        /// of the calling Project. The Project performs the asset deposit.
+        /// Registered-Project hook for an approval: debit the client's balance
+        /// for the escrow, then select and reserve the team of the calling
+        /// Project. The Project performs the asset deposit.
         #[ink(message)]
         pub fn approve_team(
             &mut self,
@@ -547,16 +547,17 @@ pub mod dao {
             crate::matching::approve_team(self, client, escrow, coordinator, milestones, seed)
         }
 
-        /// Project hook for a new task, in one call: check that the assignees
+        /// Project-controller hook for a new task: check that the assignees
         /// are registered, then allocate the next global task ID.
         #[ink(message)]
         pub fn allocate_task(&mut self, assignees: Vec<AccountId>) -> Result<u32> {
             crate::projects::allocate_task(self, assignees)
         }
 
-        /// Registered-Project hook for a changed proposal, in one call: record
-        /// the Project's identities, then check and record the roles and
-        /// skills the proposal references. Returns the compensation share.
+        /// Registered-Project hook for a changed proposal: record the
+        /// Project's identities, then check and record the roles and skills
+        /// the proposal references, or forget the proposal if given none.
+        /// Returns the coordinator's compensation percent.
         #[ink(message)]
         pub fn set_project_proposal(
             &mut self,
@@ -573,8 +574,8 @@ pub mod dao {
             crate::bank::record_balance_credit(self, account, amount)
         }
 
-        /// Registered-Project hook: record a new submission, the last of the
-        /// calling Project's.
+        /// Registered-Project hook: record a new submission after the ones
+        /// the calling Project has.
         #[ink(message)]
         pub fn add_project_submission(&mut self, submission: Id) -> Result<()> {
             crate::projects::add_project_submission(self, submission)

@@ -208,12 +208,12 @@ pub mod project {
             Err("task_storage_not_found".into())
         }
         /// Record the proposal at `index` with the Dao, which checks the
-        /// roles and skills it references, in one call. The Dao answers the
-        /// compensation share, which splits each milestone's budget.
+        /// roles and skills it references, then split each milestone's budget
+        /// by the compensation percent the Dao returns.
         fn record_terms(&mut self, index: usize) -> Result<()> {
             let proposal = &self.project.proposals[index];
-            // Inserted one by one: collecting into a set adds kilobytes of
-            // sorting code, which every call to Project is charged.
+            // Inserted one by one on purpose: `collect` into a set pulls
+            // sorting code into the contract.
             let mut roles = BTreeSet::new();
             let mut skills = BTreeSet::new();
             for milestone in &proposal.milestones {

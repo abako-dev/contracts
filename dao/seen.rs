@@ -1,23 +1,20 @@
-//! What a message has read, so that it reads each storage cell once.
+//! A cache of storage reads for the life of one message.
 use core::convert::Infallible;
 use ink::prelude::vec::Vec;
 
-/// The values read under each key: a cache for the life of one message.
+/// The values a message has read, by key.
 ///
-/// A storage read costs about 10 kB of proof whatever its size, so asking for
-/// the same cell again from memory is where most of a team selection's cost
-/// went away.
+/// Start from `default()` and read each cell through [`Self::get_or`] or
+/// [`Self::get_or_try`]: the closure runs only the first time a key is asked
+/// for. Entries are never dropped or read again, so a value that changes in
+/// storage must be changed here too, through the reference those return.
 ///
-/// It is a sorted vector and not a `BTreeMap` on purpose:
+/// It is a sorted vector, not a `BTreeMap`:
 ///
-/// - **For:** code size. A contract's whole code is charged to every call,
-///   and a `BTreeMap` is compiled once for each key and value type. With the
-///   six this crate uses, it made Dao 13.8 kB larger than this type does.
-/// - **Against:** an insert shifts the entries after it, so filling it costs
-///   quadratic time. That is nothing for the tens of entries a message reads
-///   and wrong for thousands: measure again before caching a whole index.
-/// - **Against:** it only grows. A value changed in storage must be changed
-///   here too, through the reference `get_or` returns.
+/// - **For:** smaller contract code. A `BTreeMap` is compiled again for each
+///   key and value type.
+/// - **Against:** an insert shifts the entries after it. It suits the tens of
+///   entries a message reads, not thousands.
 pub(crate) struct Seen<K, V>(Vec<(K, V)>);
 
 impl<K, V> Default for Seen<K, V> {
@@ -27,6 +24,7 @@ impl<K, V> Default for Seen<K, V> {
 }
 
 impl<K: Ord, V> Seen<K, V> {
+    /// The value seen for `key`, if any. Reads nothing.
     pub(crate) fn get(&self, key: &K) -> Option<&V> {
         let index = self.0.binary_search_by(|(seen, _)| seen.cmp(key)).ok()?;
         Some(&self.0[index].1)

@@ -6,9 +6,9 @@ use ink::storage::{traits::ManualKey, Mapping};
 /// An ID with the error that reports it as taken.
 pub(crate) type Claim = (Id, &'static str);
 
-/// One entry per public ID. Public IDs are unique across kinds, and an entry
-/// answers that with one storage access, where walking every worker, project,
-/// deposit and dispute cost more proof with every one of them.
+/// One entry per public ID in use. IDs are unique across every kind of
+/// entity: [`Self::claim`] one when creating what it names, and
+/// [`Self::exchange`] the set an owner holds when that set changes.
 #[ink::storage_item]
 #[derive(Default, Debug)]
 pub(crate) struct PublicIds {

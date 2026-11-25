@@ -47,9 +47,9 @@ pub struct Milestone {
     pub requirements: Vec<Requirement>,
 }
 
-/// What one selection has read of the member directory, so that it reads each
-/// cell once. A storage read costs the same proof whatever its size, and a
-/// team is chosen from the same workers for every requirement.
+/// The member directory as one selection reads it: each worker record and
+/// skill index comes from storage once and from memory afterwards. It borrows
+/// the members, so they cannot change while it lives.
 struct Directory<'a> {
     members: &'a Members,
     workers: Seen<AccountId, WorkerRecord>,
@@ -89,8 +89,8 @@ impl<'a> Directory<'a> {
         let count = self.holder_count(skill);
         let members = self.members;
         let holders = self.holders.get_or_try(skill, || -> Result<_> {
-            // A loop, and one below: collecting into a `Result` or a set adds
-            // kilobytes of code, which every call to the Dao is charged.
+            // A loop on purpose, here and below: `collect` into a `Result`
+            // or a set pulls sorting code into the contract.
             let mut holders = Vec::new();
             for position in 0..count {
                 holders.push(
@@ -117,9 +117,9 @@ impl<'a> Directory<'a> {
         })
     }
 
-    /// The accounts that hold every one of `skills`, in account order.
-    /// Whichever skill's index is read whole, the set is the same: read the
-    /// shortest.
+    /// The accounts that hold every one of `skills`, in account order. Reads
+    /// the index of the skill with the fewest holders and checks each of its
+    /// accounts for the others.
     fn holding_all(&mut self, skills: &[u32]) -> Result<BTreeSet<AccountId>> {
         let rarest = skills
             .iter()
@@ -214,8 +214,8 @@ pub(crate) fn assign_team(
     select_team(dao, project_id, client, coordinator, milestones, seed)
 }
 
-/// An approval in one call: debit the client's balance for the escrow, then
-/// select and reserve the team of the calling Project.
+/// Debit the client's balance for the escrow, then select and reserve the
+/// team of the calling Project.
 pub(crate) fn approve_team(
     dao: &mut Dao,
     client: AccountId,

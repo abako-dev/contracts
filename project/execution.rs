@@ -313,7 +313,7 @@ pub fn accept(
             .ok_or_else(|| String::from("invalid_assignment_state"))?;
         payments.push((assignment.worker, requirement.budget));
     }
-    // One call applies the ratings and records every credit; the transfers
+    // The Dao applies the ratings and records every credit; the transfers
     // out of this Project's escrow follow in the same order.
     state.dao().settle(votes, payments.clone())?;
     for (account, amount) in payments {
