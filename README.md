@@ -47,15 +47,29 @@ checks WASM and ABI; signed integration tests cover execution and persistence.
 
 ## Storage and execution
 
-Contracts use ordinary ink `Lazy`, `Mapping` and `StorageVec`. Growing lists have
-individually addressed records; no custom paging library or URL parser is used.
-Calendar headers are 16 encoded bytes and reservations at most 47. Dao
-headers are at most 157 bytes. Project's largest measured fixed record is 310
-bytes. The existing limits remain unchanged: 16 KiB for a storage entry (one
-key and its value) and 192 KiB for the code.
+Contracts use ordinary ink `Lazy`, `Mapping` and `StorageVec`; no custom paging
+library or URL parser is used. The limits of the chain are unchanged: 16 KiB for
+a storage entry (one key and its value) and 192 KiB for the code. Since a
+message pays for each entry it touches (see below), small records that are read
+together are stored together, and each such entry has a bound:
+
+- **A proposal** is one entry: its terms and, for each milestone, its status,
+  team and ratings. It may take 12 KiB, about 110 team slots over ten
+  milestones; a larger one fails with `proposal_too_large`.
+- **A milestone's tasks** are kept sixteen to an entry. Each submission and
+  each evaluation is an entry with its ratings. One above 12 KiB fails with
+  `storage_entry_too_large`.
+- **A calendar** is a header (the worker's capacity, overrides and the weeks
+  that hold reservations) and one entry per week with that week's
+  reservations. A week holds at most 32 reservations and has no capacity left
+  once it has them. A header above 12 KiB fails with `calendar_too_large`:
+  about 2,400 reserved weeks for a calendar with no overrides.
+
+Dao's indexes of workers, projects, proposals, deposits and disputes still keep
+one entry per element. Dao headers are at most 157 bytes.
 
 Project hydrates one transient business-state tree and writes the storage
-entries that changed, clearing obsolete children on removal or reordering.
+entries that changed, clearing the entries of removed tasks and submissions.
 Whole-history scans still have finite gas/memory costs. This is not an
 unbounded-history guarantee.
 Dao coordinates atomic nested changes across contracts. Its calendar module reserves
