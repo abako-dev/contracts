@@ -51,11 +51,13 @@ Contracts use ordinary ink `Lazy`, `Mapping` and `StorageVec`. Growing lists hav
 individually addressed records; no custom paging library or URL parser is used.
 Calendar headers are 16 encoded bytes and reservations at most 47. Dao
 headers are at most 157 bytes. Project's largest measured fixed record is 310
-bytes. The existing 16 KiB cell and 192 KiB code limits remain unchanged.
+bytes. The existing limits remain unchanged: 16 KiB for a storage entry (one
+key and its value) and 192 KiB for the code.
 
-Project hydrates one transient business-state tree and writes changed fixed cells,
-clearing obsolete children on removal or reordering. Whole-history scans still
-have finite gas/memory costs. This is not an unbounded-history guarantee.
+Project hydrates one transient business-state tree and writes the storage
+entries that changed, clearing obsolete children on removal or reordering.
+Whole-history scans still have finite gas/memory costs. This is not an
+unbounded-history guarantee.
 Dao coordinates atomic nested changes across contracts. Its calendar module reserves
 integer minutes; approved rules do not release consumed reservations. Milestone
 settlement uses the stored allocation, independently of task progress.
@@ -67,16 +69,16 @@ time, is what a message meets first: 2,446,677 bytes in an ordinary block.
 pallet-contracts charges it by the operation, not by the data:
 
 - Each storage read, write or existence check costs about 10,300 bytes plus the
-  value's length. Reading a 4-byte cell costs what reading a 1,000-byte one does.
+  value's length. Reading a 4-byte value costs what reading a 1,000-byte one does.
 - Each call from one contract to another costs the called contract's whole
   code: about 130,000 bytes for a call to Dao.
 
-So a message reads a cell once and keeps it for its duration, compares what it
-loaded with what it saves instead of reading again, and makes one call to Dao
-where it has several things to ask. Dao's hooks for Project are grouped that
-way: `record_proposal`, `allocate_task`, `fund_and_assign_team` and `settle_milestone`.
-Public IDs are unique through one entry per ID, taken with one write, not by
-walking every record. Code size counts too, since every call pays for it: a
+So a message reads a storage entry once and keeps it for its duration,
+compares what it loaded with what it saves instead of reading again, and makes
+one call to Dao where it has several things to ask. Dao's hooks for Project
+are grouped that way: `record_proposal`, `allocate_task`,
+`fund_and_assign_team` and `settle_milestone`. Public IDs are unique through
+one storage entry per ID, taken with one write, not by walking every record. Code size counts too, since every call pays for it: a
 convenience that grows the code, such as collecting into a set, is measured
 before it is kept.
 

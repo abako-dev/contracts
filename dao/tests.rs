@@ -74,14 +74,14 @@ fn ordinary_catalog_growth_keeps_header_fixed_and_index_complete() {
         (1..5002).collect::<Vec<_>>()
     );
     println!(
-        "Dao header={} bytes; 5001 ID values={} bytes across individual cells",
+        "Dao header={} bytes; 5001 ID values={} bytes across individual storage entries",
         after.len(),
         5001 * 4
     );
 }
 
 #[ink::test]
-fn fixed_records_have_headroom_below_the_unchanged_cell_limit() {
+fn fixed_records_have_headroom_below_the_unchanged_storage_entry_limit() {
     let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
     let commitment = MetadataCommitmentV1 {
         operation_id: [1; 16],

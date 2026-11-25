@@ -4,7 +4,7 @@ use ink::prelude::vec::Vec;
 
 /// The values a message has read, by key.
 ///
-/// Start from `default()` and read each cell through
+/// Start from `default()` and read each storage entry through
 /// [`Self::get_or_insert_with`] or [`Self::get_or_try_insert_with`]: the
 /// closure runs only the first time a key is asked for. Entries are never
 /// dropped or read again, so a value that changes in storage must be changed

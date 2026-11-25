@@ -110,7 +110,7 @@ impl<'a> MemberCache<'a> {
     }
 
     /// Whether `account` holds `skill`: from the skill's index if this
-    /// selection has read it whole, and from one cell otherwise.
+    /// selection has read it whole, and from one storage entry otherwise.
     fn has_skill(&mut self, account: AccountId, skill: u32) -> bool {
         if let Some(holders) = self.skill_holders.get(&skill) {
             return holders.contains(&account);

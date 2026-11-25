@@ -239,18 +239,18 @@ fn evaluation_record(value: &ProjectEvaluation) -> EvaluationRecord {
         ratings: count(value.ratings.len()),
     }
 }
-/// The entries of `old` after its first `kept`, with their positions.
-fn entries_past<T>(old: &[T], kept: usize) -> impl Iterator<Item = (u32, &T)> {
+/// The elements of `old` after its first `kept`, with their positions.
+fn elements_past<T>(old: &[T], kept: usize) -> impl Iterator<Item = (u32, &T)> {
     old.iter()
         .enumerate()
         .skip(kept)
         .map(|(index, item)| (count(index), item))
 }
-/// Store the list `new` where `cells` holds `old`, one entry under each
-/// `key(position)`: write the entries that differ and remove the ones past
-/// its end.
+/// Store the list `new` in `mapping`, which holds `old`, one element under
+/// each `key(position)`: write the elements that differ and remove the ones
+/// past its end.
 fn write_changed<K, V, S>(
-    cells: &mut Mapping<K, V, S>,
+    mapping: &mut Mapping<K, V, S>,
     key: impl Fn(u32) -> K,
     new: &[V],
     old: &[V],
@@ -261,18 +261,18 @@ fn write_changed<K, V, S>(
 {
     for (i, value) in new.iter().enumerate() {
         if old.get(i) != Some(value) {
-            cells.insert(key(count(i)), value);
+            mapping.insert(key(count(i)), value);
         }
     }
-    for (i, _) in entries_past(old, new.len()) {
-        cells.remove(key(i));
+    for (i, _) in elements_past(old, new.len()) {
+        mapping.remove(key(i));
     }
 }
 
 impl Project {
-    /// Persist domain records individually, writing only the cells that
-    /// differ from `old`. `old` must be what this storage holds: the state
-    /// the message loaded, or `None` for a new Project.
+    /// Persist domain records individually, writing only the storage entries
+    /// that differ from `old`. `old` must be what this storage holds: the
+    /// state the message loaded, or `None` for a new Project.
     pub(crate) fn save(&mut self, data: &ProjectData, old: Option<&ProjectData>) -> Result<()> {
         require(
             data.dao == self.dao && data.project.project_id == self.project_id,
@@ -284,7 +284,7 @@ impl Project {
         for (p, proposal) in project.proposals.iter().enumerate() {
             self.save_proposal(count(p), proposal, proposals.get(p))?;
         }
-        for (p, proposal) in entries_past(proposals, project.proposals.len()) {
+        for (p, proposal) in elements_past(proposals, project.proposals.len()) {
             self.remove_proposal(p, proposal);
         }
         let evaluations = before.map_or(&[][..], |old| &old.evaluations);
@@ -305,7 +305,7 @@ impl Project {
                 self.evaluations.insert(e, &record);
             }
         }
-        for (e, evaluation) in entries_past(evaluations, project.evaluations.len()) {
+        for (e, evaluation) in elements_past(evaluations, project.evaluations.len()) {
             for i in 0..count(evaluation.ratings.len()) {
                 self.evaluation_ratings.remove((e, i));
             }
@@ -343,7 +343,7 @@ impl Project {
         for (m, milestone) in value.milestones.iter().enumerate() {
             self.save_milestone((p, count(m)), milestone, milestones.get(m))?;
         }
-        for (m, milestone) in entries_past(milestones, value.milestones.len()) {
+        for (m, milestone) in elements_past(milestones, value.milestones.len()) {
             self.remove_milestone((p, m), milestone);
         }
         if old.map(proposal_record).transpose()?.as_ref() != Some(&record) {
@@ -368,7 +368,7 @@ impl Project {
         for (r, requirement) in value.definition.requirements.iter().enumerate() {
             self.save_requirement((pos, count(r)), requirement, requirements.get(r));
         }
-        for (r, requirement) in entries_past(requirements, value.definition.requirements.len()) {
+        for (r, requirement) in elements_past(requirements, value.definition.requirements.len()) {
             self.remove_requirement((pos, r), requirement);
         }
         write_changed(
@@ -387,14 +387,14 @@ impl Project {
         for (t, task) in value.task_storage.tasks.iter().enumerate() {
             self.save_task((pos, count(t)), task, tasks.get(t));
         }
-        for (t, task) in entries_past(tasks, value.task_storage.tasks.len()) {
+        for (t, task) in elements_past(tasks, value.task_storage.tasks.len()) {
             self.remove_task((pos, t), task);
         }
         let submissions = old.map_or(&[][..], |old| &old.submissions);
         for (s, submission) in value.submissions.iter().enumerate() {
             self.save_submission((pos, count(s)), submission, submissions.get(s));
         }
-        for (s, submission) in entries_past(submissions, value.submissions.len()) {
+        for (s, submission) in elements_past(submissions, value.submissions.len()) {
             self.remove_submission((pos, s), submission);
         }
         let record = milestone_record(value);
@@ -459,13 +459,13 @@ impl Project {
         }
     }
     fn remove_proposal(&mut self, p: u32, old: &ProposalCore) {
-        for (m, milestone) in entries_past(&old.milestones, 0) {
+        for (m, milestone) in elements_past(&old.milestones, 0) {
             self.remove_milestone((p, m), milestone);
         }
         self.proposals.remove(p);
     }
     fn remove_milestone(&mut self, pos: MilestonePosition, old: &MilestoneCore) {
-        for (r, requirement) in entries_past(&old.definition.requirements, 0) {
+        for (r, requirement) in elements_past(&old.definition.requirements, 0) {
             self.remove_requirement((pos, r), requirement);
         }
         for i in 0..count(old.assignments.len()) {
@@ -474,10 +474,10 @@ impl Project {
         for i in 0..count(old.worker_ratings.len()) {
             self.milestone_ratings.remove((pos, i));
         }
-        for (t, task) in entries_past(&old.task_storage.tasks, 0) {
+        for (t, task) in elements_past(&old.task_storage.tasks, 0) {
             self.remove_task((pos, t), task);
         }
-        for (s, submission) in entries_past(&old.submissions, 0) {
+        for (s, submission) in elements_past(&old.submissions, 0) {
             self.remove_submission((pos, s), submission);
         }
         self.milestones.remove(pos);
@@ -663,7 +663,7 @@ mod tests {
         }
     }
     #[ink::test]
-    fn growing_tasks_keep_cells_fixed_and_restore_all_ordered_fields() {
+    fn growing_tasks_keep_storage_entries_fixed_and_restore_all_ordered_fields() {
         let mut data = fixture();
         let tasks = &mut data.project.proposals[0].milestones[0].task_storage.tasks;
         let template = tasks[0].clone();
@@ -706,7 +706,7 @@ mod tests {
         (after.0 - before.0, after.1 - before.1)
     }
     #[ink::test]
-    fn a_save_writes_the_cells_that_differ_and_reads_none() {
+    fn a_save_writes_the_storage_entries_that_differ_and_reads_none() {
         let mut data = fixture();
         let mut storage = Project::empty(data.dao, data.project.project_id);
         store(&mut storage, &data);

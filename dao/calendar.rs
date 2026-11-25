@@ -119,8 +119,8 @@ pub struct CalendarView {
     pub definition: CalendarDefinition,
     pub reservations: Vec<ReservationView>,
 }
-/// One worker's calendar: the default capacity and how many entries each of
-/// its lists holds. The worker record owns the public calendar ID.
+/// One worker's calendar: the default capacity and the length of each of its
+/// lists. The worker record owns the public calendar ID.
 ///
 /// A count changes only together with its list, through
 /// `Calendars::write_definition`, `push_reservation` and `push_reserved_week`.
@@ -414,7 +414,7 @@ impl Calendars {
     pub(crate) fn set(&mut self, owner: AccountId, definition: CalendarDefinition) -> Result<()> {
         let mut header = self.header(owner)?;
         definition.validate()?;
-        // Validate all retained capacity before changing any cell.
+        // Validate all retained capacity before changing any storage entry.
         for index in 0..header.reserved_week_count {
             let week = self
                 .reserved_week_keys
@@ -513,7 +513,7 @@ mod tests {
         }
     }
     #[ink::test]
-    fn many_reservations_keep_fixed_cells_and_failed_capacity_changes_atomic() {
+    fn many_reservations_keep_storage_entries_fixed_and_failed_capacity_changes_atomic() {
         let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
         let mut calendar = Calendars::default();
         calendar.register(accounts.alice, definition(2000)).unwrap();
@@ -559,7 +559,7 @@ mod tests {
         assert_eq!(calendar.view(accounts.alice, [1; 16]).unwrap(), before);
     }
     #[ink::test]
-    fn a_cache_reads_each_cell_once_and_leaves_what_separate_reservations_leave() {
+    fn a_cache_reads_each_storage_entry_once_and_leaves_what_separate_reservations_leave() {
         let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
         let mut calendar = Calendars::default();
         let first = Week::new(2026, 1).unwrap();

@@ -1,4 +1,4 @@
-//! Fixed Project records. Growing domain collections live in separate ink cells.
+//! Fixed Project records. Growing domain collections live in separate storage entries.
 use crate::types::*;
 use dao::calendar::WeekWindow;
 use dao::dao::MetadataReferenceV1;
