@@ -10,7 +10,7 @@ pub mod project {
     use crate::types::*;
     use crate::{
         records::*,
-        state::{ChildPosition, MilestonePosition, NestedPosition},
+        state::{ChildPosition, TaskPage},
     };
     use chrono::{Datelike, Duration, NaiveDate, Weekday};
     use dao::calendar::Week;
@@ -35,18 +35,10 @@ pub mod project {
         pub(crate) dao: AccountId,
         pub(crate) project_id: Id,
         pub(crate) header: Lazy<ProjectRecord, ManualKey<1>>,
-        pub(crate) proposals: Mapping<u32, ProposalRecord, ManualKey<10>>,
-        pub(crate) milestones: Mapping<MilestonePosition, MilestoneRecord, ManualKey<11>>,
-        pub(crate) requirements: Mapping<ChildPosition, RequirementRecord, ManualKey<12>>,
-        pub(crate) skills: Mapping<NestedPosition, u32, ManualKey<13>>,
-        pub(crate) assignments: Mapping<ChildPosition, AssignmentView, ManualKey<14>>,
-        pub(crate) milestone_ratings: Mapping<ChildPosition, WorkerRating, ManualKey<15>>,
-        pub(crate) tasks: Mapping<ChildPosition, TaskRecord, ManualKey<16>>,
-        pub(crate) assignees: Mapping<NestedPosition, AccountId, ManualKey<17>>,
-        pub(crate) submissions: Mapping<ChildPosition, SubmissionRecord, ManualKey<18>>,
-        pub(crate) submission_ratings: Mapping<NestedPosition, WorkerRating, ManualKey<19>>,
-        pub(crate) evaluations: Mapping<u32, EvaluationRecord, ManualKey<20>>,
-        pub(crate) evaluation_ratings: Mapping<(u32, u32), AccountRating, ManualKey<21>>,
+        pub(crate) proposals: Mapping<u32, StoredProposal, ManualKey<30>>,
+        pub(crate) task_pages: Mapping<TaskPage, Vec<TaskCore>, ManualKey<31>>,
+        pub(crate) submissions: Mapping<ChildPosition, CompletionSubmission, ManualKey<32>>,
+        pub(crate) evaluations: Mapping<u32, ProjectEvaluation, ManualKey<33>>,
         pub(crate) reasons: Mapping<u32, ReasonRecord, ManualKey<22>>,
         pub(crate) disputes: Mapping<u32, DisputeRecord, ManualKey<23>>,
     }

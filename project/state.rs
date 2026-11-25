@@ -1,11 +1,17 @@
-//! Ordinary ink storage for Project's fixed records and ordered child entries.
-//! The hydrated ProjectData is transient input to the existing business rules.
+//! Ordinary ink storage for Project. The hydrated ProjectData is transient
+//! input to the existing business rules.
+//!
+//! A proposal is one storage entry: its terms and, for each milestone, its
+//! status, team and ratings. A milestone's tasks are kept in pages of
+//! `TASKS_PER_PAGE`, and each submission, evaluation, reason and dispute has an
+//! entry of its own. No entry is written above `MAX_ENTRY_BYTES`.
 use crate::{
     project::{Project, ProjectData},
     records::*,
     types::*,
 };
 use ink::{
+    prelude::{string::String, vec::Vec},
     primitives::AccountId,
     storage::{
         traits::{Packed, StorageKey},
@@ -15,7 +21,10 @@ use ink::{
 
 pub type MilestonePosition = (u32, u32);
 pub type ChildPosition = (MilestonePosition, u32);
-pub type NestedPosition = (ChildPosition, u32);
+/// A page of a milestone's tasks.
+pub type TaskPage = (MilestonePosition, u32);
+
+const ENTRY_TOO_LARGE: &str = "storage_entry_too_large";
 
 impl Project {
     pub(crate) fn empty(dao: AccountId, project_id: Id) -> Self {
@@ -24,17 +33,9 @@ impl Project {
             project_id,
             header: Lazy::new(),
             proposals: Mapping::default(),
-            milestones: Mapping::default(),
-            requirements: Mapping::default(),
-            skills: Mapping::default(),
-            assignments: Mapping::default(),
-            milestone_ratings: Mapping::default(),
-            tasks: Mapping::default(),
-            assignees: Mapping::default(),
+            task_pages: Mapping::default(),
             submissions: Mapping::default(),
-            submission_ratings: Mapping::default(),
             evaluations: Mapping::default(),
-            evaluation_ratings: Mapping::default(),
             reasons: Mapping::default(),
             disputes: Mapping::default(),
         }
@@ -59,97 +60,58 @@ impl Project {
                 completed: header.completed,
                 active_dispute_id: header.active_dispute_id,
                 proposals: list(header.proposals, |p| self.proposal(p))?,
-                evaluations: list(header.evaluations, |e| {
-                    let record = missing(self.evaluations.get(e))?;
-                    Ok(ProjectEvaluation {
-                        author: record.author,
-                        submitted_at: record.submitted_at,
-                        ratings: list(record.ratings, |i| {
-                            missing(self.evaluation_ratings.get((e, i)))
-                        })?,
-                    })
-                })?,
+                evaluations: list(header.evaluations, |e| missing(self.evaluations.get(e)))?,
             },
             reasons: list(header.reasons, |i| missing(self.reasons.get(i)))?,
             disputes: list(header.disputes, |i| missing(self.disputes.get(i)))?,
         })
     }
     fn proposal(&self, p: u32) -> Result<ProposalCore> {
-        let record = missing(self.proposals.get(p))?;
+        let stored = missing(self.proposals.get(p))?;
+        let mut milestones = Vec::with_capacity(stored.milestones.len());
+        for (m, milestone) in stored.milestones.into_iter().enumerate() {
+            let pos = (p, count(m));
+            milestones.push(MilestoneCore {
+                milestone_id: milestone.milestone_id,
+                definition: milestone.definition,
+                status: milestone.status,
+                frozen: milestone.frozen,
+                assignments: milestone.assignments,
+                worker_ratings: milestone.worker_ratings,
+                task_storage: TaskStorageCore {
+                    task_storage_id: milestone.task_storage_id,
+                    milestone_id: milestone.milestone_id,
+                    tasks: self.tasks(pos, milestone.tasks)?,
+                },
+                submissions: list(milestone.submissions, |s| {
+                    missing(self.submissions.get((pos, s)))
+                })?,
+            });
+        }
         Ok(ProposalCore {
-            proposal_id: record.proposal_id,
-            revision: record.revision,
-            content: record.content,
-            status: record.status,
-            change_request: record.change_request,
-            delivery: record
+            proposal_id: stored.proposal_id,
+            revision: stored.revision,
+            content: stored.content,
+            status: stored.status,
+            change_request: stored.change_request,
+            delivery: stored
                 .delivery
                 .as_ref()
                 .map(StoredDelivery::view)
                 .transpose()?,
-            compensation_policy: record.compensation_policy,
-            milestones: list(record.milestones, |m| self.milestone((p, m)))?,
+            compensation_policy: stored.compensation_policy,
+            milestones,
         })
     }
-    fn milestone(&self, pos: MilestonePosition) -> Result<MilestoneCore> {
-        let record = missing(self.milestones.get(pos))?;
-        Ok(MilestoneCore {
-            milestone_id: record.milestone_id,
-            definition: MilestoneTerms {
-                key: record.key,
-                window: record.window,
-                coordinator_fee: record.coordinator_fee,
-                coordinator_minutes: record.coordinator_minutes,
-                requirements: list(record.requirements, |r| {
-                    let key = (pos, r);
-                    let record = missing(self.requirements.get(key))?;
-                    Ok(RequirementDefinition {
-                        key: record.key,
-                        role_id: record.role_id,
-                        minutes: record.minutes,
-                        budget: record.budget,
-                        skill_ids: list(record.skills, |i| missing(self.skills.get((key, i))))?,
-                    })
-                })?,
-            },
-            status: record.status,
-            frozen: record.frozen,
-            assignments: list(record.assignments, |i| {
-                missing(self.assignments.get((pos, i)))
-            })?,
-            worker_ratings: list(record.worker_ratings, |i| {
-                missing(self.milestone_ratings.get((pos, i)))
-            })?,
-            task_storage: TaskStorageCore {
-                task_storage_id: record.task_storage_id,
-                milestone_id: record.milestone_id,
-                tasks: list(record.tasks, |t| {
-                    let key = (pos, t);
-                    let record = missing(self.tasks.get(key))?;
-                    Ok(TaskCore {
-                        task_id: record.task_id,
-                        assignees: list(record.assignees, |i| {
-                            missing(self.assignees.get((key, i)))
-                        })?,
-                    })
-                })?,
-            },
-            submissions: list(record.submissions, |s| {
-                let key = (pos, s);
-                let record = missing(self.submissions.get(key))?;
-                Ok(CompletionSubmission {
-                    submission_id: record.submission_id,
-                    version: record.version,
-                    deliverable: record.deliverable,
-                    submitted_by: record.submitted_by,
-                    submitted_at: record.submitted_at,
-                    review: record.review,
-                    worker_ratings: list(record.worker_ratings, |i| {
-                        missing(self.submission_ratings.get((key, i)))
-                    })?,
-                })
-            })?,
-        })
+    /// The first `length` tasks of the milestone at `pos`, from its pages.
+    fn tasks(&self, pos: MilestonePosition, length: u32) -> Result<Vec<TaskCore>> {
+        let length = usize::try_from(length).map_err(|_| String::from("invalid_archive"))?;
+        let mut tasks = Vec::with_capacity(length);
+        for page in 0..page_count(length) {
+            tasks.extend(missing(self.task_pages.get((pos, page)))?);
+        }
+        require(tasks.len() == length, "incomplete_project_storage")?;
+        Ok(tasks)
     }
 }
 
@@ -172,13 +134,28 @@ fn project_record(data: &ProjectData) -> ProjectRecord {
         disputes: count(data.disputes.len()),
     }
 }
-fn proposal_record(value: &ProposalCore) -> Result<ProposalRecord> {
-    Ok(ProposalRecord {
+/// The proposal's own storage entry: everything but the contents of its
+/// tasks and submissions, of which it keeps the counts.
+fn stored_proposal(value: &ProposalCore) -> Result<StoredProposal> {
+    let mut milestones = Vec::with_capacity(value.milestones.len());
+    for milestone in &value.milestones {
+        milestones.push(StoredMilestone {
+            milestone_id: milestone.milestone_id,
+            definition: milestone.definition.clone(),
+            status: milestone.status,
+            frozen: milestone.frozen,
+            assignments: milestone.assignments.clone(),
+            worker_ratings: milestone.worker_ratings.clone(),
+            task_storage_id: milestone.task_storage.task_storage_id,
+            tasks: count(milestone.task_storage.tasks.len()),
+            submissions: count(milestone.submissions.len()),
+        });
+    }
+    Ok(StoredProposal {
         proposal_id: value.proposal_id,
         revision: value.revision,
         content: value.content.clone(),
         status: value.status,
-        milestones: count(value.milestones.len()),
         change_request: value.change_request.clone(),
         delivery: value
             .delivery
@@ -186,58 +163,16 @@ fn proposal_record(value: &ProposalCore) -> Result<ProposalRecord> {
             .map(StoredDelivery::from_view)
             .transpose()?,
         compensation_policy: value.compensation_policy.clone(),
+        milestones,
     })
 }
-fn milestone_record(value: &MilestoneCore) -> MilestoneRecord {
-    let definition = &value.definition;
-    MilestoneRecord {
-        milestone_id: value.milestone_id,
-        key: definition.key,
-        window: definition.window,
-        coordinator_fee: definition.coordinator_fee,
-        coordinator_minutes: definition.coordinator_minutes,
-        requirements: count(definition.requirements.len()),
-        status: value.status,
-        assignments: count(value.assignments.len()),
-        worker_ratings: count(value.worker_ratings.len()),
-        task_storage_id: value.task_storage.task_storage_id,
-        tasks: count(value.task_storage.tasks.len()),
-        frozen: value.frozen,
-        submissions: count(value.submissions.len()),
-    }
+/// How many pages hold `tasks` tasks.
+fn page_count(tasks: usize) -> u32 {
+    count(tasks.div_ceil(TASKS_PER_PAGE))
 }
-fn requirement_record(value: &RequirementDefinition) -> RequirementRecord {
-    RequirementRecord {
-        key: value.key,
-        role_id: value.role_id,
-        skills: count(value.skill_ids.len()),
-        minutes: value.minutes,
-        budget: value.budget,
-    }
-}
-fn task_record(value: &TaskCore) -> TaskRecord {
-    TaskRecord {
-        task_id: value.task_id,
-        assignees: count(value.assignees.len()),
-    }
-}
-fn submission_record(value: &CompletionSubmission) -> SubmissionRecord {
-    SubmissionRecord {
-        submission_id: value.submission_id,
-        version: value.version,
-        deliverable: value.deliverable.clone(),
-        submitted_by: value.submitted_by,
-        submitted_at: value.submitted_at,
-        worker_ratings: count(value.worker_ratings.len()),
-        review: value.review.clone(),
-    }
-}
-fn evaluation_record(value: &ProjectEvaluation) -> EvaluationRecord {
-    EvaluationRecord {
-        author: value.author,
-        submitted_at: value.submitted_at,
-        ratings: count(value.ratings.len()),
-    }
+/// Fail with `code` if `value` is too large for one storage entry.
+fn bounded<T: scale::Encode>(value: &T, code: &str) -> Result<()> {
+    require(value.encoded_size() <= MAX_ENTRY_BYTES, code)
 }
 /// The elements of `old` after its first `kept`, with their positions.
 fn elements_past<T>(old: &[T], kept: usize) -> impl Iterator<Item = (u32, &T)> {
@@ -254,25 +189,28 @@ fn write_changed<K, V, S>(
     key: impl Fn(u32) -> K,
     new: &[V],
     old: &[V],
-) where
+) -> Result<()>
+where
     K: scale::Encode + scale::EncodeLike<K>,
     V: Packed + PartialEq + scale::EncodeLike<V>,
     S: StorageKey,
 {
     for (i, value) in new.iter().enumerate() {
         if old.get(i) != Some(value) {
+            bounded(value, ENTRY_TOO_LARGE)?;
             mapping.insert(key(count(i)), value);
         }
     }
     for (i, _) in elements_past(old, new.len()) {
         mapping.remove(key(i));
     }
+    Ok(())
 }
 
 impl Project {
-    /// Persist domain records individually, writing only the storage entries
-    /// that differ from `old`. `old` must be what this storage holds: the
-    /// state the message loaded, or `None` for a new Project.
+    /// Persist the project, writing only the storage entries that differ
+    /// from `old`. `old` must be what this storage holds: the state the
+    /// message loaded, or `None` for a new Project.
     pub(crate) fn save(&mut self, data: &ProjectData, old: Option<&ProjectData>) -> Result<()> {
         require(
             data.dao == self.dao && data.project.project_id == self.project_id,
@@ -287,42 +225,24 @@ impl Project {
         for (p, proposal) in elements_past(proposals, project.proposals.len()) {
             self.remove_proposal(p, proposal);
         }
-        let evaluations = before.map_or(&[][..], |old| &old.evaluations);
-        for (e, evaluation) in project.evaluations.iter().enumerate() {
-            let previous = evaluations.get(e);
-            if previous == Some(evaluation) {
-                continue;
-            }
-            let e = count(e);
-            write_changed(
-                &mut self.evaluation_ratings,
-                |i| (e, i),
-                &evaluation.ratings,
-                previous.map_or(&[], |old| &old.ratings),
-            );
-            let record = evaluation_record(evaluation);
-            if previous.map(evaluation_record).as_ref() != Some(&record) {
-                self.evaluations.insert(e, &record);
-            }
-        }
-        for (e, evaluation) in elements_past(evaluations, project.evaluations.len()) {
-            for i in 0..count(evaluation.ratings.len()) {
-                self.evaluation_ratings.remove((e, i));
-            }
-            self.evaluations.remove(e);
-        }
+        write_changed(
+            &mut self.evaluations,
+            |e| e,
+            &project.evaluations,
+            before.map_or(&[], |old| &old.evaluations),
+        )?;
         write_changed(
             &mut self.reasons,
             |i| i,
             &data.reasons,
             old.map_or(&[], |old| &old.reasons),
-        );
+        )?;
         write_changed(
             &mut self.disputes,
             |i| i,
             &data.disputes,
             old.map_or(&[], |old| &old.disputes),
-        );
+        )?;
         let header = project_record(data);
         if old.map(project_record).as_ref() != Some(&header) {
             self.header.set(&header);
@@ -338,20 +258,23 @@ impl Project {
         if old == Some(value) {
             return Ok(());
         }
-        let record = proposal_record(value)?;
         let milestones = old.map_or(&[][..], |old| &old.milestones);
         for (m, milestone) in value.milestones.iter().enumerate() {
-            self.save_milestone((p, count(m)), milestone, milestones.get(m))?;
+            self.save_work((p, count(m)), milestone, milestones.get(m))?;
         }
         for (m, milestone) in elements_past(milestones, value.milestones.len()) {
-            self.remove_milestone((p, m), milestone);
+            self.remove_work((p, m), milestone);
         }
-        if old.map(proposal_record).transpose()?.as_ref() != Some(&record) {
-            self.proposals.insert(p, &record);
+        let stored = stored_proposal(value)?;
+        if old.map(stored_proposal).transpose()?.as_ref() != Some(&stored) {
+            bounded(&stored, "proposal_too_large")?;
+            self.proposals.insert(p, &stored);
         }
         Ok(())
     }
-    fn save_milestone(
+    /// Save the tasks and submissions of the milestone at `pos`, which holds
+    /// those of `old`.
+    fn save_work(
         &mut self,
         pos: MilestonePosition,
         value: &MilestoneCore,
@@ -361,144 +284,40 @@ impl Project {
             value.task_storage.milestone_id == value.milestone_id,
             "invalid_storage_state",
         )?;
-        if old == Some(value) {
-            return Ok(());
+        let tasks = &value.task_storage.tasks;
+        let stored = old.map_or(&[][..], |old| &old.task_storage.tasks);
+        let mut stored_pages = stored.chunks(TASKS_PER_PAGE);
+        for (page, tasks) in tasks.chunks(TASKS_PER_PAGE).enumerate() {
+            if stored_pages.next() != Some(tasks) {
+                let tasks = tasks.to_vec();
+                bounded(&tasks, ENTRY_TOO_LARGE)?;
+                self.task_pages.insert((pos, count(page)), &tasks);
+            }
         }
-        let requirements = old.map_or(&[][..], |old| &old.definition.requirements);
-        for (r, requirement) in value.definition.requirements.iter().enumerate() {
-            self.save_requirement((pos, count(r)), requirement, requirements.get(r));
-        }
-        for (r, requirement) in elements_past(requirements, value.definition.requirements.len()) {
-            self.remove_requirement((pos, r), requirement);
-        }
-        write_changed(
-            &mut self.assignments,
-            |i| (pos, i),
-            &value.assignments,
-            old.map_or(&[], |old| &old.assignments),
-        );
-        write_changed(
-            &mut self.milestone_ratings,
-            |i| (pos, i),
-            &value.worker_ratings,
-            old.map_or(&[], |old| &old.worker_ratings),
-        );
-        let tasks = old.map_or(&[][..], |old| &old.task_storage.tasks);
-        for (t, task) in value.task_storage.tasks.iter().enumerate() {
-            self.save_task((pos, count(t)), task, tasks.get(t));
-        }
-        for (t, task) in elements_past(tasks, value.task_storage.tasks.len()) {
-            self.remove_task((pos, t), task);
-        }
-        let submissions = old.map_or(&[][..], |old| &old.submissions);
-        for (s, submission) in value.submissions.iter().enumerate() {
-            self.save_submission((pos, count(s)), submission, submissions.get(s));
-        }
-        for (s, submission) in elements_past(submissions, value.submissions.len()) {
-            self.remove_submission((pos, s), submission);
-        }
-        let record = milestone_record(value);
-        if old.map(milestone_record).as_ref() != Some(&record) {
-            self.milestones.insert(pos, &record);
-        }
-        Ok(())
-    }
-    fn save_requirement(
-        &mut self,
-        key: ChildPosition,
-        value: &RequirementDefinition,
-        old: Option<&RequirementDefinition>,
-    ) {
-        if old == Some(value) {
-            return;
+        for page in page_count(tasks.len())..page_count(stored.len()) {
+            self.task_pages.remove((pos, page));
         }
         write_changed(
-            &mut self.skills,
-            |i| (key, i),
-            &value.skill_ids,
-            old.map_or(&[], |old| &old.skill_ids),
-        );
-        let record = requirement_record(value);
-        if old.map(requirement_record).as_ref() != Some(&record) {
-            self.requirements.insert(key, &record);
-        }
-    }
-    fn save_task(&mut self, key: ChildPosition, value: &TaskCore, old: Option<&TaskCore>) {
-        if old == Some(value) {
-            return;
-        }
-        write_changed(
-            &mut self.assignees,
-            |i| (key, i),
-            &value.assignees,
-            old.map_or(&[], |old| &old.assignees),
-        );
-        let record = task_record(value);
-        if old.map(task_record).as_ref() != Some(&record) {
-            self.tasks.insert(key, &record);
-        }
-    }
-    fn save_submission(
-        &mut self,
-        key: ChildPosition,
-        value: &CompletionSubmission,
-        old: Option<&CompletionSubmission>,
-    ) {
-        if old == Some(value) {
-            return;
-        }
-        write_changed(
-            &mut self.submission_ratings,
-            |i| (key, i),
-            &value.worker_ratings,
-            old.map_or(&[], |old| &old.worker_ratings),
-        );
-        let record = submission_record(value);
-        if old.map(submission_record).as_ref() != Some(&record) {
-            self.submissions.insert(key, &record);
-        }
+            &mut self.submissions,
+            |s| (pos, s),
+            &value.submissions,
+            old.map_or(&[], |old| &old.submissions),
+        )
     }
     fn remove_proposal(&mut self, p: u32, old: &ProposalCore) {
         for (m, milestone) in elements_past(&old.milestones, 0) {
-            self.remove_milestone((p, m), milestone);
+            self.remove_work((p, m), milestone);
         }
         self.proposals.remove(p);
     }
-    fn remove_milestone(&mut self, pos: MilestonePosition, old: &MilestoneCore) {
-        for (r, requirement) in elements_past(&old.definition.requirements, 0) {
-            self.remove_requirement((pos, r), requirement);
+    /// Remove the tasks and submissions of the milestone at `pos`.
+    fn remove_work(&mut self, pos: MilestonePosition, old: &MilestoneCore) {
+        for page in 0..page_count(old.task_storage.tasks.len()) {
+            self.task_pages.remove((pos, page));
         }
-        for i in 0..count(old.assignments.len()) {
-            self.assignments.remove((pos, i));
+        for s in 0..count(old.submissions.len()) {
+            self.submissions.remove((pos, s));
         }
-        for i in 0..count(old.worker_ratings.len()) {
-            self.milestone_ratings.remove((pos, i));
-        }
-        for (t, task) in elements_past(&old.task_storage.tasks, 0) {
-            self.remove_task((pos, t), task);
-        }
-        for (s, submission) in elements_past(&old.submissions, 0) {
-            self.remove_submission((pos, s), submission);
-        }
-        self.milestones.remove(pos);
-    }
-    fn remove_requirement(&mut self, key: ChildPosition, old: &RequirementDefinition) {
-        for i in 0..count(old.skill_ids.len()) {
-            self.skills.remove((key, i));
-        }
-        self.requirements.remove(key);
-    }
-    fn remove_task(&mut self, key: ChildPosition, old: &TaskCore) {
-        for i in 0..count(old.assignees.len()) {
-            self.assignees.remove((key, i));
-        }
-        self.tasks.remove(key);
-    }
-    fn remove_submission(&mut self, key: ChildPosition, old: &CompletionSubmission) {
-        for i in 0..count(old.worker_ratings.len()) {
-            self.submission_ratings.remove((key, i));
-        }
-        self.submissions.remove(key);
     }
 }
 
@@ -663,7 +482,7 @@ mod tests {
         }
     }
     #[ink::test]
-    fn growing_tasks_keep_storage_entries_fixed_and_restore_all_ordered_fields() {
+    fn many_tasks_are_stored_in_pages_and_restored_in_order() {
         let mut data = fixture();
         let tasks = &mut data.project.proposals[0].milestones[0].task_storage.tasks;
         let template = tasks[0].clone();
@@ -679,19 +498,15 @@ mod tests {
         assert_eq!(storage.load().unwrap().project, data.project);
         assert_eq!(storage.load().unwrap().reasons, data.reasons);
         assert_eq!(ink::storage::traits::Storable::encoded_size(&storage), 48);
-        assert_eq!(storage.tasks.get(((0, 0), 5000)).unwrap().encode().len(), 8);
-        assert_eq!(
-            storage
-                .assignees
-                .get((((0, 0), 5000), 1))
-                .unwrap()
-                .encode()
-                .len(),
-            32
-        );
+        // 5,001 tasks fill 312 pages and leave 9 in one more.
+        let full = storage.task_pages.get(((0, 0), 311)).unwrap();
+        assert_eq!(full.len(), TASKS_PER_PAGE);
+        assert!(full.encode().len() < MAX_ENTRY_BYTES / 8);
+        assert_eq!(storage.task_pages.get(((0, 0), 312)).unwrap().len(), 9);
+        assert!(!storage.task_pages.contains(((0, 0), 313)));
         assert!(storage.header.get().unwrap().encode().len() < 256);
-        assert!(storage.proposals.get(0).unwrap().encode().len() < 256);
-        assert!(storage.milestones.get((0, 0)).unwrap().encode().len() < 128);
+        // The proposal's entry holds the count of the tasks, not the tasks.
+        assert!(storage.proposals.get(0).unwrap().encode().len() < 1024);
     }
     /// The storage reads and writes `run` makes.
     fn storage_ops(run: impl FnOnce()) -> (usize, usize) {
@@ -715,22 +530,74 @@ mod tests {
             storage_ops(|| storage.save(&data, Some(&loaded)).unwrap()),
             (0, 0)
         );
-        // One more assignee: its entry and the task's count.
+        // One more assignee: the page of its task.
         let milestone = &mut data.project.proposals[0].milestones[0];
         milestone.task_storage.tasks[0]
             .assignees
             .push(AccountId::from([7; 32]));
-        // A changed rating: its entry alone.
+        // A changed rating: the proposal's entry.
         milestone.worker_ratings[0].score = 1;
         // One reason fewer: its removal and the header's count.
         data.reasons.truncate(1);
         assert_eq!(
             storage_ops(|| storage.save(&data, Some(&loaded)).unwrap()),
-            (0, 5)
+            (0, 4)
         );
         assert_eq!(storage.load().unwrap().project, data.project);
         assert_eq!(storage.load().unwrap().reasons, data.reasons);
         assert!(!storage.reasons.contains(1));
+    }
+    #[ink::test]
+    fn a_load_reads_one_entry_per_proposal_and_per_page_of_tasks() {
+        let mut data = fixture();
+        let mut storage = Project::empty(data.dao, data.project.project_id);
+        store(&mut storage, &data);
+        // The header, the proposal, a page of tasks for each of its two
+        // milestones, four submissions, two evaluations and two reasons.
+        assert_eq!(storage_ops(|| drop(storage.load().unwrap())), (12, 0));
+        let tasks = &mut data.project.proposals[0].milestones[0].task_storage.tasks;
+        let template = tasks[0].clone();
+        tasks.resize(TASKS_PER_PAGE, template.clone());
+        store(&mut storage, &data);
+        assert_eq!(storage_ops(|| drop(storage.load().unwrap())), (12, 0));
+        data.project.proposals[0].milestones[0]
+            .task_storage
+            .tasks
+            .push(template);
+        store(&mut storage, &data);
+        assert_eq!(storage_ops(|| drop(storage.load().unwrap())), (13, 0));
+    }
+    #[ink::test]
+    fn an_entry_above_the_bound_is_refused() {
+        let data = fixture();
+        let mut storage = Project::empty(data.dao, data.project.project_id);
+        store(&mut storage, &data);
+        // A proposal whose terms and teams do not fit one entry.
+        let mut large = data.clone();
+        let milestone = &mut large.project.proposals[0].milestones[0];
+        let requirement = milestone.definition.requirements[0].clone();
+        milestone.definition.requirements.resize(600, requirement);
+        assert!(
+            stored_proposal(&large.project.proposals[0])
+                .unwrap()
+                .encode()
+                .len()
+                > MAX_ENTRY_BYTES
+        );
+        assert_eq!(
+            storage.save(&large, Some(&data)),
+            Err("proposal_too_large".into())
+        );
+        // A page of tasks with more assignees than fit one entry.
+        let mut large = data.clone();
+        let tasks = &mut large.project.proposals[0].milestones[0].task_storage.tasks;
+        tasks[0].assignees = vec![AccountId::from([9; 32]); 400];
+        assert_eq!(
+            storage.save(&large, Some(&data)),
+            Err(ENTRY_TOO_LARGE.into())
+        );
+        // What fits is unaffected.
+        assert_eq!(storage.save(&data, Some(&data)), Ok(()));
     }
     #[ink::test]
     fn replacement_shrink_removal_and_position_reuse_clear_old_children() {
@@ -757,34 +624,24 @@ mod tests {
         data.reasons.truncate(1);
         store(&mut storage, &data);
         assert_eq!(storage.load().unwrap().project, data.project);
-        assert!(!storage.milestones.contains((0, 1)));
-        assert!(!storage.skills.contains((((0, 1), 0), 0)));
-        assert!(!storage.requirements.contains(((0, 0), 1)));
-        assert!(!storage.skills.contains((((0, 0), 0), 1)));
-        assert!(!storage.assignments.contains(((0, 0), 1)));
-        assert!(!storage.milestone_ratings.contains(((0, 0), 1)));
-        assert!(!storage.tasks.contains(((0, 0), 1)));
-        assert!(!storage.assignees.contains((((0, 0), 0), 1)));
-        assert!(!storage.assignees.contains((((0, 0), 1), 0)));
+        assert!(!storage.task_pages.contains(((0, 1), 0)));
+        assert!(!storage.submissions.contains(((0, 1), 0)));
         assert!(!storage.submissions.contains(((0, 0), 1)));
-        assert!(!storage.submission_ratings.contains((((0, 0), 0), 1)));
-        assert!(!storage.submission_ratings.contains((((0, 0), 1), 0)));
+        assert_eq!(storage.task_pages.get(((0, 0), 0)).unwrap().len(), 1);
         assert!(!storage.evaluations.contains(1));
-        assert!(!storage.evaluation_ratings.contains((0, 1)));
-        assert!(!storage.evaluation_ratings.contains((1, 0)));
         assert!(!storage.reasons.contains(1));
         let retained = data.project.proposals.pop().unwrap();
         store(&mut storage, &data);
         assert!(!storage.proposals.contains(0));
-        assert!(!storage.milestones.contains((0, 0)));
-        assert!(!storage.assignees.contains((((0, 0), 0), 0)));
+        assert!(!storage.task_pages.contains(((0, 0), 0)));
+        assert!(!storage.submissions.contains(((0, 0), 0)));
         data.project.proposals.push(retained);
         store(&mut storage, &data);
         assert_eq!(storage.load().unwrap().project, data.project);
-        assert!(!storage.tasks.contains(((0, 0), 1)));
+        assert!(!storage.task_pages.contains(((0, 0), 1)));
     }
     #[ink::test]
-    fn maximum_fixed_headers_keep_measured_headroom() {
+    fn maximum_fixed_records_keep_measured_headroom() {
         let mut data = fixture();
         let account = data.dao;
         let window = data.project.proposals[0].milestones[0].definition.window;
@@ -842,11 +699,6 @@ mod tests {
         store(&mut storage, &data);
         let sizes = [
             ("project", storage.header.get().unwrap().encode().len()),
-            ("proposal", storage.proposals.get(0).unwrap().encode().len()),
-            (
-                "milestone",
-                storage.milestones.get((0, 0)).unwrap().encode().len(),
-            ),
             (
                 "submission",
                 storage.submissions.get(((0, 0), 0)).unwrap().encode().len(),
