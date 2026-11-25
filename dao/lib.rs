@@ -10,9 +10,9 @@ mod indices;
 pub mod matching;
 mod members;
 mod projects;
+mod read_cache;
 mod registry;
 pub mod reputation;
-mod seen;
 #[cfg(test)]
 mod tests;
 
@@ -161,7 +161,7 @@ pub mod dao {
         pub coordinator_score: ReputationView,
     }
     /// One rating applied at a milestone's settlement. `stars` alone count as
-    /// they are; with `blend_with`, the client's score, the score policy
+    /// they are; with `client_stars`, the client's score, the score policy
     /// blends the two.
     #[derive(Debug, Clone, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
@@ -169,7 +169,7 @@ pub mod dao {
         pub account: AccountId,
         pub mode: WorkerMode,
         pub stars: u8,
-        pub blend_with: Option<u8>,
+        pub client_stars: Option<u8>,
         pub minutes: u32,
     }
     #[derive(Debug, Clone, scale::Encode, scale::Decode)]
@@ -524,19 +524,19 @@ pub mod dao {
         /// votes, then record the credits, each in order. The Project performs
         /// the asset transfers.
         #[ink(message)]
-        pub fn settle(
+        pub fn settle_milestone(
             &mut self,
             votes: Vec<SettlementVote>,
             credits: Vec<(AccountId, u64)>,
         ) -> Result<()> {
-            crate::members::settle(self, votes, credits)
+            crate::members::settle_milestone(self, votes, credits)
         }
 
         /// Registered-Project hook for an approval: debit the client's balance
         /// for the escrow, then select and reserve the team of the calling
         /// Project. The Project performs the asset deposit.
         #[ink(message)]
-        pub fn approve_team(
+        pub fn fund_and_assign_team(
             &mut self,
             client: AccountId,
             escrow: u64,
@@ -544,7 +544,14 @@ pub mod dao {
             milestones: Vec<Milestone>,
             seed: [u8; 32],
         ) -> Result<Vec<Vec<(u32, AccountId)>>> {
-            crate::matching::approve_team(self, client, escrow, coordinator, milestones, seed)
+            crate::matching::fund_and_assign_team(
+                self,
+                client,
+                escrow,
+                coordinator,
+                milestones,
+                seed,
+            )
         }
 
         /// Project-controller hook for a new task: check that the assignees
@@ -559,13 +566,13 @@ pub mod dao {
         /// the proposal references, or forget the proposal if given none.
         /// Returns the coordinator's compensation percent.
         #[ink(message)]
-        pub fn set_project_proposal(
+        pub fn record_proposal(
             &mut self,
-            layout: ProjectIdentities,
+            identities: ProjectIdentities,
             proposal_id: Id,
             qualifications: Option<Qualifications>,
         ) -> Result<u8> {
-            crate::projects::set_project_proposal(self, layout, proposal_id, qualifications)
+            crate::projects::record_proposal(self, identities, proposal_id, qualifications)
         }
 
         /// Registered-Project hook: credit accounting only; the Project performs the asset transfer.
@@ -577,8 +584,8 @@ pub mod dao {
         /// Registered-Project hook: record a new submission after the ones
         /// the calling Project has.
         #[ink(message)]
-        pub fn add_project_submission(&mut self, submission: Id) -> Result<()> {
-            crate::projects::add_project_submission(self, submission)
+        pub fn record_submission(&mut self, submission: Id) -> Result<()> {
+            crate::projects::record_submission(self, submission)
         }
 
         #[ink(message)]

@@ -192,35 +192,38 @@ fn catalog_rename_retains_origin_and_recreation_selects_new_origin() {
 }
 
 #[test]
-fn seen_reads_each_key_once_and_keeps_what_is_written_to_it() {
-    let mut seen = crate::seen::Seen::<u32, u32>::default();
-    assert_eq!(seen.get(&9), None);
+fn a_read_cache_reads_each_key_once_and_keeps_what_is_written_to_it() {
+    let mut cache = crate::read_cache::ReadCache::<u32, u32>::default();
+    assert_eq!(cache.get(&9), None);
     let mut reads = 0;
     for _ in 0..3 {
-        let value = seen.get_or(9, || {
+        let value = cache.get_or_insert_with(9, || {
             reads += 1;
             5
         });
         assert_eq!(*value, 5);
     }
     assert_eq!(reads, 1);
-    *seen.get_or(3, || 2) = 4;
-    assert_eq!(seen.get(&3), Some(&4));
+    *cache.get_or_insert_with(3, || 2) = 4;
+    assert_eq!(cache.get(&3), Some(&4));
     // A read that fails leaves nothing behind.
     assert_eq!(
-        seen.get_or_try(7, || Err::<u32, _>("unread")),
+        cache.get_or_try_insert_with(7, || Err::<u32, _>("unread")),
         Err("unread")
     );
-    assert_eq!(seen.get(&7), None);
-    assert_eq!(seen.get_or_try(7, || Ok::<_, &str>(1)), Ok(&mut 1));
+    assert_eq!(cache.get(&7), None);
     assert_eq!(
-        seen.into_iter().collect::<Vec<_>>(),
+        cache.get_or_try_insert_with(7, || Ok::<_, &str>(1)),
+        Ok(&mut 1)
+    );
+    assert_eq!(
+        cache.into_iter().collect::<Vec<_>>(),
         ink::prelude::vec![(3, 4), (7, 1), (9, 5)]
     );
 }
 
 /// What `run` returns, with the number of storage reads and writes it makes.
-pub(crate) fn accesses<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
+pub(crate) fn storage_ops<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
     let count = || {
         ink::env::test::get_contract_storage_rw::<ink::env::DefaultEnvironment>(
             &ink::env::test::callee::<ink::env::DefaultEnvironment>(),
@@ -236,7 +239,7 @@ pub(crate) fn accesses<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
 fn a_public_id_is_taken_once_and_a_claim_is_one_access() {
     let mut data = fresh();
     assert_eq!(
-        accesses(|| data.ids.claim([1; 16], "invalid_worker_state")),
+        storage_ops(|| data.ids.claim([1; 16], "invalid_worker_state")),
         (Ok(()), 0, 1)
     );
     // Whatever claims a taken ID is refused, with its own error.
@@ -246,7 +249,7 @@ fn a_public_id_is_taken_once_and_a_claim_is_one_access() {
         "invalid_dispute_id",
     ] {
         assert_eq!(
-            accesses(|| data.ids.claim([1; 16], code)),
+            storage_ops(|| data.ids.claim([1; 16], code)),
             (Err(String::from(code)), 0, 1)
         );
     }
@@ -255,21 +258,28 @@ fn a_public_id_is_taken_once_and_a_claim_is_one_access() {
 }
 
 #[ink::test]
-fn exchanging_ids_frees_dropped_ones_and_refuses_taken_or_repeated_ones() {
+fn replacing_ids_frees_dropped_ones_and_refuses_taken_or_repeated_ones() {
     let mut data = fresh();
+    let claim = |id: u8, error_if_taken| crate::registry::Claim {
+        id: [id; 16],
+        error_if_taken,
+    };
     let held = [
-        ([1; 16], "duplicate_entity"),
-        ([2; 16], "invalid_storage_state"),
+        claim(1, "duplicate_entity"),
+        claim(2, "invalid_storage_state"),
     ];
-    data.ids.exchange(&[], &held).unwrap();
+    data.ids.replace(&[], &held).unwrap();
     data.ids.claim([9; 16], "invalid_deposit_state").unwrap();
     // Keeping an ID is not a collision with itself, and costs nothing: this
     // frees one ID and takes one.
     let next = [
-        ([2; 16], "invalid_storage_state"),
-        ([3; 16], "invalid_storage_state"),
+        claim(2, "invalid_storage_state"),
+        claim(3, "invalid_storage_state"),
     ];
-    assert_eq!(accesses(|| data.ids.exchange(&held, &next)), (Ok(()), 0, 2));
+    assert_eq!(
+        storage_ops(|| data.ids.replace(&held, &next)),
+        (Ok(()), 0, 2)
+    );
     assert!(!data.ids.contains([1; 16]));
     assert!(data.ids.contains([2; 16]));
     assert!(data.ids.contains([3; 16]));
@@ -277,23 +287,23 @@ fn exchanging_ids_frees_dropped_ones_and_refuses_taken_or_repeated_ones() {
     data.ids.claim([1; 16], "invalid_submission_state").unwrap();
     // A repeated ID is refused before anything is written.
     assert_eq!(
-        accesses(|| data.ids.exchange(
+        storage_ops(|| data.ids.replace(
             &next,
             &[
-                ([4; 16], "duplicate_entity"),
-                ([4; 16], "invalid_storage_state")
+                claim(4, "duplicate_entity"),
+                claim(4, "invalid_storage_state")
             ]
         )),
         (Err(String::from("invalid_storage_state")), 0, 0)
     );
     assert_eq!(
-        data.ids.exchange(&next, &[([9; 16], "duplicate_entity")]),
+        data.ids.replace(&next, &[claim(9, "duplicate_entity")]),
         Err(String::from("duplicate_entity"))
     );
 }
 
 #[ink::test]
-fn a_project_layout_is_rewritten_by_difference() {
+fn project_identities_are_rewritten_by_difference() {
     let mut data = fresh();
     let project = [7; 16];
     let first: ProjectIdentities = ink::prelude::vec![
@@ -303,8 +313,8 @@ fn a_project_layout_is_rewritten_by_difference() {
         ),
         ([6; 16], ink::prelude::vec![([8; 16], [9; 16])]),
     ];
-    data.write_project_layout(project, &Vec::new(), &first);
-    assert_eq!(data.project_layout(project), first);
+    data.write_identities(project, &Vec::new(), &first);
+    assert_eq!(data.project_identities(project), first);
     // Fewer milestones, another proposal in the second place, then a third.
     let second: ProjectIdentities = ink::prelude::vec![
         ([1; 16], ink::prelude::vec![([4; 16], [5; 16])]),
@@ -319,29 +329,29 @@ fn a_project_layout_is_rewritten_by_difference() {
     // count. Removed: the first proposal's second milestone. A full rewrite
     // would also write the milestone that did not change.
     assert_eq!(
-        accesses(|| data.write_project_layout(project, &first, &second)),
+        storage_ops(|| data.write_identities(project, &first, &second)),
         ((), 0, 7)
     );
-    assert_eq!(data.project_layout(project), second);
+    assert_eq!(data.project_identities(project), second);
     assert_eq!(
-        accesses(|| data.write_project_layout(project, &second, &second)),
+        storage_ops(|| data.write_identities(project, &second, &second)),
         ((), 0, 0)
     );
     assert!(!data.projects.project_milestones.contains((project, 0, 1)));
     // Shrinking removes every entry past the end, and their milestones.
     let third: ProjectIdentities = ink::prelude::vec![([1; 16], Vec::new())];
     assert_eq!(
-        accesses(|| data.write_project_layout(project, &second, &third)),
+        storage_ops(|| data.write_identities(project, &second, &third)),
         ((), 0, 7)
     );
-    assert_eq!(data.project_layout(project), third);
+    assert_eq!(data.project_identities(project), third);
     assert!(!data.projects.project_milestones.contains((project, 0, 0)));
     assert!(!data.projects.project_proposals.contains((project, 1)));
     assert!(!data.projects.project_milestones.contains((project, 1, 0)));
     assert!(!data.projects.project_milestones.contains((project, 1, 1)));
     assert!(!data.projects.project_proposals.contains((project, 2)));
-    data.write_project_layout(project, &third, &Vec::new());
-    assert!(data.project_layout(project).is_empty());
+    data.write_identities(project, &third, &Vec::new());
+    assert!(data.project_identities(project).is_empty());
     assert!(!data.projects.project_proposals.contains((project, 0)));
 }
 
@@ -356,7 +366,7 @@ fn a_project_appends_its_submissions_at_a_fixed_cost() {
     // The third costs what the first does: the caller and the count are read,
     // the ID, the entry and the count are written.
     for id in [[1; 16], [2; 16], [3; 16]] {
-        assert_eq!(accesses(|| data.add_project_submission(id)), (Ok(()), 2, 3));
+        assert_eq!(storage_ops(|| data.record_submission(id)), (Ok(()), 2, 3));
     }
     assert_eq!(data.projects.project_submissions.get(project), Some(3));
     for (position, id) in [(0, [1; 16]), (1, [2; 16]), (2, [3; 16])] {
@@ -368,7 +378,7 @@ fn a_project_appends_its_submissions_at_a_fixed_cost() {
         );
     }
     assert_eq!(
-        data.add_project_submission([2; 16]),
+        data.record_submission([2; 16]),
         Err(String::from("invalid_submission_state"))
     );
 }
@@ -383,12 +393,12 @@ fn grouped_project_hooks_refuse_a_caller_that_is_not_a_registered_project() {
     let window: crate::calendar::WeekWindow =
         scale::Decode::decode(&mut &(week, week).encode()[..]).unwrap();
     assert_eq!(
-        data.settle(
+        data.settle_milestone(
             ink::prelude::vec![SettlementVote {
                 account: accounts.bob,
                 mode: WorkerMode::Worker,
                 stars: 5,
-                blend_with: None,
+                client_stars: None,
                 minutes: 60,
             }],
             ink::prelude::vec![(accounts.bob, 100)],
@@ -396,7 +406,7 @@ fn grouped_project_hooks_refuse_a_caller_that_is_not_a_registered_project() {
         Err(String::from("registered_project_required"))
     );
     assert_eq!(
-        data.approve_team(
+        data.fund_and_assign_team(
             accounts.bob,
             100,
             accounts.charlie,
@@ -411,7 +421,7 @@ fn grouped_project_hooks_refuse_a_caller_that_is_not_a_registered_project() {
         Err(String::from("registered_project_required"))
     );
     assert_eq!(
-        data.set_project_proposal(ink::prelude::vec![([3; 16], Vec::new())], [3; 16], None),
+        data.record_proposal(ink::prelude::vec![([3; 16], Vec::new())], [3; 16], None),
         Err(String::from("registered_project_required"))
     );
     assert_eq!(
@@ -424,7 +434,7 @@ fn grouped_project_hooks_refuse_a_caller_that_is_not_a_registered_project() {
     );
     assert_eq!(data.projects.next_task_id, 1);
     assert_eq!(
-        data.add_project_submission([4; 16]),
+        data.record_submission([4; 16]),
         Err(String::from("registered_project_required"))
     );
     assert!(!data.ids.contains([3; 16]));
@@ -513,20 +523,20 @@ fn score(hundredths: u128, minutes: u64) -> ReputationView {
 }
 
 #[ink::test]
-fn settle_applies_each_vote_then_each_credit() {
+fn settle_milestone_applies_each_vote_then_each_credit() {
     let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
     let mut data = with_project();
     register(&mut data, accounts.bob, 11, &[7], Vec::new());
     register(&mut data, accounts.charlie, 12, &[7], Vec::new());
     ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-    let vote = |account, mode, stars, blend_with, minutes| SettlementVote {
+    let vote = |account, mode, stars, client_stars, minutes| SettlementVote {
         account,
         mode,
         stars,
-        blend_with,
+        client_stars,
         minutes,
     };
-    data.settle(
+    data.settle_milestone(
         ink::prelude::vec![
             // The default policy blends the coordinator's 4 and the
             // client's 2 half and half: 3.00 over 60 minutes.
@@ -560,14 +570,14 @@ fn settle_applies_each_vote_then_each_credit() {
     assert_eq!(data.bank.balance(accounts.charlie), 30);
     // A vote outside one to five stars fails the settlement.
     assert_eq!(
-        data.settle(
+        data.settle_milestone(
             ink::prelude::vec![vote(accounts.bob, WorkerMode::Worker, 6, None, 60)],
             Vec::new()
         ),
         Err(String::from("invalid_contract"))
     );
     assert_eq!(
-        data.settle(
+        data.settle_milestone(
             ink::prelude::vec![vote(accounts.bob, WorkerMode::Worker, 4, Some(0), 60)],
             Vec::new()
         ),
@@ -576,7 +586,7 @@ fn settle_applies_each_vote_then_each_credit() {
 }
 
 #[ink::test]
-fn approve_team_debits_the_client_and_reserves_the_calling_projects_team() {
+fn fund_and_assign_team_debits_the_client_and_reserves_the_calling_projects_team() {
     let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
     let mut data = with_project();
     let first = crate::calendar::Week::new(2026, 1).unwrap();
@@ -632,7 +642,14 @@ fn approve_team_debits_the_client_and_reserves_the_calling_projects_team() {
     };
     // The debit comes first, and writes nothing when the balance is short.
     assert_eq!(
-        accesses(|| data.approve_team(accounts.eve, 501, accounts.django, milestones(), [0; 32])).0,
+        storage_ops(|| data.fund_and_assign_team(
+            accounts.eve,
+            501,
+            accounts.django,
+            milestones(),
+            [0; 32]
+        ))
+        .0,
         Err(String::from("insufficient_balance"))
     );
     assert!(data
@@ -645,7 +662,7 @@ fn approve_team_debits_the_client_and_reserves_the_calling_projects_team() {
     // earlier milestone is preferred to him. No choice here is a tie, so
     // the seed draws nothing.
     assert_eq!(
-        data.approve_team(accounts.eve, 200, accounts.django, milestones(), [0; 32]),
+        data.fund_and_assign_team(accounts.eve, 200, accounts.django, milestones(), [0; 32]),
         Ok(ink::prelude::vec![
             ink::prelude::vec![(1, accounts.bob), (2, accounts.charlie)],
             ink::prelude::vec![(1, accounts.bob)],
@@ -712,7 +729,7 @@ fn equal_candidates_are_drawn_from_one_stream_in_account_order() {
             minutes: 10,
         };
         let teams = data
-            .approve_team(
+            .fund_and_assign_team(
                 accounts.eve,
                 0,
                 accounts.django,
@@ -745,10 +762,10 @@ fn equal_candidates_are_drawn_from_one_stream_in_account_order() {
 }
 
 #[ink::test]
-fn set_project_proposal_records_identities_and_references_and_answers_the_share() {
+fn record_proposal_records_identities_and_qualifications_and_answers_the_percent() {
     let mut data = with_project();
     let project = [7; 16];
-    let layout: ProjectIdentities =
+    let identities: ProjectIdentities =
         ink::prelude::vec![([1; 16], ink::prelude::vec![([2; 16], [3; 16])])];
     let references = |skill| Qualifications {
         role_ids: ink::prelude::vec![1],
@@ -756,15 +773,15 @@ fn set_project_proposal_records_identities_and_references_and_answers_the_share(
     };
     // The catalog is asked before anything is recorded for the proposal.
     assert_eq!(
-        data.set_project_proposal(Vec::new(), [1; 16], Some(references(8))),
+        data.record_proposal(Vec::new(), [1; 16], Some(references(8))),
         Err(String::from("unknown_qualification"))
     );
     assert_eq!(data.proposal_qualifications([1; 16]), None);
     assert_eq!(
-        data.set_project_proposal(layout.clone(), [1; 16], Some(references(7))),
+        data.record_proposal(identities.clone(), [1; 16], Some(references(7))),
         Ok(data.compensation_policy())
     );
-    assert_eq!(data.project_layout(project), layout);
+    assert_eq!(data.project_identities(project), identities);
     assert_eq!(data.proposal_qualifications([1; 16]), Some(references(7)));
     assert_eq!(
         crate::indices::values(&data.projects.proposal_ids),
@@ -775,18 +792,18 @@ fn set_project_proposal_records_identities_and_references_and_answers_the_share(
     }
     // Another milestone takes an ID something else holds.
     data.ids.claim([9; 16], "invalid_deposit_state").unwrap();
-    let mut taken = layout.clone();
+    let mut taken = identities.clone();
     taken[0].1.push(([4; 16], [9; 16]));
     assert_eq!(
-        data.set_project_proposal(taken, [1; 16], Some(references(7))),
+        data.record_proposal(taken, [1; 16], Some(references(7))),
         Err(String::from("invalid_storage_state"))
     );
     // Deleting the proposal frees its IDs and forgets its references.
     assert_eq!(
-        data.set_project_proposal(Vec::new(), [1; 16], None),
+        data.record_proposal(Vec::new(), [1; 16], None),
         Ok(data.compensation_policy())
     );
-    assert!(data.project_layout(project).is_empty());
+    assert!(data.project_identities(project).is_empty());
     assert_eq!(data.proposal_qualifications([1; 16]), None);
     assert!(crate::indices::values(&data.projects.proposal_ids).is_empty());
     for id in [[1; 16], [2; 16], [3; 16]] {

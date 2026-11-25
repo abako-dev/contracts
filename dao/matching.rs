@@ -14,8 +14,9 @@ use crate::calendar::{ReservationView, Week, WeekWindow};
 use crate::members::{Members, WorkerRecord};
 use crate::{
     dao::{require, Dao, Id, Result, WorkerMode},
-    indices, reputation,
-    seen::Seen,
+    indices,
+    read_cache::ReadCache,
+    reputation,
 };
 use core::cmp::Ordering;
 use ink::{
@@ -47,25 +48,26 @@ pub struct Milestone {
     pub requirements: Vec<Requirement>,
 }
 
-/// The member directory as one selection reads it: each worker record and
-/// skill index comes from storage once and from memory afterwards. It borrows
-/// the members, so they cannot change while it lives.
-struct Directory<'a> {
+/// The members as one selection reads them: each worker record and skill
+/// index comes from storage once and from memory afterwards. It borrows the
+/// members, so they cannot change while it lives.
+struct MemberCache<'a> {
     members: &'a Members,
-    workers: Seen<AccountId, WorkerRecord>,
-    counts: Seen<u32, u32>,
-    holders: Seen<u32, Vec<AccountId>>,
-    holds: Seen<(u32, AccountId), bool>,
+    workers: ReadCache<AccountId, WorkerRecord>,
+    skill_holder_counts: ReadCache<u32, u32>,
+    skill_holders: ReadCache<u32, Vec<AccountId>>,
+    /// Whether an account holds a skill, for skills whose index is not read.
+    has_skill: ReadCache<(u32, AccountId), bool>,
 }
 
-impl<'a> Directory<'a> {
+impl<'a> MemberCache<'a> {
     fn new(members: &'a Members) -> Self {
         Self {
             members,
-            workers: Seen::default(),
-            counts: Seen::default(),
-            holders: Seen::default(),
-            holds: Seen::default(),
+            workers: ReadCache::default(),
+            skill_holder_counts: ReadCache::default(),
+            skill_holders: ReadCache::default(),
+            has_skill: ReadCache::default(),
         }
     }
 
@@ -73,46 +75,48 @@ impl<'a> Directory<'a> {
         let members = self.members;
         let worker = self
             .workers
-            .get_or_try(account, || members.worker(account))?;
+            .get_or_try_insert_with(account, || members.worker(account))?;
         Ok(worker)
     }
 
-    fn holder_count(&mut self, skill: u32) -> u32 {
+    fn skill_holder_count(&mut self, skill: u32) -> u32 {
         let members = self.members;
         *self
-            .counts
-            .get_or(skill, || members.skill_counts.get(skill).unwrap_or(0))
+            .skill_holder_counts
+            .get_or_insert_with(skill, || members.skill_counts.get(skill).unwrap_or(0))
     }
 
     /// The accounts indexed under `skill`, in index order.
-    fn holders(&mut self, skill: u32) -> Result<&[AccountId]> {
-        let count = self.holder_count(skill);
+    fn skill_holders(&mut self, skill: u32) -> Result<&[AccountId]> {
+        let count = self.skill_holder_count(skill);
         let members = self.members;
-        let holders = self.holders.get_or_try(skill, || -> Result<_> {
-            // A loop on purpose, here and below: `collect` into a `Result`
-            // or a set pulls sorting code into the contract.
-            let mut holders = Vec::new();
-            for position in 0..count {
-                holders.push(
-                    members
-                        .skill_members
-                        .get((skill, position))
-                        .ok_or_else(|| String::from("invalid_worker_state"))?,
-                );
-            }
-            Ok(holders)
-        })?;
+        let holders = self
+            .skill_holders
+            .get_or_try_insert_with(skill, || -> Result<_> {
+                // A loop on purpose, here and below: `collect` into a `Result`
+                // or a set pulls sorting code into the contract.
+                let mut holders = Vec::new();
+                for position in 0..count {
+                    holders.push(
+                        members
+                            .skill_members
+                            .get((skill, position))
+                            .ok_or_else(|| String::from("invalid_worker_state"))?,
+                    );
+                }
+                Ok(holders)
+            })?;
         Ok(holders)
     }
 
     /// Whether `account` holds `skill`: from the skill's index if this
     /// selection has read it whole, and from one cell otherwise.
-    fn holds(&mut self, skill: u32, account: AccountId) -> bool {
-        if let Some(holders) = self.holders.get(&skill) {
+    fn has_skill(&mut self, account: AccountId, skill: u32) -> bool {
+        if let Some(holders) = self.skill_holders.get(&skill) {
             return holders.contains(&account);
         }
         let members = self.members;
-        *self.holds.get_or((skill, account), || {
+        *self.has_skill.get_or_insert_with((skill, account), || {
             members.skill_positions.contains((skill, account))
         })
     }
@@ -120,23 +124,23 @@ impl<'a> Directory<'a> {
     /// The accounts that hold every one of `skills`, in account order. Reads
     /// the index of the skill with the fewest holders and checks each of its
     /// accounts for the others.
-    fn holding_all(&mut self, skills: &[u32]) -> Result<BTreeSet<AccountId>> {
+    fn accounts_with_all(&mut self, skills: &[u32]) -> Result<BTreeSet<AccountId>> {
         let rarest = skills
             .iter()
             .copied()
-            .min_by_key(|skill| self.holder_count(*skill))
+            .min_by_key(|skill| self.skill_holder_count(*skill))
             .ok_or_else(|| String::from("missing_skills"))?;
-        let mut holding = BTreeSet::new();
-        for account in self.holders(rarest)?.to_vec() {
-            if skills.iter().all(|skill| self.holds(*skill, account)) {
-                holding.insert(account);
+        let mut accounts = BTreeSet::new();
+        for account in self.skill_holders(rarest)?.to_vec() {
+            if skills.iter().all(|skill| self.has_skill(account, *skill)) {
+                accounts.insert(account);
             }
         }
-        Ok(holding)
+        Ok(accounts)
     }
 
     /// The best-rated of `candidates` in `mode`, drawing among equals.
-    fn choose(
+    fn pick_best(
         &mut self,
         candidates: &[AccountId],
         mode: WorkerMode,
@@ -181,10 +185,10 @@ impl Dao {
         week: Week,
         seed: [u8; 32],
     ) -> Result<(AccountId, Id)> {
-        let mut directory = Directory::new(&self.members);
+        let mut members = MemberCache::new(&self.members);
         let mut candidates = Vec::new();
         for account in indices::values(&self.members.coordinators) {
-            let worker = directory.worker(account)?;
+            let worker = members.worker(account)?;
             if worker.mode == WorkerMode::Coordinator
                 && worker.coordinator_eligible
                 && account != client
@@ -194,7 +198,7 @@ impl Dao {
             }
         }
         let mut rng = StdRng::from_seed(seed);
-        let chosen = directory.choose(&candidates, WorkerMode::Coordinator, &mut rng)?;
+        let chosen = members.pick_best(&candidates, WorkerMode::Coordinator, &mut rng)?;
         let mut id = [0; 16];
         rng.fill_bytes(&mut id);
         Ok((chosen, id))
@@ -216,7 +220,7 @@ pub(crate) fn assign_team(
 
 /// Debit the client's balance for the escrow, then select and reserve the
 /// team of the calling Project.
-pub(crate) fn approve_team(
+pub(crate) fn fund_and_assign_team(
     dao: &mut Dao,
     client: AccountId,
     escrow: u64,
@@ -239,9 +243,9 @@ fn select_team(
     milestones: Vec<Milestone>,
     seed: [u8; 32],
 ) -> Result<Vec<Vec<(u32, AccountId)>>> {
-    let mut directory = Directory::new(&dao.members);
+    let mut members = MemberCache::new(&dao.members);
     let mut rng = StdRng::from_seed(seed);
-    dao.calendars.session(|calendars| {
+    dao.calendars.with_cache(|calendars| {
         let mut earlier = BTreeSet::new();
         let mut result = Vec::new();
         for milestone in milestones {
@@ -268,9 +272,9 @@ fn select_team(
             } in milestone.requirements
             {
                 let mut available = Vec::new();
-                for account in directory.holding_all(&skill_ids)? {
+                for account in members.accounts_with_all(&skill_ids)? {
                     if used.contains(&account)
-                        || directory.worker(account)?.mode != WorkerMode::Worker
+                        || members.worker(account)?.mode != WorkerMode::Worker
                     {
                         continue;
                     }
@@ -285,7 +289,7 @@ fn select_team(
                     .copied()
                     .filter(|account| earlier.contains(account))
                     .collect();
-                let chosen = directory.choose(
+                let chosen = members.pick_best(
                     if previous.is_empty() {
                         &available
                     } else {

@@ -185,8 +185,8 @@ pub(crate) fn validate_task_assignees(dao: &Dao, accounts: Vec<AccountId>) -> Re
 /// Settle a milestone of the calling Project: apply each vote to its
 /// account's score, then credit each account, in the order given. A vote
 /// counts its stars in exact hundredths, blended with the client's score by
-/// the score policy when `blend_with` is set.
-pub(crate) fn settle(
+/// the score policy when `client_stars` is set.
+pub(crate) fn settle_milestone(
     dao: &mut Dao,
     votes: Vec<SettlementVote>,
     credits: Vec<(AccountId, u64)>,
@@ -194,7 +194,7 @@ pub(crate) fn settle(
     dao.calling_project()?;
     let policy = dao.config.score_policy;
     for vote in votes {
-        let hundredths = match vote.blend_with {
+        let hundredths = match vote.client_stars {
             Some(client) => policy.blend(vote.stars, client)?,
             None => u16::from(vote.stars)
                 .checked_mul(100)

@@ -48,18 +48,22 @@ pub(crate) struct Projects {
     pub(crate) reason_count: u64,
 }
 
-/// The public IDs a project's layout holds: its proposals, and each
+/// The public IDs a project's identities hold: its proposals, and each
 /// milestone with its task storage.
-fn layout_ids(layout: &ProjectIdentities) -> Vec<Claim> {
-    let mut ids = Vec::new();
-    for (proposal, milestones) in layout {
-        ids.push((*proposal, "duplicate_entity"));
+fn identity_claims(identities: &ProjectIdentities) -> Vec<Claim> {
+    let claim = |id: &Id, error_if_taken| Claim {
+        id: *id,
+        error_if_taken,
+    };
+    let mut claims = Vec::new();
+    for (proposal, milestones) in identities {
+        claims.push(claim(proposal, "duplicate_entity"));
         for (milestone, storage) in milestones {
-            ids.push((*milestone, "invalid_storage_state"));
-            ids.push((*storage, "invalid_storage_state"));
+            claims.push(claim(milestone, "invalid_storage_state"));
+            claims.push(claim(storage, "invalid_storage_state"));
         }
     }
-    ids
+    claims
 }
 
 impl Projects {
@@ -166,7 +170,7 @@ impl Dao {
         );
     }
 
-    pub(crate) fn project_layout(&self, id: Id) -> ProjectIdentities {
+    pub(crate) fn project_identities(&self, id: Id) -> ProjectIdentities {
         (0..self.projects.project_layouts.get(id).unwrap_or(0))
             .map(|i| {
                 let proposal = self
@@ -189,15 +193,15 @@ impl Dao {
             .collect()
     }
 
-    /// Store `layout` for project `id`, which holds `old`: write the entries
-    /// that differ and remove the ones past its end.
-    pub(crate) fn write_project_layout(
+    /// Store `identities` for project `id`, which holds `old`: write the
+    /// entries that differ and remove the ones past its end.
+    pub(crate) fn write_identities(
         &mut self,
         id: Id,
         old: &ProjectIdentities,
-        layout: &ProjectIdentities,
+        identities: &ProjectIdentities,
     ) {
-        for (i, (proposal, milestones)) in layout.iter().enumerate() {
+        for (i, (proposal, milestones)) in identities.iter().enumerate() {
             let previous = old.get(i);
             let kept = previous.map_or(0, |(_, milestones)| milestones.len());
             if previous.map(|(id, _)| id) != Some(proposal) || kept != milestones.len() {
@@ -222,7 +226,7 @@ impl Dao {
                     .remove((id, count(i), count(j)));
             }
         }
-        for (i, (_, milestones)) in old.iter().enumerate().skip(layout.len()) {
+        for (i, (_, milestones)) in old.iter().enumerate().skip(identities.len()) {
             for j in 0..milestones.len() {
                 self.projects
                     .project_milestones
@@ -230,25 +234,27 @@ impl Dao {
             }
             self.projects.project_proposals.remove((id, count(i)));
         }
-        if old.len() != layout.len() {
+        if old.len() != identities.len() {
             self.projects
                 .project_layouts
-                .insert(id, &count(layout.len()));
+                .insert(id, &count(identities.len()));
         }
     }
 
-    /// Record `layout` as the identities of project `id`.
-    fn set_identities(&mut self, id: Id, layout: &ProjectIdentities) -> Result<()> {
-        let old = self.project_layout(id);
-        if old != *layout {
-            self.ids.exchange(&layout_ids(&old), &layout_ids(layout))?;
-            self.write_project_layout(id, &old, layout);
+    /// Record `identities` for project `id`: claim the IDs they add, free
+    /// the ones they drop, and store them.
+    fn set_identities(&mut self, id: Id, identities: &ProjectIdentities) -> Result<()> {
+        let old = self.project_identities(id);
+        if old != *identities {
+            self.ids
+                .replace(&identity_claims(&old), &identity_claims(identities))?;
+            self.write_identities(id, &old, identities);
         }
         Ok(())
     }
 
     /// Check and record what a proposal references, or forget the proposal.
-    fn set_references(
+    fn set_qualifications(
         &mut self,
         proposal_id: Id,
         qualifications: Option<Qualifications>,
@@ -357,22 +363,22 @@ pub(crate) fn create_project(
 /// identities, then the roles and skills the proposal references, checked
 /// against the catalog. `None` forgets the proposal's references. Returns the
 /// coordinator's compensation percent, for the Project to split budgets by.
-pub(crate) fn set_project_proposal(
+pub(crate) fn record_proposal(
     dao: &mut Dao,
-    layout: ProjectIdentities,
+    identities: ProjectIdentities,
     proposal_id: Id,
     qualifications: Option<Qualifications>,
 ) -> Result<u8> {
     let project = dao.calling_project()?;
-    dao.set_identities(project, &layout)?;
-    dao.set_references(proposal_id, qualifications)?;
+    dao.set_identities(project, &identities)?;
+    dao.set_qualifications(proposal_id, qualifications)?;
     Ok(dao.config.compensation_percent)
 }
 
 /// Record a new submission of the calling Project, after the ones it has.
 /// Project submits to one milestone at a time, in their order, so appending
 /// keeps the order of its milestones.
-pub(crate) fn add_project_submission(dao: &mut Dao, submission: Id) -> Result<()> {
+pub(crate) fn record_submission(dao: &mut Dao, submission: Id) -> Result<()> {
     let project = dao.calling_project()?;
     dao.ids.claim(submission, "invalid_submission_state")?;
     let position = dao.projects.project_submissions.get(project).unwrap_or(0);
@@ -446,5 +452,5 @@ pub(crate) fn set_proposal_references(
                 .contains(dao.env().caller()),
         "reference_controller_required",
     )?;
-    dao.set_references(proposal_id, qualifications)
+    dao.set_qualifications(proposal_id, qualifications)
 }

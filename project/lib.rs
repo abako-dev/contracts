@@ -210,7 +210,7 @@ pub mod project {
         /// Record the proposal at `index` with the Dao, which checks the
         /// roles and skills it references, then split each milestone's budget
         /// by the compensation percent the Dao returns.
-        fn record_terms(&mut self, index: usize) -> Result<()> {
+        fn record_proposal(&mut self, index: usize) -> Result<()> {
             let proposal = &self.project.proposals[index];
             // Inserted one by one on purpose: `collect` into a set pulls
             // sorting code into the contract.
@@ -222,7 +222,7 @@ pub mod project {
                     skills.extend(requirement.skill_ids.iter().copied());
                 }
             }
-            let percent = self.dao().set_project_proposal(
+            let percent = self.dao().record_proposal(
                 self.identities(),
                 proposal.proposal_id,
                 Some(Qualifications {
@@ -340,7 +340,7 @@ pub mod project {
                 delivery: None,
                 compensation_policy: None,
             });
-            self.record_terms(index)?;
+            self.record_proposal(index)?;
             Ok(self.effect(10, proposal_id))
         }
         pub fn update_proposal(
@@ -366,7 +366,7 @@ pub mod project {
             current.milestones = milestones;
             current.content = ProposalContentReferenceV1::Signed(content);
             bump(&mut current.revision)?;
-            self.record_terms(index)?;
+            self.record_proposal(index)?;
             Ok(self.effect(11, proposal_id))
         }
         pub fn delete_proposal(&mut self, proposal_id: Id) -> Result<Effect> {
@@ -380,7 +380,7 @@ pub mod project {
             )?;
             self.project.proposals.remove(index);
             self.dao()
-                .set_project_proposal(self.identities(), proposal_id, None)?;
+                .record_proposal(self.identities(), proposal_id, None)?;
             Ok(self.effect(12, proposal_id))
         }
         pub fn set_proposal_delivery(

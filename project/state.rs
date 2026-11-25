@@ -240,7 +240,7 @@ fn evaluation_record(value: &ProjectEvaluation) -> EvaluationRecord {
     }
 }
 /// The entries of `old` after its first `kept`, with their positions.
-fn dropped<T>(old: &[T], kept: usize) -> impl Iterator<Item = (u32, &T)> {
+fn entries_past<T>(old: &[T], kept: usize) -> impl Iterator<Item = (u32, &T)> {
     old.iter()
         .enumerate()
         .skip(kept)
@@ -249,8 +249,12 @@ fn dropped<T>(old: &[T], kept: usize) -> impl Iterator<Item = (u32, &T)> {
 /// Store the list `new` where `cells` holds `old`, one entry under each
 /// `key(position)`: write the entries that differ and remove the ones past
 /// its end.
-fn store_list<K, V, S>(cells: &mut Mapping<K, V, S>, key: impl Fn(u32) -> K, new: &[V], old: &[V])
-where
+fn write_changed<K, V, S>(
+    cells: &mut Mapping<K, V, S>,
+    key: impl Fn(u32) -> K,
+    new: &[V],
+    old: &[V],
+) where
     K: scale::Encode + scale::EncodeLike<K>,
     V: Packed + PartialEq + scale::EncodeLike<V>,
     S: StorageKey,
@@ -260,7 +264,7 @@ where
             cells.insert(key(count(i)), value);
         }
     }
-    for (i, _) in dropped(old, new.len()) {
+    for (i, _) in entries_past(old, new.len()) {
         cells.remove(key(i));
     }
 }
@@ -280,7 +284,7 @@ impl Project {
         for (p, proposal) in project.proposals.iter().enumerate() {
             self.save_proposal(count(p), proposal, proposals.get(p))?;
         }
-        for (p, proposal) in dropped(proposals, project.proposals.len()) {
+        for (p, proposal) in entries_past(proposals, project.proposals.len()) {
             self.remove_proposal(p, proposal);
         }
         let evaluations = before.map_or(&[][..], |old| &old.evaluations);
@@ -290,7 +294,7 @@ impl Project {
                 continue;
             }
             let e = count(e);
-            store_list(
+            write_changed(
                 &mut self.evaluation_ratings,
                 |i| (e, i),
                 &evaluation.ratings,
@@ -301,19 +305,19 @@ impl Project {
                 self.evaluations.insert(e, &record);
             }
         }
-        for (e, evaluation) in dropped(evaluations, project.evaluations.len()) {
+        for (e, evaluation) in entries_past(evaluations, project.evaluations.len()) {
             for i in 0..count(evaluation.ratings.len()) {
                 self.evaluation_ratings.remove((e, i));
             }
             self.evaluations.remove(e);
         }
-        store_list(
+        write_changed(
             &mut self.reasons,
             |i| i,
             &data.reasons,
             old.map_or(&[], |old| &old.reasons),
         );
-        store_list(
+        write_changed(
             &mut self.disputes,
             |i| i,
             &data.disputes,
@@ -339,7 +343,7 @@ impl Project {
         for (m, milestone) in value.milestones.iter().enumerate() {
             self.save_milestone((p, count(m)), milestone, milestones.get(m))?;
         }
-        for (m, milestone) in dropped(milestones, value.milestones.len()) {
+        for (m, milestone) in entries_past(milestones, value.milestones.len()) {
             self.remove_milestone((p, m), milestone);
         }
         if old.map(proposal_record).transpose()?.as_ref() != Some(&record) {
@@ -364,16 +368,16 @@ impl Project {
         for (r, requirement) in value.definition.requirements.iter().enumerate() {
             self.save_requirement((pos, count(r)), requirement, requirements.get(r));
         }
-        for (r, requirement) in dropped(requirements, value.definition.requirements.len()) {
+        for (r, requirement) in entries_past(requirements, value.definition.requirements.len()) {
             self.remove_requirement((pos, r), requirement);
         }
-        store_list(
+        write_changed(
             &mut self.assignments,
             |i| (pos, i),
             &value.assignments,
             old.map_or(&[], |old| &old.assignments),
         );
-        store_list(
+        write_changed(
             &mut self.milestone_ratings,
             |i| (pos, i),
             &value.worker_ratings,
@@ -383,14 +387,14 @@ impl Project {
         for (t, task) in value.task_storage.tasks.iter().enumerate() {
             self.save_task((pos, count(t)), task, tasks.get(t));
         }
-        for (t, task) in dropped(tasks, value.task_storage.tasks.len()) {
+        for (t, task) in entries_past(tasks, value.task_storage.tasks.len()) {
             self.remove_task((pos, t), task);
         }
         let submissions = old.map_or(&[][..], |old| &old.submissions);
         for (s, submission) in value.submissions.iter().enumerate() {
             self.save_submission((pos, count(s)), submission, submissions.get(s));
         }
-        for (s, submission) in dropped(submissions, value.submissions.len()) {
+        for (s, submission) in entries_past(submissions, value.submissions.len()) {
             self.remove_submission((pos, s), submission);
         }
         let record = milestone_record(value);
@@ -408,7 +412,7 @@ impl Project {
         if old == Some(value) {
             return;
         }
-        store_list(
+        write_changed(
             &mut self.skills,
             |i| (key, i),
             &value.skill_ids,
@@ -423,7 +427,7 @@ impl Project {
         if old == Some(value) {
             return;
         }
-        store_list(
+        write_changed(
             &mut self.assignees,
             |i| (key, i),
             &value.assignees,
@@ -443,7 +447,7 @@ impl Project {
         if old == Some(value) {
             return;
         }
-        store_list(
+        write_changed(
             &mut self.submission_ratings,
             |i| (key, i),
             &value.worker_ratings,
@@ -455,13 +459,13 @@ impl Project {
         }
     }
     fn remove_proposal(&mut self, p: u32, old: &ProposalCore) {
-        for (m, milestone) in dropped(&old.milestones, 0) {
+        for (m, milestone) in entries_past(&old.milestones, 0) {
             self.remove_milestone((p, m), milestone);
         }
         self.proposals.remove(p);
     }
     fn remove_milestone(&mut self, pos: MilestonePosition, old: &MilestoneCore) {
-        for (r, requirement) in dropped(&old.definition.requirements, 0) {
+        for (r, requirement) in entries_past(&old.definition.requirements, 0) {
             self.remove_requirement((pos, r), requirement);
         }
         for i in 0..count(old.assignments.len()) {
@@ -470,10 +474,10 @@ impl Project {
         for i in 0..count(old.worker_ratings.len()) {
             self.milestone_ratings.remove((pos, i));
         }
-        for (t, task) in dropped(&old.task_storage.tasks, 0) {
+        for (t, task) in entries_past(&old.task_storage.tasks, 0) {
             self.remove_task((pos, t), task);
         }
-        for (s, submission) in dropped(&old.submissions, 0) {
+        for (s, submission) in entries_past(&old.submissions, 0) {
             self.remove_submission((pos, s), submission);
         }
         self.milestones.remove(pos);
@@ -690,7 +694,7 @@ mod tests {
         assert!(storage.milestones.get((0, 0)).unwrap().encode().len() < 128);
     }
     /// The storage reads and writes `run` makes.
-    fn accesses(run: impl FnOnce()) -> (usize, usize) {
+    fn storage_ops(run: impl FnOnce()) -> (usize, usize) {
         let count = || {
             ink::env::test::get_contract_storage_rw::<ink::env::DefaultEnvironment>(
                 &ink::env::test::callee::<ink::env::DefaultEnvironment>(),
@@ -708,7 +712,7 @@ mod tests {
         store(&mut storage, &data);
         let loaded = data.clone();
         assert_eq!(
-            accesses(|| storage.save(&data, Some(&loaded)).unwrap()),
+            storage_ops(|| storage.save(&data, Some(&loaded)).unwrap()),
             (0, 0)
         );
         // One more assignee: its entry and the task's count.
@@ -721,7 +725,7 @@ mod tests {
         // One reason fewer: its removal and the header's count.
         data.reasons.truncate(1);
         assert_eq!(
-            accesses(|| storage.save(&data, Some(&loaded)).unwrap()),
+            storage_ops(|| storage.save(&data, Some(&loaded)).unwrap()),
             (0, 5)
         );
         assert_eq!(storage.load().unwrap().project, data.project);

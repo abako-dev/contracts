@@ -74,7 +74,7 @@ pallet-contracts charges it by the operation, not by the data:
 So a message reads a cell once and keeps it for its duration, compares what it
 loaded with what it saves instead of reading again, and makes one call to Dao
 where it has several things to ask. Dao's hooks for Project are grouped that
-way: `set_project_proposal`, `allocate_task`, `approve_team` and `settle`.
+way: `record_proposal`, `allocate_task`, `fund_and_assign_team` and `settle_milestone`.
 Public IDs are unique through one entry per ID, taken with one write, not by
 walking every record. Code size counts too, since every call pays for it: a
 convenience that grows the code, such as collecting into a set, is measured

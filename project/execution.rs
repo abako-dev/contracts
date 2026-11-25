@@ -112,7 +112,7 @@ pub fn approve(
         .collect();
     // Project is called directly by the verified client: extension deposit debits
     // that client. Dao records free balance; it never substitutes as payer.
-    let teams = state.dao().approve_team(
+    let teams = state.dao().fund_and_assign_team(
         state.project.client,
         total,
         state.project.coordinator,
@@ -208,7 +208,7 @@ pub fn submit(
         last.map(|s| s.submission_id) == Some(id),
         "invalid_submission_state",
     )?;
-    state.dao().add_project_submission(id)?;
+    state.dao().record_submission(id)?;
     Ok(state.effect(22, id))
 }
 pub fn reject(
@@ -274,7 +274,7 @@ pub fn accept(
             account: state.project.coordinator,
             mode: WorkerMode::Coordinator,
             stars: coordinator,
-            blend_with: None,
+            client_stars: None,
             minutes: current.definition.coordinator_minutes,
         });
         for requirement in &current.definition.requirements {
@@ -292,7 +292,7 @@ pub fn accept(
                 account: assigned.worker,
                 mode: WorkerMode::Worker,
                 stars: rating.score,
-                blend_with: match team {
+                client_stars: match team {
                     TeamRating::Client(score) => Some(score),
                     TeamRating::DelegateToCoordinator => None,
                 },
@@ -315,7 +315,7 @@ pub fn accept(
     }
     // The Dao applies the ratings and records every credit; the transfers
     // out of this Project's escrow follow in the same order.
-    state.dao().settle(votes, payments.clone())?;
+    state.dao().settle_milestone(votes, payments.clone())?;
     for (account, amount) in payments {
         assets::transfer(u128::from(amount), account)?;
     }

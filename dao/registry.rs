@@ -3,12 +3,16 @@ use crate::dao::{require, Id, Result};
 use ink::prelude::collections::BTreeSet;
 use ink::storage::{traits::ManualKey, Mapping};
 
-/// An ID with the error that reports it as taken.
-pub(crate) type Claim = (Id, &'static str);
+/// An ID an entity wants, with the error to fail with if it is taken.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Claim {
+    pub(crate) id: Id,
+    pub(crate) error_if_taken: &'static str,
+}
 
 /// One entry per public ID in use. IDs are unique across every kind of
 /// entity: [`Self::claim`] one when creating what it names, and
-/// [`Self::exchange`] the set an owner holds when that set changes.
+/// [`Self::replace`] the set an owner holds when that set changes.
 #[ink::storage_item]
 #[derive(Default, Debug)]
 pub(crate) struct PublicIds {
@@ -16,28 +20,28 @@ pub(crate) struct PublicIds {
 }
 
 impl PublicIds {
-    /// Take `id`, or fail with `collision` if an entity already has it.
-    pub(crate) fn claim(&mut self, id: Id, collision: &str) -> Result<()> {
+    /// Take `id`, or fail with `error_if_taken` if an entity already has it.
+    pub(crate) fn claim(&mut self, id: Id, error_if_taken: &str) -> Result<()> {
         // Writing an entry answers whether there was one. On a collision the
         // message fails and the write is reverted with the rest of it.
-        require(self.taken.insert(id, &true).is_none(), collision)
+        require(self.taken.insert(id, &true).is_none(), error_if_taken)
     }
 
     /// Replace the IDs an owner held, `old`, with `new`: free the ones it no
     /// longer uses and take the ones it adds.
-    pub(crate) fn exchange(&mut self, old: &[Claim], new: &[Claim]) -> Result<()> {
+    pub(crate) fn replace(&mut self, old: &[Claim], new: &[Claim]) -> Result<()> {
         let mut kept = BTreeSet::new();
-        for (id, collision) in new {
-            require(kept.insert(*id), collision)?;
+        for claim in new {
+            require(kept.insert(claim.id), claim.error_if_taken)?;
         }
-        for (id, _) in old {
-            if !kept.contains(id) {
-                self.taken.remove(id);
+        for held in old {
+            if !kept.contains(&held.id) {
+                self.taken.remove(held.id);
             }
         }
-        for (id, collision) in new {
-            if !old.iter().any(|(held, _)| held == id) {
-                self.claim(*id, collision)?;
+        for claim in new {
+            if !old.iter().any(|held| held.id == claim.id) {
+                self.claim(claim.id, claim.error_if_taken)?;
             }
         }
         Ok(())
