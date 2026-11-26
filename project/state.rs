@@ -166,6 +166,38 @@ fn stored_proposal(value: &ProposalCore) -> Result<StoredProposal> {
         milestones,
     })
 }
+/// How many bytes a proposal's entry can still gain while its terms stay as
+/// they are: an assignment and a rating for every requirement without one,
+/// each milestone's status, a change request and a delivery date.
+fn room_to_grow(stored: &StoredProposal) -> usize {
+    /// A requirement key and a worker.
+    const ASSIGNMENT_BYTES: usize = 36;
+    /// A worker and a score.
+    const RATING_BYTES: usize = 33;
+    /// A change request, past the byte that says there is none.
+    const CHANGE_REQUEST_BYTES: usize = 49;
+    /// A delivery on a date, the largest, with its byte.
+    const DELIVERY_BYTES: usize = 12;
+    let mut bytes = DELIVERY_BYTES.saturating_sub(scale::Encode::encoded_size(&stored.delivery));
+    if stored.change_request.is_none() {
+        bytes = bytes.saturating_add(CHANGE_REQUEST_BYTES);
+    }
+    for milestone in &stored.milestones {
+        let slots = milestone.definition.requirements.len();
+        let unassigned = slots.saturating_sub(milestone.assignments.len());
+        let unrated = slots.saturating_sub(milestone.worker_ratings.len());
+        // A list that grows can need one more byte for its length, and a
+        // milestone without a status gets one.
+        let extra = usize::from(unassigned != 0)
+            .saturating_add(usize::from(unrated != 0))
+            .saturating_add(usize::from(milestone.status.is_none()));
+        bytes = bytes
+            .saturating_add(unassigned.saturating_mul(ASSIGNMENT_BYTES))
+            .saturating_add(unrated.saturating_mul(RATING_BYTES))
+            .saturating_add(extra);
+    }
+    bytes
+}
 /// How many pages hold `tasks` tasks.
 fn page_count(tasks: usize) -> u32 {
     count(tasks.div_ceil(TASKS_PER_PAGE))
@@ -267,7 +299,13 @@ impl Project {
         }
         let stored = stored_proposal(value)?;
         if old.map(stored_proposal).transpose()?.as_ref() != Some(&stored) {
-            bounded(&stored, "proposal_too_large")?;
+            // Refuse now what approval, deliveries or a change request could
+            // no longer store.
+            require(
+                scale::Encode::encoded_size(&stored).saturating_add(room_to_grow(&stored))
+                    <= MAX_ENTRY_BYTES,
+                "proposal_too_large",
+            )?;
             self.proposals.insert(p, &stored);
         }
         Ok(())
@@ -598,6 +636,77 @@ mod tests {
         );
         // What fits is unaffected.
         assert_eq!(storage.save(&data, Some(&data)), Ok(()));
+    }
+    #[ink::test]
+    fn a_draft_that_is_stored_can_take_its_team_ratings_and_change_request() {
+        let account = AccountId::from([7; 32]);
+        // A draft of ten milestones with `slots` requirements each.
+        let draft = |slots: usize| {
+            let mut data = fixture();
+            let proposal = &mut data.project.proposals[0];
+            proposal.change_request = None;
+            proposal.delivery = None;
+            let mut milestone = proposal.milestones[0].clone();
+            milestone.status = None;
+            milestone.assignments.clear();
+            milestone.worker_ratings.clear();
+            milestone.submissions.clear();
+            milestone.task_storage.tasks.clear();
+            let requirement = milestone.definition.requirements[1].clone();
+            milestone.definition.requirements = (0..slots)
+                .map(|key| RequirementDefinition {
+                    key: count(key),
+                    ..requirement.clone()
+                })
+                .collect();
+            proposal.milestones = vec![milestone; 10];
+            data
+        };
+        let most = (1..)
+            .take_while(|slots| {
+                let data = draft(*slots);
+                Project::empty(data.dao, data.project.project_id)
+                    .save(&data, None)
+                    .is_ok()
+            })
+            .last()
+            .unwrap();
+        assert_eq!(most, 12);
+        let over = draft(most + 1);
+        assert_eq!(
+            Project::empty(over.dao, over.project.project_id).save(&over, None),
+            Err("proposal_too_large".into())
+        );
+        // The largest draft stored takes everything it can gain.
+        let mut data = draft(most);
+        let mut storage = Project::empty(data.dao, data.project.project_id);
+        storage.save(&data, None).unwrap();
+        let proposal = &mut data.project.proposals[0];
+        proposal.change_request = Some(ProposalContentReferenceV1::Signed(MetadataCommitmentV1 {
+            operation_id: [1; 16],
+            hash: [1; 32],
+        }));
+        proposal.delivery = Some(DeliveryPreference::SpecificDate {
+            date: "2027-01-01".into(),
+        });
+        for milestone in &mut proposal.milestones {
+            milestone.status = Some(MilestoneStatus::Completed);
+            for requirement in &milestone.definition.requirements {
+                milestone.assignments.push(AssignmentView {
+                    requirement_key: requirement.key,
+                    worker: account,
+                });
+                milestone.worker_ratings.push(WorkerRating {
+                    worker: account,
+                    score: 5,
+                });
+            }
+        }
+        store(&mut storage, &data);
+        let stored = stored_proposal(&data.project.proposals[0]).unwrap();
+        assert_eq!(room_to_grow(&stored), 0);
+        assert!(stored.encode().len() <= MAX_ENTRY_BYTES);
+        assert_eq!(storage.load().unwrap().project, data.project);
     }
     #[ink::test]
     fn replacement_shrink_removal_and_position_reuse_clear_old_children() {
