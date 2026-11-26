@@ -1,6 +1,7 @@
-//! Fixed Project records. Growing domain collections live in separate storage entries.
+//! What Project stores: the header, and each proposal with its terms and the
+//! progress of its milestones. Tasks, submissions and evaluations have storage
+//! entries of their own.
 use crate::types::*;
-use dao::calendar::WeekWindow;
 use dao::dao::MetadataReferenceV1;
 use ink::{
     prelude::{string::String, vec::Vec},
@@ -63,37 +64,22 @@ record!(ProjectRecord {
     execution_escrow: u64, cancelled: bool, completed: bool, evaluations: u32,
     active_dispute_id: Option<Id>, reasons: u32, disputes: u32
 });
-record!(ProposalRecord {
+record!(StoredProposal {
     proposal_id: Id, revision: u64, content: ProposalContentReferenceV1,
-    status: ProposalStatus, milestones: u32, change_request: Option<ProposalContentReferenceV1>,
-    delivery: Option<StoredDelivery>, compensation_policy: Option<CompensationPolicy>
+    status: ProposalStatus, change_request: Option<ProposalContentReferenceV1>,
+    delivery: Option<StoredDelivery>, compensation_policy: Option<CompensationPolicy>,
+    milestones: Vec<StoredMilestone>
 });
-record!(MilestoneRecord {
-    milestone_id: Id, key: u32, window: WeekWindow, coordinator_fee: u64,
-    coordinator_minutes: u32, requirements: u32, status: Option<MilestoneStatus>,
-    assignments: u32, worker_ratings: u32, task_storage_id: Id, tasks: u32,
-    frozen: bool, submissions: u32
+record!(StoredMilestone {
+    milestone_id: Id, definition: MilestoneTerms, status: Option<MilestoneStatus>,
+    frozen: bool, assignments: Vec<AssignmentView>, worker_ratings: Vec<WorkerRating>,
+    task_storage_id: Id, tasks: u32, submissions: u32
 });
-record!(RequirementRecord {
-    key: u32,
-    role_id: u32,
-    skills: u32,
-    minutes: u32,
-    budget: u64
-});
-record!(TaskRecord {
-    task_id: u32,
-    assignees: u32
-});
-record!(SubmissionRecord {
-    submission_id: Id, version: u64, deliverable: Option<EvidenceReference>,
-    submitted_by: AccountId, submitted_at: u64, worker_ratings: u32, review: SubmissionReview
-});
-record!(EvaluationRecord {
-    author: AccountId,
-    submitted_at: u64,
-    ratings: u32
-});
+/// The largest value Project writes to one storage entry, in encoded bytes.
+/// The chain refuses a value above 16 KiB; this leaves room for the key.
+pub(crate) const MAX_ENTRY_BYTES: usize = 12 * 1024;
+/// How many tasks of a milestone share one storage entry.
+pub(crate) const TASKS_PER_PAGE: usize = 16;
 pub(crate) fn count(value: usize) -> u32 {
     u32::try_from(value).expect("domain collection exceeds u32")
 }
