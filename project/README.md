@@ -33,10 +33,10 @@ names a role, skills, minutes and a budget.
 | Cancelled | The project was cancelled | Nothing |
 
 - **One approved proposal per project.**
-- **Revisions.** Every change raises the proposal's revision number. Some
-  messages, such as an approval, name the revision they expect and fail with
-  `revision_conflict` if it has moved. This way nobody approves a plan that
-  changed under them.
+- **Revisions.** Every change to a proposal's terms or status raises its
+  revision number; tasks and deliveries do not. Some messages, such as an
+  approval, name the revision they expect and fail with `revision_conflict` if
+  it has moved. This way nobody approves a plan that changed under them.
 - **The split of the money.** When a proposal is created or changed, each
   milestone's total is split between the coordinator and the workers, as the
   [overview](../README.md#how-money-moves) describes. The split is exact:

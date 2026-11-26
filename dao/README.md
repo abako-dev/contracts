@@ -120,8 +120,9 @@ is recorded but does not filter candidates.
   operator, a skill request to its requester and the operator, and the list of
   all balances to the operator.
 - **Test accounts.** Two accounts named at deployment can call the last six
-  Project messages of the table, for testing Dao on its own. Setting the
-  Project code closes that for good.
+  Project messages of the table, for testing Dao on its own: one of them
+  `set_proposal_references`, the other the five before it. Setting the Project
+  code closes that for good.
 - **Test funding.** `fund_account` credits an account directly. It works only
   if test funding was turned on when accounting was set up, and that choice
   cannot be changed.

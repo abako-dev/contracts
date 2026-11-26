@@ -119,13 +119,20 @@ Limits the contracts check:
 | What | Limit | In practice |
 |---|---|---|
 | Reservations of one worker in one week | 32 | A week that has them counts as full, even with minutes left |
-| A proposal | 12 KiB of stored data | About 110 worker slots over ten milestones |
+| A proposal | 12 KiB of stored data | About 110 worker slots over ten milestones, once each has its worker and rating |
 | A page of sixteen tasks | 12 KiB | About 23 assignees per task |
-| A delivery or an evaluation | 12 KiB | About 370 ratings |
-| A calendar | 12 KiB, not counting its reservations | About 2,400 weeks that hold reservations |
+| A delivery or an evaluation | 12 KiB | More ratings than a proposal can have workers |
+| A calendar | 12 KiB, not counting its reservations | About 2,400 weeks that hold reservations, or 1,360 overrides |
 
 Going over a 12 KiB limit is refused with `proposal_too_large`,
-`storage_entry_too_large` or `calendar_too_large`.
+`storage_entry_too_large` or `calendar_too_large`. The check runs each time
+something is stored, so the refusal can come late:
+
+- **A proposal grows after it is written.** Its team is added at approval and
+  its ratings at each delivery. A plan with more worker slots than the table
+  says is accepted as a draft and refused at approval or at a delivery.
+- **A calendar grows with each new week that gets a reservation.** If a
+  worker's calendar is at its limit, the approval that would assign them fails.
 
 Limits the contracts do not check. A contract has 1 MiB of memory for each
 message and a transaction has a fixed budget on Kreivo, so past these sizes a
