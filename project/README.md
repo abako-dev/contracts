@@ -86,7 +86,9 @@ every worker; only the ratings of workers change a score.
 - **A task** has a number, which Dao hands out, and a list of assignees. Each
   assignee must be a registered worker, not necessarily one of the team.
 - **Only the coordinator** creates tasks, changes their assignees and deletes
-  them. A task can be deleted only while its proposal is a draft.
+  them. A task can be deleted only while its proposal is a draft. Deleting
+  one moves the later tasks up; if that puts a task with very many assignees
+  on a page it does not fit, the deletion is refused until they are reduced.
 - **Tasks do not affect money or ratings.** Their text and progress live in the
   app.
 

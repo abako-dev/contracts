@@ -33,8 +33,8 @@ with a fingerprint of its description; the names live in the app.
 
 ## Calendars and reservations
 
-- **A calendar** says how many minutes a worker offers each week, with
-  overrides for single weeks. Weeks are ISO weeks.
+- **A calendar** says how many minutes a worker offers each week, with up to
+  104 overrides for single weeks. Weeks are ISO weeks.
 - **A reservation** takes minutes for a milestone from the weeks of its window,
   starting with the earliest week that has room. If the window does not have
   enough, it fails with `insufficient_capacity`.
