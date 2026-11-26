@@ -89,6 +89,7 @@ pub struct CalendarDefinition {
 }
 impl CalendarDefinition {
     fn validate(&self) -> Result<()> {
+        require(self.overrides.len() <= MAX_OVERRIDES, "calendar_too_large")?;
         let mut weeks = ink::prelude::collections::BTreeSet::new();
         if self.overrides.iter().any(|item| !weeks.insert(item.week)) {
             return Err("invalid_contract".into());
@@ -144,6 +145,16 @@ impl CalendarHeader {
         }
         self.default_weekly_minutes
     }
+    /// How many more weeks `reserved_weeks` can list before the header is
+    /// too large for one storage entry.
+    fn room_for_weeks(&self) -> usize {
+        // The list's length prefix can grow by a byte.
+        MAX_HEADER_BYTES
+            .saturating_sub(scale::Encode::encoded_size(self))
+            .saturating_sub(1)
+            .checked_div(WEEK_BYTES)
+            .unwrap_or(0)
+    }
     /// Fail if the header is too large for one storage entry.
     fn bounded(&self) -> Result<()> {
         require(
@@ -181,9 +192,14 @@ use ink::storage::{traits::ManualKey, Mapping};
 /// has about 600 kB of memory that is never freed. A reservation takes 52
 /// bytes of it, and as many again in a week the message adds to.
 pub(crate) const MAX_WEEK_RESERVATIONS: usize = 32;
+/// The most overrides a calendar holds. A message that looks for a team
+/// loads the header of every candidate, overrides included.
+pub(crate) const MAX_OVERRIDES: usize = 104;
 /// The largest calendar header, in encoded bytes. The chain refuses a
 /// storage value above 16 KiB; this leaves room for the key.
 const MAX_HEADER_BYTES: usize = 12 * 1024;
+/// A week in `reserved_weeks`, in encoded bytes.
+const WEEK_BYTES: usize = 5;
 const INVALID_STATE: &str = "invalid_calendar_state";
 
 /// Calendars by worker account: a header each, and an entry for each week
@@ -209,6 +225,8 @@ struct WeekUsage {
     reserved: u32,
     /// The week holds `MAX_WEEK_RESERVATIONS`.
     full: bool,
+    /// The week holds no reservation, so the header does not list it yet.
+    unlisted: bool,
 }
 impl WeekUsage {
     fn of(header: &CalendarHeader, week: Week, entry: &WeekReservations) -> Self {
@@ -216,6 +234,7 @@ impl WeekUsage {
             capacity: header.capacity(week),
             reserved: entry.reserved,
             full: entry.reservations.len() >= MAX_WEEK_RESERVATIONS,
+            unlisted: entry.reservations.is_empty(),
         }
     }
     fn available(self) -> Result<u32> {
@@ -229,18 +248,28 @@ impl WeekUsage {
 }
 
 /// Split `minutes` over the weeks of `window`, earliest first, by what
-/// `usage` reports available in each.
+/// `usage` reports available in each. At most `room` of the weeks taken may
+/// be ones the header does not list yet: [`CalendarHeader::room_for_weeks`].
 fn allocate(
     window: WeekWindow,
     minutes: u32,
+    mut room: usize,
     mut usage: impl FnMut(Week) -> Result<WeekUsage>,
 ) -> Result<Vec<(Week, u32)>> {
     let mut remaining = minutes;
     let mut week = window.start;
     let mut allocation = Vec::new();
     while remaining != 0 {
-        let assigned = usage(week)?.available()?.min(remaining);
+        let usage = usage(week)?;
+        let assigned = if usage.unlisted && room == 0 {
+            0
+        } else {
+            usage.available()?.min(remaining)
+        };
         if assigned != 0 {
+            if usage.unlisted {
+                room = room.saturating_sub(1);
+            }
             allocation.push((week, assigned));
             remaining = remaining
                 .checked_sub(assigned)
@@ -299,8 +328,8 @@ impl CalendarCache<'_> {
         window: WeekWindow,
         minutes: u32,
     ) -> Result<Vec<(Week, u32)>> {
-        self.header(owner)?;
-        allocate(window, minutes, |week| self.usage(owner, week))
+        let room = self.header(owner)?.0.room_for_weeks();
+        allocate(window, minutes, room, |week| self.usage(owner, week))
     }
     pub(crate) fn reserve(
         &mut self,
@@ -493,7 +522,11 @@ impl Calendars {
     }
     pub(crate) fn available(&self, owner: AccountId, week: Week) -> Result<u32> {
         let header = self.header(owner)?;
-        self.usage(owner, &header, week)?.available()
+        let usage = self.usage(owner, &header, week)?;
+        if usage.unlisted && header.room_for_weeks() == 0 {
+            return Ok(0);
+        }
+        usage.available()
     }
     pub(crate) fn allocation(
         &self,
@@ -502,7 +535,9 @@ impl Calendars {
         minutes: u32,
     ) -> Result<Vec<(Week, u32)>> {
         let header = self.header(owner)?;
-        allocate(window, minutes, |week| self.usage(owner, &header, week))
+        allocate(window, minutes, header.room_for_weeks(), |week| {
+            self.usage(owner, &header, week)
+        })
     }
     pub(crate) fn reserve(
         &mut self,
@@ -653,34 +688,93 @@ mod tests {
         );
         assert!(calendar.header(accounts.alice).unwrap().encode().len() < 128);
     }
-    #[ink::test]
-    fn a_calendar_above_the_bound_is_refused() {
-        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
-        let mut calendar = Calendars::default();
-        let large = CalendarDefinition {
+    fn overrides(count: usize) -> CalendarDefinition {
+        CalendarDefinition {
             default_weekly_minutes: 100,
-            overrides: (0..30)
+            overrides: (0..3)
                 .flat_map(|year| (1..=52).map(move |week| (2026 + year, week)))
+                .take(count)
                 .map(|(year, week)| WeekOverride {
                     week: Week::new(year, week).unwrap(),
                     capacity: 50,
                 })
                 .collect(),
-        };
-        assert!(large.overrides.encode().len() > MAX_HEADER_BYTES);
+        }
+    }
+    #[ink::test]
+    fn a_calendar_takes_its_cap_of_overrides_and_no_more() {
+        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+        let mut calendar = Calendars::default();
+        let most = overrides(MAX_OVERRIDES);
+        let large = overrides(MAX_OVERRIDES + 1);
         assert_eq!(
             calendar.register(accounts.alice, large.clone()),
             Err("calendar_too_large".into())
         );
-        calendar.register(accounts.alice, definition(100)).unwrap();
+        calendar.register(accounts.alice, most.clone()).unwrap();
+        assert!(calendar.header(accounts.alice).unwrap().encode().len() < 1024);
         assert_eq!(
             calendar.set(accounts.alice, large),
             Err("calendar_too_large".into())
         );
         assert_eq!(
             calendar.view(accounts.alice, [1; 16]).unwrap().definition,
-            definition(100)
+            most
         );
+    }
+    #[ink::test]
+    fn a_calendar_with_no_room_for_another_week_has_no_capacity_in_new_weeks() {
+        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+        let mut calendar = Calendars::default();
+        calendar.register(accounts.alice, definition(100)).unwrap();
+        let held = Week::new(2026, 1).unwrap();
+        let new = Week::new(2026, 2).unwrap();
+        let only = |week| WeekWindow {
+            start: week,
+            end: week,
+        };
+        calendar
+            .reserve(accounts.alice, only(held), 1, reservation(held, 1))
+            .unwrap();
+        // Fill the header's list of weeks until it has room for one more.
+        let mut header = calendar.header(accounts.alice).unwrap();
+        let mut filler = (2100..).flat_map(|year| (1..=52).map(move |week| (year, week)));
+        while header.room_for_weeks() > 1 {
+            let (year, week) = filler.next().unwrap();
+            header.reserved_weeks.push(Week::new(year, week).unwrap());
+        }
+        calendar.headers.insert(accounts.alice, &header);
+        let both = WeekWindow {
+            start: new,
+            end: Week::new(2026, 3).unwrap(),
+        };
+        // Two new weeks do not fit; one does.
+        assert_eq!(
+            calendar.reserve(accounts.alice, both, 200, reservation(new, 200)),
+            Err("insufficient_capacity".into())
+        );
+        assert_eq!(calendar.available(accounts.alice, new), Ok(100));
+        calendar
+            .reserve(accounts.alice, both, 100, reservation(new, 100))
+            .unwrap();
+        let header = calendar.header(accounts.alice).unwrap();
+        assert_eq!(header.room_for_weeks(), 0);
+        header.bounded().unwrap();
+        // No room is left: a new week has no capacity, and a held one has.
+        let later = Week::new(2026, 3).unwrap();
+        assert_eq!(calendar.available(accounts.alice, later), Ok(0));
+        assert_eq!(
+            calendar.allocation(accounts.alice, only(later), 1),
+            Err("insufficient_capacity".into())
+        );
+        assert_eq!(
+            calendar.reserve(accounts.alice, only(later), 1, reservation(later, 1)),
+            Err("insufficient_capacity".into())
+        );
+        assert_eq!(calendar.available(accounts.alice, held), Ok(99));
+        calendar
+            .reserve(accounts.alice, only(held), 1, reservation(held, 1))
+            .unwrap();
     }
     #[ink::test]
     fn a_cache_reads_each_storage_entry_once_and_leaves_what_separate_reservations_leave() {
